@@ -1,18 +1,15 @@
+```markdown
 # Matilda Linux Target Prep Ansible
 
-This project prepares Linux / Oracle Linux target VMs for Matilda Probe-based discovery.
+Prepare Linux / Oracle Linux target VMs for Matilda Probe-based discovery.
 
-It follows the Matilda Discovery Probe service-account requirements:
+This automation configures each target VM with:
 
-- create `matilda-svc`
-- install SSH public key
-- configure Matilda sudoers allow-list
-- validate local sudo
-- validate Probe-to-target SSH and sudo
-
-## What this is for
-
-Use this project when you need to prepare multiple Linux / Oracle Linux target VMs so Matilda can discover them through a registered Matilda Discovery Probe.
+- `matilda-svc` service account
+- SSH public-key authentication
+- Matilda sudoers allow-list
+- local sudo validation
+- Probe-to-target SSH/sudo validation
 
 This project is for Linux / Oracle Linux / RHEL-like targets only.
 
@@ -20,7 +17,7 @@ Windows target setup is not included.
 
 ---
 
-## Required user-edited files
+## What users need to edit
 
 Most users only edit:
 
@@ -28,21 +25,40 @@ Most users only edit:
 inventory.yml
 ```
 
-This file contains the target VM list and discovery IPs.
+This file contains the target VM list and the IPs Matilda should discover.
 
-Users must also have a Matilda discovery public key file available somewhere on their local machine. The path is provided at runtime.
+Example public target:
 
-Example:
-
-```text
-/path/to/MatildaProbeKey.pem.pub
+```yaml
+public_targets:
+  hosts:
+    my-public-target:
+      ansible_host: <target-public-ip>
+      public_ip: <target-public-ip>
+      private_ip: <target-private-ip>
+      discovery_ip: <target-private-or-public-ip-used-by-probe>
 ```
+
+Example private-only target:
+
+```yaml
+private_targets:
+  hosts:
+    my-private-target:
+      ansible_host: <target-private-ip>
+      private_ip: <target-private-ip>
+      discovery_ip: <target-private-ip>
+```
+
+Use `inventory.example.yml` for more examples.
 
 ---
 
-## Runtime inputs
+## Runtime values
 
-When you run a script, you will be prompted for:
+When you run a script, it asks for environment-specific values unless they are already provided in `.env`.
+
+Required values:
 
 ```text
 Target admin SSH user
@@ -54,15 +70,15 @@ Matilda discovery public key path on this machine
 Matilda discovery private key path on MatildaProbeVM
 ```
 
-These are intentionally runtime prompts so users do not need to edit Ansible variable files.
+These values are not hardcoded in the playbooks.
 
 ---
 
-## Key types explained
+## Key types
 
 ### Target admin private key
 
-Used by Ansible to SSH into target VMs as the admin user, usually `opc` in OCI.
+Used by Ansible to SSH into target VMs as the admin user.
 
 Example:
 
@@ -80,11 +96,11 @@ Example:
 ~/.ssh/<probe-admin-private-key>
 ```
 
-This may be the same file as the target admin key in simple labs, but it is a separate input.
+This may be the same as the target admin key in simple labs, but it is a separate input.
 
 ### Matilda discovery public key
 
-Installed on every target VM for the `matilda-svc` account.
+Installed on target VMs for the `matilda-svc` account.
 
 Example:
 
@@ -94,7 +110,7 @@ Example:
 
 ### Matilda discovery private key on Probe
 
-Already stored on MatildaProbeVM and used by the Probe to SSH into targets as `matilda-svc`.
+Stored on MatildaProbeVM and used by the Probe to SSH into targets as `matilda-svc`.
 
 Example:
 
@@ -102,49 +118,31 @@ Example:
 /home/opc/.ssh/MatildaProbeKey.pem
 ```
 
-Expected permission on MatildaProbeVM:
+Expected permission on the Probe:
 
 ```text
 600
 ```
 
-Do not copy the Matilda discovery private key to target VMs.
+Do not copy this private key to target VMs.
 
 ---
 
 ## Optional `.env` file
 
-You do not have to create a `.env` file.
+You do not have to create `.env`.
 
-By default, the scripts prompt for required runtime values each time you run:
-
-```bash
-./scripts/run-preflight.sh
-./scripts/run-setup.sh
-./scripts/run-validate.sh
-````
+If `.env` does not exist, the scripts prompt for required values.
 
 If you do not want to type the same values every time, copy:
-
-```text
-.env.example
-```
-
-to:
-
-```text
-.env
-```
-
-Then edit `.env` with your environment values.
-
-Example:
 
 ```bash
 cp .env.example .env
 ```
 
-The `.env` file can store values such as:
+Then edit `.env` with your values.
+
+Example `.env` values:
 
 ```bash
 TARGET_ADMIN_USER=opc
@@ -156,121 +154,31 @@ MATILDA_PUBLIC_KEY_FILE=/path/to/MatildaProbeKey.pem.pub
 MATILDA_PROBE_PRIVATE_KEY_ON_PROBE=/home/opc/.ssh/MatildaProbeKey.pem
 ```
 
-When `.env` exists, the scripts use those values as defaults and only prompt for missing values.
-
 `.env` is ignored by git and should not be committed.
 
-````javascript
-
 ---
 
-# 3. Ensure `.gitignore` contains
+## Public vs private discovery IP
 
-Path:
-
-```text
-matilda-linux-target-prep-ansible/.gitignore
-````
-
-```gitignore
-.env
-reports/*.txt
-*.retry
-```
-
----
-
-## Configure target inventory
-
-Edit:
-
-```text
-inventory.yml
-```
-
-Each target must define:
-
-```yaml
-ansible_host: <IP or hostname Ansible uses to configure the VM>
-discovery_ip: <IP MatildaProbeVM uses to discover the VM>
-```
-
-These may be different.
-
----
-
-## Public target example
-
-Use this when your computer can SSH directly to the target public IP.
-
-```yaml
-public_targets:
-  hosts:
-    my-public-target:
-      ansible_host: <target-public-ip>
-      public_ip: <target-public-ip>
-      private_ip: <target-private-ip>
-      discovery_ip: <target-private-or-public-ip-used-by-probe>
-```
+Use private IPs for `discovery_ip` when MatildaProbeVM can reach them.
 
 Recommended:
 
 ```text
-Use private_ip as discovery_ip when MatildaProbeVM can reach it.
+discovery_ip = target private IP
 ```
 
----
-
-## Private-only target example
-
-Use this when the target has only a private IP and must be reached through MatildaProbeVM.
-
-```yaml
-private_targets:
-  hosts:
-    my-private-target:
-      ansible_host: <target-private-ip>
-      private_ip: <target-private-ip>
-      discovery_ip: <target-private-ip>
-```
-
-The SSH jump configuration is handled automatically by:
-
-```text
-group_vars/private_targets.yml
-```
-
-using the Probe values provided at runtime.
-
----
-
-## Public vs private IP guidance
-
-Use private IPs for `discovery_ip` when possible.
-
-Why:
-
-- traffic stays inside OCI/private network
-- better matches Probe-based discovery
-- avoids unnecessary public SSH exposure
-
-Use public IPs for `discovery_ip` only if:
+Use public IPs only if:
 
 - you intentionally want Matilda to discover public IPs
 - MatildaProbeVM can reach those public IPs on TCP/22
-- your security lists / NSGs allow it safely
-
-A target is ready only if this works from MatildaProbeVM:
-
-```bash
-ssh -i <matilda-private-key-on-probe> matilda-svc@<discovery_ip> "sudo /sbin/ifconfig"
-```
+- security rules allow it safely
 
 ---
 
 ## Run order
 
-Do not skip steps.
+Run from the project root:
 
 ```bash
 ./scripts/run-preflight.sh
@@ -278,71 +186,68 @@ Do not skip steps.
 ./scripts/run-validate.sh
 ```
 
+Do not skip steps.
+
 ---
 
-## What each step does
+## Step 1: Preflight
 
-### 1. Preflight
+```bash
+./scripts/run-preflight.sh
+```
 
 Checks:
 
 - admin SSH works
 - admin sudo works
-- OS is Linux
-- MatildaProbeVM has the Matilda discovery private key
-- MatildaProbeVM can reach each target `discovery_ip` on port 22
+- targets are Linux
+- MatildaProbeVM has the discovery private key
+- MatildaProbeVM can reach each `discovery_ip` on port 22
 
-Run:
-
-```bash
-./scripts/run-preflight.sh
-```
+Preflight does not modify target VMs.
 
 ---
 
-### 2. Setup
-
-Configures each target:
-
-- creates `matilda-svc`
-- creates `/home/matilda-svc/.ssh`
-- installs the Matilda public key
-- writes `/etc/sudoers.d/matilda-discovery`
-- validates sudoers syntax with `visudo -cf`
-
-Run:
+## Step 2: Setup
 
 ```bash
 ./scripts/run-setup.sh
 ```
 
+Configures each target VM:
+
+- creates `matilda-svc`
+- installs the Matilda public key
+- writes `/etc/sudoers.d/matilda-discovery`
+- validates sudoers syntax
+
+Setup modifies target VMs and asks for confirmation before running.
+
 ---
 
-### 3. Validate
-
-Confirms:
-
-- local sudo works as `matilda-svc`
-- Probe can SSH to each target as `matilda-svc`
-- Probe can run a sudo discovery command remotely
-
-Run:
+## Step 3: Validate
 
 ```bash
 ./scripts/run-validate.sh
 ```
 
+Validates:
+
+- local sudo works as `matilda-svc`
+- Probe can SSH to each target as `matilda-svc`
+- Probe can run a sudo discovery command remotely
+
 ---
 
-## Output
+## Output files
 
-Validated discovery IPs are written to:
+Validated discovery IPs:
 
 ```text
 reports/validated-discovery-ips.txt
 ```
 
-Validation summary is written to:
+Validation summary:
 
 ```text
 reports/validation-summary.txt
@@ -354,16 +259,11 @@ Only use IPs from `validated-discovery-ips.txt` in Matilda Network Discovery.
 
 ## Matilda UI values after validation
 
-Use the IPs from:
-
-```text
-reports/validated-discovery-ips.txt
-```
-
 In Matilda:
 
 ```text
 Discovery Mode: Network Discovery
+Network Address: IPs from reports/validated-discovery-ips.txt
 Credential Group: <your Linux PEM credential group>
 Probe: <your registered Matilda Probe>
 Execution Mode: sudo
@@ -381,8 +281,8 @@ Promote over-utilized resources: Yes
 - Only the Matilda public key is installed on target VMs.
 - The Matilda discovery private key is used only from MatildaProbeVM.
 - The sudoers file is restricted to Matilda discovery commands.
-- Review OCI security lists / NSGs before using public IPs.
 - Prefer private IPs for discovery when possible.
+- Review security lists / NSGs before using public IPs.
 
 ---
 
@@ -392,19 +292,19 @@ Promote over-utilized resources: Yes
 
 Check:
 
-- `ansible_host`
-- target admin SSH user entered at runtime
-- target admin private key path entered at runtime
-- OCI security list / NSG for SSH
+- `ansible_host` in `inventory.yml`
+- target admin SSH user
+- target admin private key path
+- security list / NSG for SSH
 
 ### Probe SSH fails
 
 Check:
 
-- Probe host/IP entered at runtime
-- Probe SSH user entered at runtime
-- Probe admin private key path entered at runtime
-- OCI security list / NSG for SSH to Probe
+- Probe host/IP
+- Probe SSH user
+- Probe admin private key path
+- security list / NSG for SSH to Probe
 
 ### Probe cannot reach target on port 22
 
@@ -417,20 +317,19 @@ Check:
 
 ### SSH as `matilda-svc` fails
 
-Check:
+Check on the target VM:
 
-- Matilda public key installed in `/home/matilda-svc/.ssh/authorized_keys`
-- ownership is `matilda-svc:matilda-svc`
-- `.ssh` is `700`
-- `authorized_keys` is `600`
-- Matilda private key exists on Probe
+```text
+/home/matilda-svc/.ssh/authorized_keys
+/home/matilda-svc/.ssh permissions = 700
+authorized_keys permissions = 600
+owner = matilda-svc:matilda-svc
+```
 
 ### Sudo validation fails
 
-Check:
+Check on the target VM:
 
 ```bash
 visudo -cf /etc/sudoers.d/matilda-discovery
 ```
-
-and confirm command paths exist on the target.
