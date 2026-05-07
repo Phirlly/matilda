@@ -2,3 +2,6 @@
 /Presentations
 /assessments
 /docs
+.env
+reports/*.txt
+*.retry

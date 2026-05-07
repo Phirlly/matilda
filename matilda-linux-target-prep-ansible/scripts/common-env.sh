@@ -85,6 +85,10 @@ collect_runtime_inputs() {
   echo
   echo "These keys may be the same in simple labs, but they are separate inputs."
   echo
+  echo "Tip: To avoid typing these values every run, copy .env.example to .env"
+  echo "and fill in your environment-specific values. If .env exists, this script"
+  echo "will use those values as defaults and only prompt for missing ones."
+  echo
 
   prompt_default TARGET_ADMIN_USER "Target admin SSH user" "opc"
 

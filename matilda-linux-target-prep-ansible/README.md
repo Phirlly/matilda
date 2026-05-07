@@ -114,9 +114,17 @@ Do not copy the Matilda discovery private key to target VMs.
 
 ## Optional `.env` file
 
-Users do not need `.env`.
+You do not have to create a `.env` file.
 
-If you do not want to type prompts every time, copy:
+By default, the scripts prompt for required runtime values each time you run:
+
+```bash
+./scripts/run-preflight.sh
+./scripts/run-setup.sh
+./scripts/run-validate.sh
+````
+
+If you do not want to type the same values every time, copy:
 
 ```text
 .env.example
@@ -128,9 +136,47 @@ to:
 .env
 ```
 
-and fill in your environment values.
+Then edit `.env` with your environment values.
+
+Example:
+
+```bash
+cp .env.example .env
+```
+
+The `.env` file can store values such as:
+
+```bash
+TARGET_ADMIN_USER=opc
+TARGET_ADMIN_PRIVATE_KEY_FILE=/path/to/target-admin-private-key
+MATILDA_PROBE_ANSIBLE_HOST=<probe-public-ip-or-hostname>
+MATILDA_PROBE_USER=opc
+MATILDA_PROBE_ADMIN_PRIVATE_KEY_FILE=/path/to/probe-admin-private-key
+MATILDA_PUBLIC_KEY_FILE=/path/to/MatildaProbeKey.pem.pub
+MATILDA_PROBE_PRIVATE_KEY_ON_PROBE=/home/opc/.ssh/MatildaProbeKey.pem
+```
+
+When `.env` exists, the scripts use those values as defaults and only prompt for missing values.
 
 `.env` is ignored by git and should not be committed.
+
+````javascript
+
+---
+
+# 3. Ensure `.gitignore` contains
+
+Path:
+
+```text
+matilda-linux-target-prep-ansible/.gitignore
+````
+
+```gitignore
+.env
+reports/*.txt
+*.retry
+```
 
 ---
 
