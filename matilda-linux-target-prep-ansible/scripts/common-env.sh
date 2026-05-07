@@ -2,14 +2,16 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENV_FILE_LOADED="false"
 
 # Optional convenience file.
-# Users do NOT need this file. If present, it pre-populates prompt values.
+# Users do NOT need this file. If present, it pre-populates runtime values.
 if [[ -f "${PROJECT_ROOT}/.env" ]]; then
   set -a
   # shellcheck disable=SC1091
   source "${PROJECT_ROOT}/.env"
   set +a
+  ENV_FILE_LOADED="true"
 fi
 
 expand_path() {
@@ -27,16 +29,15 @@ prompt_default() {
   local prompt_text="$2"
   local default_value="$3"
   local current_value="${!var_name-}"
-  local effective_default="${current_value:-$default_value}"
   local answer=""
 
-  if [[ -n "${effective_default}" ]]; then
-    read -r -p "${prompt_text} [${effective_default}]: " answer
-    printf -v "${var_name}" '%s' "${answer:-$effective_default}"
-  else
-    read -r -p "${prompt_text}: " answer
-    printf -v "${var_name}" '%s' "${answer}"
+  # If already provided by .env or environment, do not prompt.
+  if [[ -n "${current_value}" ]]; then
+    return 0
   fi
+
+  read -r -p "${prompt_text} [${default_value}]: " answer
+  printf -v "${var_name}" '%s' "${answer:-$default_value}"
 }
 
 prompt_required() {
@@ -44,16 +45,14 @@ prompt_required() {
   local prompt_text="$2"
   local answer=""
 
-  while true; do
-    local current_value="${!var_name-}"
+  # If already provided by .env or environment, do not prompt.
+  if [[ -n "${!var_name-}" ]]; then
+    return 0
+  fi
 
-    if [[ -n "${current_value}" ]]; then
-      read -r -p "${prompt_text} [${current_value}]: " answer
-      printf -v "${var_name}" '%s' "${answer:-$current_value}"
-    else
-      read -r -p "${prompt_text}: " answer
-      printf -v "${var_name}" '%s' "${answer}"
-    fi
+  while true; do
+    read -r -p "${prompt_text}: " answer
+    printf -v "${var_name}" '%s' "${answer}"
 
     if [[ -n "${!var_name}" ]]; then
       break
@@ -77,17 +76,24 @@ collect_runtime_inputs() {
   echo
   echo "Matilda Linux Target Prep - Runtime Inputs"
   echo "------------------------------------------------------------"
-  echo "You will provide values for:"
+
+  if [[ "${ENV_FILE_LOADED}" == "true" ]]; then
+    echo "Loaded optional .env file from: ${PROJECT_ROOT}/.env"
+    echo "Values present in .env will not be prompted again."
+  else
+    echo "No .env file found. You will be prompted for required values."
+    echo "Tip: To avoid prompts in future runs, copy .env.example to .env"
+    echo "and fill in your environment-specific values."
+  fi
+
+  echo
+  echo "Required runtime values:"
   echo "  1. Target VM admin SSH access"
   echo "  2. MatildaProbeVM admin SSH access"
   echo "  3. Matilda discovery public key on this machine"
   echo "  4. Matilda discovery private key path on MatildaProbeVM"
   echo
   echo "These keys may be the same in simple labs, but they are separate inputs."
-  echo
-  echo "Tip: To avoid typing these values every run, copy .env.example to .env"
-  echo "and fill in your environment-specific values. If .env exists, this script"
-  echo "will use those values as defaults and only prompt for missing ones."
   echo
 
   prompt_default TARGET_ADMIN_USER "Target admin SSH user" "opc"
