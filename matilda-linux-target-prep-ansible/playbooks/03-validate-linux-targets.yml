@@ -1,0 +1,130 @@
+---
+- name: Validate Linux targets for Matilda Discovery
+  hosts: public_targets:private_targets
+  gather_facts: false
+  become: true
+
+  pre_tasks:
+    - name: Ensure reports directory exists locally
+      ansible.builtin.file:
+        path: "{{ playbook_dir }}/../reports"
+        state: directory
+      delegate_to: localhost
+      run_once: true
+      become: false
+
+    - name: Reset validated discovery IP report
+      ansible.builtin.copy:
+        dest: "{{ playbook_dir }}/../reports/validated-discovery-ips.txt"
+        content: ""
+      delegate_to: localhost
+      run_once: true
+      become: false
+
+    - name: Reset validation summary report
+      ansible.builtin.copy:
+        dest: "{{ playbook_dir }}/../reports/validation-summary.txt"
+        content: "Host,DiscoveryIP,LocalSudo,ProbeSSH,Ready\n"
+      delegate_to: localhost
+      run_once: true
+      become: false
+
+  tasks:
+    - name: Detect ifconfig path
+      ansible.builtin.shell: "command -v ifconfig || true"
+      register: ifconfig_path
+      changed_when: false
+
+    - name: Detect ip path
+      ansible.builtin.shell: "command -v ip || true"
+      register: ip_path
+      changed_when: false
+
+    - name: Detect netstat path
+      ansible.builtin.shell: "command -v netstat || true"
+      register: netstat_path
+      changed_when: false
+
+    - name: Detect ss path
+      ansible.builtin.shell: "command -v ss || true"
+      register: ss_path
+      changed_when: false
+
+    - name: Fail if ifconfig is missing
+      ansible.builtin.assert:
+        that:
+          - ifconfig_path.stdout | length > 0
+        fail_msg: "ifconfig not found on {{ inventory_hostname }}"
+
+    - name: Validate local sudo ifconfig as matilda-svc
+      ansible.builtin.command: "sudo -n {{ ifconfig_path.stdout }}"
+      become: true
+      become_user: "{{ matilda_service_user }}"
+      register: local_ifconfig
+      changed_when: false
+
+    - name: Validate local sudo ip command if available
+      ansible.builtin.command: "sudo -n {{ ip_path.stdout }} addr show"
+      become: true
+      become_user: "{{ matilda_service_user }}"
+      when: ip_path.stdout | length > 0
+      register: local_ip
+      changed_when: false
+
+    - name: Validate local sudo netstat command if available
+      ansible.builtin.command: "sudo -n {{ netstat_path.stdout }} -tuln"
+      become: true
+      become_user: "{{ matilda_service_user }}"
+      when: netstat_path.stdout | length > 0
+      register: local_netstat
+      changed_when: false
+
+    - name: Validate local sudo ss command if netstat missing and ss available
+      ansible.builtin.command: "sudo -n {{ ss_path.stdout }} -tuln"
+      become: true
+      become_user: "{{ matilda_service_user }}"
+      when:
+        - netstat_path.stdout | length == 0
+        - ss_path.stdout | length > 0
+      register: local_ss
+      changed_when: false
+
+    - name: Validate Probe-to-target SSH and sudo
+      ansible.builtin.command: >-
+        ssh
+        -i {{ matilda_probe_admin_private_key_file }}
+        -o StrictHostKeyChecking=no
+        -o UserKnownHostsFile=/dev/null
+        {{ matilda_probe_user }}@{{ matilda_probe_ansible_host }}
+        "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i {{ matilda_probe_private_key_on_probe }} {{ matilda_service_user }}@{{ discovery_ip }} 'sudo -n {{ ifconfig_path.stdout }}'"
+      delegate_to: localhost
+      become: false
+      register: probe_validation
+      changed_when: false
+
+    - name: Mark discovery IP as validated
+      ansible.builtin.lineinfile:
+        path: "{{ playbook_dir }}/../reports/validated-discovery-ips.txt"
+        line: "{{ discovery_ip }}"
+        create: true
+      delegate_to: localhost
+      become: false
+      throttle: 1
+
+    - name: Write validation summary row
+      ansible.builtin.lineinfile:
+        path: "{{ playbook_dir }}/../reports/validation-summary.txt"
+        line: "{{ inventory_hostname }},{{ discovery_ip }},OK,OK,YES"
+        create: true
+      delegate_to: localhost
+      become: false
+      throttle: 1
+
+    - name: Show validation success
+      ansible.builtin.debug:
+        msg:
+          host: "{{ inventory_hostname }}"
+          discovery_ip: "{{ discovery_ip }}"
+          local_sudo: "OK"
+          probe_validation: "OK"
+          ready_for_matilda_discovery: true

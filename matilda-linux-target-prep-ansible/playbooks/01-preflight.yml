@@ -1,0 +1,71 @@
+---
+- name: Preflight checks for Matilda Linux target preparation
+  hosts: public_targets:private_targets
+  gather_facts: true
+  become: true
+
+  tasks:
+    - name: Show target being checked
+      ansible.builtin.debug:
+        msg: "Checking {{ inventory_hostname }} ansible_host={{ ansible_host }} discovery_ip={{ discovery_ip }}"
+
+    - name: Confirm admin sudo works
+      ansible.builtin.command: whoami
+      register: whoami_result
+      changed_when: false
+
+    - name: Assert sudo became root
+      ansible.builtin.assert:
+        that:
+          - whoami_result.stdout == "root"
+        fail_msg: "Admin sudo failed for {{ inventory_hostname }}"
+
+    - name: Confirm OS family is Linux-compatible
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['system'] == "Linux"
+        fail_msg: "Unsupported non-Linux host: {{ inventory_hostname }}"
+
+    - name: Confirm Probe has Matilda private key and report permissions
+      ansible.builtin.command: >-
+        ssh
+        -i {{ matilda_probe_admin_private_key_file }}
+        -o StrictHostKeyChecking=no
+        -o UserKnownHostsFile=/dev/null
+        {{ matilda_probe_user }}@{{ matilda_probe_ansible_host }}
+        "test -f {{ matilda_probe_private_key_on_probe }} && stat -c '%a %U %G %n' {{ matilda_probe_private_key_on_probe }}"
+      delegate_to: localhost
+      become: false
+      register: probe_key_check
+      changed_when: false
+
+    - name: Show Probe key check
+      ansible.builtin.debug:
+        var: probe_key_check.stdout
+
+    - name: Assert Probe private key permission is 600
+      ansible.builtin.assert:
+        that:
+          - probe_key_check.stdout.split()[0] == "600"
+        fail_msg: "Probe private key exists but permissions are not 600: {{ probe_key_check.stdout }}"
+
+    - name: Confirm Probe can reach target discovery_ip on port 22
+      ansible.builtin.command: >-
+        ssh
+        -i {{ matilda_probe_admin_private_key_file }}
+        -o StrictHostKeyChecking=no
+        -o UserKnownHostsFile=/dev/null
+        {{ matilda_probe_user }}@{{ matilda_probe_ansible_host }}
+        "nc -vz {{ discovery_ip }} 22"
+      delegate_to: localhost
+      become: false
+      register: probe_nc_check
+      changed_when: false
+
+    - name: Show Probe SSH port reachability stdout
+      ansible.builtin.debug:
+        var: probe_nc_check.stdout_lines
+
+    - name: Show Probe SSH port reachability stderr
+      ansible.builtin.debug:
+        var: probe_nc_check.stderr_lines

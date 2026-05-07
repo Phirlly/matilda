@@ -1,0 +1,27 @@
+all:
+  children:
+    public_targets:
+      hosts:
+        matilda-targetvm001:
+          ansible_host: 158.101.104.226
+          public_ip: 158.101.104.226
+          private_ip: 10.0.0.196
+          discovery_ip: 10.0.0.196
+
+        matilda-targetvm002:
+          ansible_host: 129.213.103.243
+          public_ip: 129.213.103.243
+          private_ip: 10.0.0.210
+          discovery_ip: 10.0.0.210
+
+    private_targets:
+      hosts:
+        matilda-targetvm003:
+          ansible_host: 10.0.1.51
+          private_ip: 10.0.1.51
+          discovery_ip: 10.0.1.51
+
+        matilda-targetvm004:
+          ansible_host: 10.0.1.243
+          private_ip: 10.0.1.243
+          discovery_ip: 10.0.1.243

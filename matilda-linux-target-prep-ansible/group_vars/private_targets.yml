@@ -1,0 +1,17 @@
+# ==============================================================================
+# Defaults for private targets reached through MatildaProbeVM
+# ==============================================================================
+#
+# These variables are supplied at runtime by scripts/common-env.sh.
+#
+# Private targets are reached through MatildaProbeVM.
+# ProxyCommand is used instead of ProxyJump so the Probe admin key can be
+# explicitly supplied and can be different from the target admin key.
+
+ansible_user: "{{ target_admin_user }}"
+ansible_ssh_private_key_file: "{{ target_admin_private_key_file }}"
+
+ansible_ssh_common_args: >-
+  -o StrictHostKeyChecking=no
+  -o UserKnownHostsFile=/dev/null
+  -o ProxyCommand="ssh -i {{ matilda_probe_admin_private_key_file }} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %h:%p {{ matilda_probe_user }}@{{ matilda_probe_ansible_host }}"
