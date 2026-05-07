@@ -32,22 +32,26 @@
         -i {{ matilda_probe_admin_private_key_file }}
         -o StrictHostKeyChecking=no
         -o UserKnownHostsFile=/dev/null
+        -o LogLevel=ERROR
         {{ matilda_probe_user }}@{{ matilda_probe_ansible_host }}
         "test -f {{ matilda_probe_private_key_on_probe }} && stat -c '%a %U %G %n' {{ matilda_probe_private_key_on_probe }}"
       delegate_to: localhost
       become: false
       register: probe_key_check
       changed_when: false
+      run_once: true
 
     - name: Show Probe key check
       ansible.builtin.debug:
         var: probe_key_check.stdout
+      run_once: true
 
     - name: Assert Probe private key permission is 600
       ansible.builtin.assert:
         that:
           - probe_key_check.stdout.split()[0] == "600"
         fail_msg: "Probe private key exists but permissions are not 600: {{ probe_key_check.stdout }}"
+      run_once: true
 
     - name: Confirm Probe can reach target discovery_ip on port 22
       ansible.builtin.command: >-
@@ -55,6 +59,7 @@
         -i {{ matilda_probe_admin_private_key_file }}
         -o StrictHostKeyChecking=no
         -o UserKnownHostsFile=/dev/null
+        -o LogLevel=ERROR
         {{ matilda_probe_user }}@{{ matilda_probe_ansible_host }}
         "nc -vz {{ discovery_ip }} 22"
       delegate_to: localhost

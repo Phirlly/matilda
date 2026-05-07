@@ -14,4 +14,5 @@ ansible_ssh_private_key_file: "{{ target_admin_private_key_file }}"
 ansible_ssh_common_args: >-
   -o StrictHostKeyChecking=no
   -o UserKnownHostsFile=/dev/null
-  -o ProxyCommand="ssh -i {{ matilda_probe_admin_private_key_file }} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %h:%p {{ matilda_probe_user }}@{{ matilda_probe_ansible_host }}"
+  -o LogLevel=ERROR
+  -o ProxyCommand="ssh -i {{ matilda_probe_admin_private_key_file }} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -W %h:%p {{ matilda_probe_user }}@{{ matilda_probe_ansible_host }}"

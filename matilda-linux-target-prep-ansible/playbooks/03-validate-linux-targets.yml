@@ -95,8 +95,9 @@
         -i {{ matilda_probe_admin_private_key_file }}
         -o StrictHostKeyChecking=no
         -o UserKnownHostsFile=/dev/null
+        -o LogLevel=ERROR
         {{ matilda_probe_user }}@{{ matilda_probe_ansible_host }}
-        "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i {{ matilda_probe_private_key_on_probe }} {{ matilda_service_user }}@{{ discovery_ip }} 'sudo -n {{ ifconfig_path.stdout }}'"
+        "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -i {{ matilda_probe_private_key_on_probe }} {{ matilda_service_user }}@{{ discovery_ip }} 'sudo -n {{ ifconfig_path.stdout }}'"
       delegate_to: localhost
       become: false
       register: probe_validation
