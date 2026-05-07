@@ -20,127 +20,117 @@ Windows target setup is not included.
 
 ---
 
-## Where to run commands
+## Required user-edited files
 
-Run all commands from the root of this project folder:
+Most users only edit:
 
-```bash
-cd matilda-linux-target-prep-ansible
+```text
+inventory.yml
 ```
 
-If you placed the folder somewhere else, `cd` into that location first:
+This file contains the target VM list and discovery IPs.
 
-```bash
-cd /path/to/matilda-linux-target-prep-ansible
+Users must also have a Matilda discovery public key file available somewhere on their local machine. The path is provided at runtime.
+
+Example:
+
+```text
+/path/to/MatildaProbeKey.pem.pub
 ```
 
 ---
 
-## What you must provide
+## Runtime inputs
 
-Each user must provide their own values for:
+When you run a script, you will be prompted for:
 
-- MatildaProbeVM public IP or reachable hostname
-- MatildaProbeVM SSH username
-- local admin SSH private key path for `opc` or equivalent admin user
-- Matilda discovery public key file
-- Matilda discovery private key path on MatildaProbeVM
-- target VM public/private IPs
-- target VM admin username
+```text
+Target admin SSH user
+Target admin private key path
+MatildaProbeVM SSH host/IP
+MatildaProbeVM SSH user
+MatildaProbeVM admin private key path
+Matilda discovery public key path on this machine
+Matilda discovery private key path on MatildaProbeVM
+```
 
-Do not assume the sample IPs or paths match your environment.
+These are intentionally runtime prompts so users do not need to edit Ansible variable files.
 
 ---
 
-## Required keys
+## Key types explained
 
-### 1. Admin SSH private key
+### Target admin private key
 
-This is the key used by Ansible to connect to target VMs as the admin user, usually `opc` in OCI.
+Used by Ansible to SSH into target VMs as the admin user, usually `opc` in OCI.
 
-Example placeholder:
-
-```text
-~/.ssh/<your-oci-admin-private-key>
-```
-
-This value is configured in `inventory.yml` per target:
-
-```yaml
-ansible_ssh_private_key_file: ~/.ssh/<your-oci-admin-private-key>
-```
-
-### 2. Matilda discovery public key
-
-This public key is installed on every target VM for the `matilda-svc` account.
-
-Place it here:
+Example:
 
 ```text
-files/MatildaProbeKey.pem.pub
+~/.ssh/<target-admin-private-key>
 ```
 
-### 3. Matilda discovery private key
+### Probe admin private key
 
-This private key is used by MatildaProbeVM to SSH to targets as `matilda-svc`.
+Used by Ansible to SSH into MatildaProbeVM.
 
-It must already exist on MatildaProbeVM.
-
-Example placeholder:
+Example:
 
 ```text
-/home/<probe-user>/.ssh/MatildaProbeKey.pem
+~/.ssh/<probe-admin-private-key>
 ```
 
-It must have permission:
+This may be the same file as the target admin key in simple labs, but it is a separate input.
+
+### Matilda discovery public key
+
+Installed on every target VM for the `matilda-svc` account.
+
+Example:
+
+```text
+~/.ssh/MatildaProbeKey.pem.pub
+```
+
+### Matilda discovery private key on Probe
+
+Already stored on MatildaProbeVM and used by the Probe to SSH into targets as `matilda-svc`.
+
+Example:
+
+```text
+/home/opc/.ssh/MatildaProbeKey.pem
+```
+
+Expected permission on MatildaProbeVM:
 
 ```text
 600
-```
-
-Example validation on MatildaProbeVM:
-
-```bash
-ls -l /home/<probe-user>/.ssh/MatildaProbeKey.pem
-```
-
-Expected:
-
-```text
--rw-------
 ```
 
 Do not copy the Matilda discovery private key to target VMs.
 
 ---
 
-## Configure global Probe settings
+## Optional `.env` file
 
-Edit:
+Users do not need `.env`.
+
+If you do not want to type prompts every time, copy:
 
 ```text
-group_vars/all.yml
+.env.example
 ```
 
-Set these values for your environment:
+to:
 
-```yaml
-matilda_probe_ansible_host: <probe-public-ip-or-reachable-hostname>
-matilda_probe_user: <probe-ssh-user>
-matilda_probe_admin_private_key_file: <local-private-key-used-to-ssh-to-probe>
-matilda_probe_private_key_on_probe: <path-to-matilda-discovery-private-key-on-probe>
+```text
+.env
 ```
 
-Example shape only:
+and fill in your environment values.
 
-```yaml
-matilda_probe_ansible_host: <probe-public-ip>
-matilda_probe_user: opc
-matilda_probe_admin_private_key_file: ~/.ssh/<your-oci-admin-private-key>
-matilda_probe_private_key_on_probe: /home/opc/.ssh/MatildaProbeKey.pem
-```
-
-Replace placeholders with your actual values.
+`.env` is ignored by git and should not be committed.
 
 ---
 
@@ -175,8 +165,6 @@ public_targets:
       public_ip: <target-public-ip>
       private_ip: <target-private-ip>
       discovery_ip: <target-private-or-public-ip-used-by-probe>
-      ansible_user: opc
-      ansible_ssh_private_key_file: ~/.ssh/<your-oci-admin-private-key>
 ```
 
 Recommended:
@@ -198,15 +186,15 @@ private_targets:
       ansible_host: <target-private-ip>
       private_ip: <target-private-ip>
       discovery_ip: <target-private-ip>
-      ansible_user: opc
-      ansible_ssh_private_key_file: ~/.ssh/<your-oci-admin-private-key>
-      ansible_ssh_common_args: >-
-        -o ProxyJump=<probe-user>@<probe-public-ip-or-hostname>
-        -o StrictHostKeyChecking=no
-        -o UserKnownHostsFile=/dev/null
 ```
 
-Replace all placeholders.
+The SSH jump configuration is handled automatically by:
+
+```text
+group_vars/private_targets.yml
+```
+
+using the Probe values provided at runtime.
 
 ---
 
@@ -308,7 +296,13 @@ Validated discovery IPs are written to:
 reports/validated-discovery-ips.txt
 ```
 
-Only use IPs from this file in Matilda Network Discovery.
+Validation summary is written to:
+
+```text
+reports/validation-summary.txt
+```
+
+Only use IPs from `validated-discovery-ips.txt` in Matilda Network Discovery.
 
 ---
 
@@ -338,7 +332,7 @@ Promote over-utilized resources: Yes
 ## Security notes
 
 - Do not copy private keys to target VMs.
-- Only the Matilda public key is installed on targets.
+- Only the Matilda public key is installed on target VMs.
 - The Matilda discovery private key is used only from MatildaProbeVM.
 - The sudoers file is restricted to Matilda discovery commands.
 - Review OCI security lists / NSGs before using public IPs.
@@ -353,9 +347,18 @@ Promote over-utilized resources: Yes
 Check:
 
 - `ansible_host`
-- `ansible_user`
-- `ansible_ssh_private_key_file`
+- target admin SSH user entered at runtime
+- target admin private key path entered at runtime
 - OCI security list / NSG for SSH
+
+### Probe SSH fails
+
+Check:
+
+- Probe host/IP entered at runtime
+- Probe SSH user entered at runtime
+- Probe admin private key path entered at runtime
+- OCI security list / NSG for SSH to Probe
 
 ### Probe cannot reach target on port 22
 
@@ -370,10 +373,11 @@ Check:
 
 Check:
 
-- public key installed in `/home/matilda-svc/.ssh/authorized_keys`
+- Matilda public key installed in `/home/matilda-svc/.ssh/authorized_keys`
 - ownership is `matilda-svc:matilda-svc`
 - `.ssh` is `700`
 - `authorized_keys` is `600`
+- Matilda private key exists on Probe
 
 ### Sudo validation fails
 
