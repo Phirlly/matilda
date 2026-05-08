@@ -1,18 +1,31 @@
 # Matilda Linux Target Prep Ansible
 
-Prepare Linux / Oracle Linux target VMs for Matilda Probe-based discovery.
+Prepare Linux targets for Matilda Probe-based discovery.
 
-This automation configures each target VM with:
+This project automates the Linux target preparation steps documented for Matilda Probe-based discovery:
 
-- `matilda-svc` service account
-- SSH public-key authentication
-- Matilda sudoers allow-list
-- local sudo validation
-- Probe-to-target SSH/sudo validation
+- create the `matilda-svc` service account
+- install SSH public-key authentication for `matilda-svc`
+- configure the Matilda sudoers allow-list
+- validate sudoers syntax
+- validate local sudo as `matilda-svc`
+- validate Probe-to-target SSH/sudo
 
-This project is for Linux / Oracle Linux / RHEL-like targets only.
+This project currently supports Linux targets, with implementation and testing focused on Oracle Linux / RHEL-like systems.
 
-Windows target setup is not included.
+Windows, AIX, Solaris, and HP-UX setup are not included in the current implementation.
+
+---
+
+## Important security note
+
+Matilda discovery is agentless and read-only.
+
+This preparation automation is different: it modifies target VMs during setup by creating a service account, installing an SSH public key, and writing a sudoers file.
+
+Do not copy the Matilda discovery private key to target VMs.
+
+Only the Matilda discovery public key is installed on target VMs.
 
 ---
 
@@ -20,18 +33,31 @@ Windows target setup is not included.
 
 You need:
 
-- Ansible installed on the machine where you run this project
+- Ansible installed on the machine where you run this project, including the `ansible.posix` collection
 - SSH access from this machine to MatildaProbeVM
 - SSH access from this machine to any targets listed under `public_targets`
-- Network access from MatildaProbeVM to target discovery IPs on TCP/22
+- target admin user with non-interactive sudo access
+- network access from MatildaProbeVM to each target `discovery_ip` on TCP/22
 - Matilda discovery public key on this machine
-- Matching Matilda discovery private key already available on MatildaProbeVM
+- matching Matilda discovery private key already available on MatildaProbeVM
+- Matilda discovery private key on MatildaProbeVM with permission `600`
+- `nc` or `ncat` available on MatildaProbeVM for TCP/22 reachability checks
 
-Do not copy the Matilda discovery private key to target VMs.
+For Oracle Linux / RHEL Probe hosts, `nc` is commonly provided by `nmap-ncat`.
+
+This project uses `ansible.posix.authorized_key` to manage the `matilda-svc` SSH public key. If your Ansible installation does not include the `ansible.posix` collection, install it before running setup:
+
+```bash
+ansible-galaxy collection install ansible.posix
+```
+
+The setup wrapper checks for this dependency before modifying targets and returns a user-friendly error if it is missing.
+
+The validation workflow prefers `ifconfig` because the Matilda prerequisite PDF uses `ifconfig` in the sample validation command. If `ifconfig` is not installed, validation uses the documented `ip addr show` command as a fallback and records that fallback in the validation summary.
 
 ---
 
-## What users need to edit
+## What users usually edit
 
 Most users only edit:
 
@@ -41,15 +67,36 @@ inventory.yml
 
 This file contains the target VM list and the IPs Matilda should discover.
 
-Use `inventory.example.yml` for examples.
+Use `inventory.example.yml` as the safe example.
+
+Do not distribute an `inventory.yml` that contains real customer or lab IP addresses.
+
+`inventory.yml` is local-only and ignored by git.
 
 ---
 
-## Inventory examples
+## Inventory model
 
-### Public target
+Each target uses two important addresses:
 
-Use this when Ansible can connect directly to the target.
+```text
+ansible_host = address Ansible uses to configure the target
+discovery_ip = address MatildaProbeVM uses to discover and validate the target
+```
+
+Use private IPs for `discovery_ip` when MatildaProbeVM can reach them.
+
+Use public IPs only if:
+
+- you intentionally want Matilda to discover public IPs
+- MatildaProbeVM can reach those public IPs on TCP/22
+- security rules allow it safely
+
+---
+
+## Public target example
+
+Use `public_targets` when Ansible can connect directly from your machine to the target.
 
 ```yaml
 all:
@@ -63,9 +110,11 @@ all:
           discovery_ip: <target-private-or-public-ip-used-by-probe>
 ```
 
-### Private-only target
+---
 
-Use this when Ansible must connect to the target through MatildaProbeVM.
+## Private target example
+
+Use `private_targets` when Ansible must connect to the target through MatildaProbeVM.
 
 ```yaml
 all:
@@ -78,13 +127,15 @@ all:
           discovery_ip: <target-private-ip>
 ```
 
+Private targets are reached through MatildaProbeVM using the SSH proxy configuration in `group_vars/private_targets.yml`.
+
 ---
 
 ## Runtime values
 
 When you run a script, it asks for environment-specific values unless they are already provided in `.env`.
 
-Required values:
+Required runtime values:
 
 ```text
 Target admin SSH user
@@ -184,24 +235,6 @@ MATILDA_PROBE_PRIVATE_KEY_ON_PROBE=/home/opc/.ssh/MatildaProbeKey.pem
 
 ---
 
-## Public vs private discovery IP
-
-Use private IPs for `discovery_ip` when MatildaProbeVM can reach them.
-
-Recommended:
-
-```text
-discovery_ip = target private IP
-```
-
-Use public IPs only if:
-
-- you intentionally want Matilda to discover public IPs
-- MatildaProbeVM can reach those public IPs on TCP/22
-- security rules allow it safely
-
----
-
 ## Run order
 
 Run from the project root:
@@ -222,15 +255,17 @@ Do not skip steps.
 ./scripts/run-preflight.sh
 ```
 
-Checks:
+Preflight checks:
 
 - admin SSH works
 - admin sudo works
 - targets are Linux
 - MatildaProbeVM has the discovery private key
-- MatildaProbeVM can reach each `discovery_ip` on port 22
+- MatildaProbeVM discovery private key permission is `600`
+- MatildaProbeVM has `nc` or `ncat`
+- MatildaProbeVM can reach each `discovery_ip` on TCP/22
 
-Preflight does not modify target VMs.
+Preflight is intended to be read-only and does not modify target VMs.
 
 ---
 
@@ -240,12 +275,16 @@ Preflight does not modify target VMs.
 ./scripts/run-setup.sh
 ```
 
-Configures each target VM:
+Before setup runs, the wrapper checks that the local Ansible environment can resolve `ansible.posix.authorized_key`. If it cannot, setup stops before modifying targets and prints a clear fix.
 
-- creates `matilda-svc`
-- installs the Matilda public key
-- writes `/etc/sudoers.d/matilda-discovery`
-- validates sudoers syntax
+Setup configures each target VM by:
+
+- creating the `matilda-svc` group
+- creating the `matilda-svc` user
+- creating `/home/matilda-svc/.ssh`
+- installing the Matilda discovery public key
+- writing `/etc/sudoers.d/matilda-discovery`
+- validating sudoers syntax with `visudo`
 
 Setup modifies target VMs and asks for confirmation before running.
 
@@ -257,11 +296,16 @@ Setup modifies target VMs and asks for confirmation before running.
 ./scripts/run-validate.sh
 ```
 
-Validates:
+Validation checks:
 
 - local sudo works as `matilda-svc`
+- an unapproved sudo command is denied
 - Probe can SSH to each target as `matilda-svc`
 - Probe can run a sudo discovery command remotely
+
+For the main network validation command, the playbook prefers `ifconfig`. If `ifconfig` is missing, it uses `ip addr show` as a documented fallback and records this in the validation summary.
+
+Only targets that pass validation should be used for Matilda Network Discovery.
 
 ---
 
@@ -279,7 +323,25 @@ Validation summary:
 reports/validation-summary.txt
 ```
 
-Only use IPs from `validated-discovery-ips.txt` in Matilda Network Discovery.
+The validation summary includes:
+
+```text
+Host
+DiscoveryIP
+Command
+FallbackUsed
+LocalSudo
+DeniedCommand
+ProbeSSH
+Ready
+Remediation
+```
+
+Use only IPs from `reports/validated-discovery-ips.txt` in Matilda Network Discovery.
+
+Failed targets are not added to `reports/validated-discovery-ips.txt`.
+
+Report `.txt` files are ignored by git.
 
 ---
 
@@ -292,12 +354,14 @@ Typical values:
 ```text
 Discovery Mode: Network Discovery
 Network Address: IPs from reports/validated-discovery-ips.txt
-Credential Group: <your Linux PEM credential group>
+Credential Group: <your Linux PEM credential group for matilda-svc>
 Probe: <your registered Matilda Probe>
 Execution Mode: sudo
-SNMP: No
-Common login: Yes
+Common login: Yes, when all listed targets use the same credential
+SNMP: Based on customer requirements
 ```
+
+Matilda Network Discovery requires a valid Credential Group and a selected Probe. For SaaS environments, use the registered Probe instead of the default Local_Probe.
 
 Other UI options may vary by project or customer requirements.
 
@@ -306,9 +370,12 @@ Other UI options may vary by project or customer requirements.
 ## Security notes
 
 - Do not copy private keys to target VMs.
-- Only the Matilda public key is installed on target VMs.
+- Only the Matilda discovery public key is installed on target VMs.
 - The Matilda discovery private key is used only from MatildaProbeVM.
-- The sudoers file is restricted to Matilda discovery commands.
+- The `matilda-svc` account is dedicated to Matilda discovery.
+- The sudoers file is restricted to Matilda-documented discovery commands.
+- The sudoers file uses `!requiretty` for non-interactive automation.
+- The sudoers file uses a restricted `secure_path`.
 - Prefer private IPs for discovery when possible.
 - Review security lists, NSGs, route tables, and firewalls before using public IPs.
 
@@ -325,6 +392,24 @@ Check:
 - target admin private key path
 - security list / NSG for SSH
 - target OS firewall
+
+### Admin sudo fails
+
+The target admin user must be able to run sudo non-interactively because the playbooks use Ansible privilege escalation.
+
+Check the target admin account sudo configuration before rerunning preflight.
+
+### Ansible cannot resolve `ansible.posix.authorized_key`
+
+The setup playbook uses `ansible.posix.authorized_key` to manage the `matilda-svc` SSH public key.
+
+If Ansible cannot resolve this module, the `ansible.posix` collection is missing from the Ansible environment where you run this project.
+
+Install it, then rerun setup:
+
+```bash
+ansible-galaxy collection install ansible.posix
+```
 
 ### Probe SSH fails
 
@@ -343,6 +428,13 @@ Check:
 - route tables
 - security lists / NSGs
 - target OS firewall
+- whether MatildaProbeVM can route to the target network
+
+### Probe port check fails because `nc` / `ncat` is missing
+
+The preflight check uses `nc` or `ncat` on MatildaProbeVM to test TCP/22 reachability.
+
+For Oracle Linux / RHEL Probe hosts, install or verify the package that provides `nc` / `ncat`, commonly `nmap-ncat`.
 
 ### SSH as `matilda-svc` fails
 
@@ -355,6 +447,8 @@ authorized_keys permissions = 600
 owner = matilda-svc:matilda-svc
 ```
 
+Also confirm the public key installed on the target matches the private key on MatildaProbeVM.
+
 ### Sudo validation fails
 
 Check on the target VM:
@@ -362,3 +456,53 @@ Check on the target VM:
 ```bash
 visudo -cf /etc/sudoers.d/matilda-discovery
 ```
+
+Also confirm the sudoers file contains the Matilda discovery command allow-list and the `matilda-svc` account is included through `MATILDA_USER`.
+
+### Unapproved sudo command is not denied
+
+Validation expects an unapproved sudo command such as `/bin/rm` to be denied.
+
+If this check fails, review the target sudo configuration and confirm `matilda-svc` is restricted to the Matilda discovery allow-list.
+
+### `ifconfig` is missing
+
+The validation playbook prefers `ifconfig` because the Matilda prerequisite PDF uses `sudo /sbin/ifconfig` in the sample validation command.
+
+If `ifconfig` is missing, validation uses `ip addr show` as a documented fallback.
+
+The validation summary records this as:
+
+```text
+FallbackUsed=YES
+```
+
+If strict parity with the PDF sample command is required, install the package that provides `ifconfig`, commonly `net-tools` on minimal Oracle Linux / RHEL images.
+
+---
+
+## Current scope
+
+Included now:
+
+```text
+Linux target preparation
+Oracle Linux / RHEL-like target workflow
+Public targets reachable directly from the operator machine
+Private targets reachable through MatildaProbeVM
+Probe-to-target SSH/sudo validation
+```
+
+Not included now:
+
+```text
+Windows target setup
+AIX target setup
+Solaris target setup
+HP-UX target setup
+Database credential onboarding
+Matilda UI automation
+Automatic discovery task launch
+```
+
+Future support for UNIX and Windows should use separate OS-specific workflows instead of being added directly into the Linux playbooks.

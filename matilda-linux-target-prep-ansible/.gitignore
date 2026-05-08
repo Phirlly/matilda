@@ -1,3 +1,4 @@
 .env
+inventory.yml
 reports/*.txt
 *.retry
