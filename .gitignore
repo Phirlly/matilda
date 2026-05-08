@@ -1,8 +1,12 @@
 /.DS_Store
-/Presentations
-/assessments
-/docs
+
 .env
 reports/*.txt
 *.retry
+
+# Folder and files to ignore
+matilda-linux-target-prep-ansible/.DS_Store
 matilda-linux-target-prep-ansible/PLAN.md
+matilda-linux-target-prep-ansible/docs
+/presentations
+/assessments
