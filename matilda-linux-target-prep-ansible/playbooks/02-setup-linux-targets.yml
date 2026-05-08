@@ -37,49 +37,42 @@
         group: "{{ matilda_service_user }}"
         mode: "0700"
 
+    - name: Ensure Ansible remote tmp directory exists for matilda-svc
+      ansible.builtin.file:
+        path: "{{ matilda_service_home }}/.ansible/tmp"
+        state: directory
+        owner: "{{ matilda_service_user }}"
+        group: "{{ matilda_service_user }}"
+        mode: "0700"
+
     - name: Read Matilda public key from runtime-provided path
       ansible.builtin.set_fact:
         matilda_public_key: "{{ lookup('file', matilda_public_key_file) }}"
 
-    - name: Ensure authorized_keys exists
+    - name: Install Matilda discovery public key without duplicates
+      ansible.posix.authorized_key:
+        user: "{{ matilda_service_user }}"
+        key: "{{ matilda_public_key }}"
+        path: "{{ matilda_service_home }}/.ssh/authorized_keys"
+        manage_dir: false
+        state: present
+
+    - name: Ensure authorized_keys ownership and permissions
       ansible.builtin.file:
         path: "{{ matilda_service_home }}/.ssh/authorized_keys"
-        state: touch
+        state: file
         owner: "{{ matilda_service_user }}"
         group: "{{ matilda_service_user }}"
         mode: "0600"
 
-    - name: Install Matilda discovery public key without duplicates
-      ansible.builtin.lineinfile:
-        path: "{{ matilda_service_home }}/.ssh/authorized_keys"
-        line: "{{ matilda_public_key }}"
-        state: present
-        owner: "{{ matilda_service_user }}"
-        group: "{{ matilda_service_user }}"
-        mode: "0600"
-
-    - name: Check if Matilda sudoers file already exists
-      ansible.builtin.stat:
-        path: "{{ matilda_sudoers_file }}"
-      register: matilda_sudoers_stat
-
-    - name: Backup existing Matilda sudoers file if present
-      ansible.builtin.copy:
-        src: "{{ matilda_sudoers_file }}"
-        dest: "{{ matilda_sudoers_file }}.bak"
-        remote_src: true
-        owner: root
-        group: root
-        mode: "0440"
-      when: matilda_sudoers_stat.stat.exists
-
-    - name: Install Matilda sudoers file with syntax validation
+    - name: Install Matilda sudoers file with syntax validation and backup
       ansible.builtin.template:
         src: ../templates/matilda-discovery-sudoers.j2
         dest: "{{ matilda_sudoers_file }}"
         owner: root
         group: root
         mode: "0440"
+        backup: true
         validate: /usr/sbin/visudo -cf %s
 
     - name: Validate installed sudoers file

@@ -53,6 +53,44 @@
         fail_msg: "Probe private key exists but permissions are not 600: {{ probe_key_check.stdout }}"
       run_once: true
 
+    - name: Detect Probe TCP check tool
+      ansible.builtin.command: >-
+        ssh
+        -i {{ matilda_probe_admin_private_key_file }}
+        -o StrictHostKeyChecking=no
+        -o UserKnownHostsFile=/dev/null
+        -o LogLevel=ERROR
+        {{ matilda_probe_user }}@{{ matilda_probe_ansible_host }}
+        "if command -v nc >/dev/null 2>&1; then printf 'nc:%s' \"$(command -v nc)\"; elif command -v ncat >/dev/null 2>&1; then printf 'ncat:%s' \"$(command -v ncat)\"; else exit 127; fi"
+      delegate_to: localhost
+      become: false
+      register: probe_tcp_tool_check
+      changed_when: false
+      failed_when: false
+      run_once: true
+
+    - name: Assert Probe has nc or ncat for TCP reachability checks
+      ansible.builtin.assert:
+        that:
+          - probe_tcp_tool_check.rc == 0
+          - probe_tcp_tool_check.stdout | trim | length > 0
+          - (probe_tcp_tool_check.stdout | trim).startswith('nc:') or (probe_tcp_tool_check.stdout | trim).startswith('ncat:')
+        fail_msg: >-
+          MatildaProbeVM does not have nc or ncat available for TCP/22 reachability checks.
+          Install nmap-ncat on Oracle Linux / RHEL Probe hosts, then rerun preflight.
+      run_once: true
+
+    - name: Store Probe TCP check tool details
+      ansible.builtin.set_fact:
+        probe_tcp_tool_name: "{{ (probe_tcp_tool_check.stdout | trim).split(':', 1)[0] }}"
+        probe_tcp_tool_path: "{{ (probe_tcp_tool_check.stdout | trim).split(':', 1)[1] }}"
+      run_once: true
+
+    - name: Show Probe TCP check tool
+      ansible.builtin.debug:
+        msg: "Using Probe TCP check tool: {{ probe_tcp_tool_name }} at {{ probe_tcp_tool_path }}"
+      run_once: true
+
     - name: Confirm Probe can reach target discovery_ip on port 22
       ansible.builtin.command: >-
         ssh
@@ -61,16 +99,16 @@
         -o UserKnownHostsFile=/dev/null
         -o LogLevel=ERROR
         {{ matilda_probe_user }}@{{ matilda_probe_ansible_host }}
-        "nc -vz {{ discovery_ip }} 22"
+        "if [ '{{ probe_tcp_tool_name }}' = 'nc' ]; then {{ probe_tcp_tool_path }} -vz {{ discovery_ip }} 22; else {{ probe_tcp_tool_path }} -v -w 5 {{ discovery_ip }} 22; fi"
       delegate_to: localhost
       become: false
-      register: probe_nc_check
+      register: probe_tcp_22_check
       changed_when: false
 
     - name: Show Probe SSH port reachability stdout
       ansible.builtin.debug:
-        var: probe_nc_check.stdout_lines
+        var: probe_tcp_22_check.stdout_lines
 
     - name: Show Probe SSH port reachability stderr
       ansible.builtin.debug:
-        var: probe_nc_check.stderr_lines
+        var: probe_tcp_22_check.stderr_lines
