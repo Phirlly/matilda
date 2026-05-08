@@ -1,4 +1,3 @@
-```markdown
 # Matilda Linux Target Prep Ansible
 
 Prepare Linux / Oracle Linux target VMs for Matilda Probe-based discovery.
@@ -17,6 +16,21 @@ Windows target setup is not included.
 
 ---
 
+## What you need before running
+
+You need:
+
+- Ansible installed on the machine where you run this project
+- SSH access from this machine to MatildaProbeVM
+- SSH access from this machine to any targets listed under `public_targets`
+- Network access from MatildaProbeVM to target discovery IPs on TCP/22
+- Matilda discovery public key on this machine
+- Matching Matilda discovery private key already available on MatildaProbeVM
+
+Do not copy the Matilda discovery private key to target VMs.
+
+---
+
 ## What users need to edit
 
 Most users only edit:
@@ -27,30 +41,42 @@ inventory.yml
 
 This file contains the target VM list and the IPs Matilda should discover.
 
-Example public target:
+Use `inventory.example.yml` for examples.
+
+---
+
+## Inventory examples
+
+### Public target
+
+Use this when Ansible can connect directly to the target.
 
 ```yaml
-public_targets:
-  hosts:
-    my-public-target:
-      ansible_host: <target-public-ip>
-      public_ip: <target-public-ip>
-      private_ip: <target-private-ip>
-      discovery_ip: <target-private-or-public-ip-used-by-probe>
+all:
+  children:
+    public_targets:
+      hosts:
+        my-public-target:
+          ansible_host: <target-public-ip>
+          public_ip: <target-public-ip>
+          private_ip: <target-private-ip>
+          discovery_ip: <target-private-or-public-ip-used-by-probe>
 ```
 
-Example private-only target:
+### Private-only target
+
+Use this when Ansible must connect to the target through MatildaProbeVM.
 
 ```yaml
-private_targets:
-  hosts:
-    my-private-target:
-      ansible_host: <target-private-ip>
-      private_ip: <target-private-ip>
-      discovery_ip: <target-private-ip>
+all:
+  children:
+    private_targets:
+      hosts:
+        my-private-target:
+          ansible_host: <target-private-ip>
+          private_ip: <target-private-ip>
+          discovery_ip: <target-private-ip>
 ```
-
-Use `inventory.example.yml` for more examples.
 
 ---
 
@@ -259,7 +285,9 @@ Only use IPs from `validated-discovery-ips.txt` in Matilda Network Discovery.
 
 ## Matilda UI values after validation
 
-In Matilda:
+In Matilda, use the validated IPs from this project when creating or running Network Discovery.
+
+Typical values:
 
 ```text
 Discovery Mode: Network Discovery
@@ -269,9 +297,9 @@ Probe: <your registered Matilda Probe>
 Execution Mode: sudo
 SNMP: No
 Common login: Yes
-Promote to discovery after precheck: Yes
-Promote over-utilized resources: Yes
 ```
+
+Other UI options may vary by project or customer requirements.
 
 ---
 
@@ -282,7 +310,7 @@ Promote over-utilized resources: Yes
 - The Matilda discovery private key is used only from MatildaProbeVM.
 - The sudoers file is restricted to Matilda discovery commands.
 - Prefer private IPs for discovery when possible.
-- Review security lists / NSGs before using public IPs.
+- Review security lists, NSGs, route tables, and firewalls before using public IPs.
 
 ---
 
@@ -296,6 +324,7 @@ Check:
 - target admin SSH user
 - target admin private key path
 - security list / NSG for SSH
+- target OS firewall
 
 ### Probe SSH fails
 
