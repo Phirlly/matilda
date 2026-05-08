@@ -237,7 +237,15 @@ MATILDA_PROBE_PRIVATE_KEY_ON_PROBE=/home/opc/.ssh/MatildaProbeKey.pem
 
 ## Run order
 
-Run from the project root:
+Preferred workflow:
+
+```bash
+./matilda-prep preflight
+./matilda-prep setup
+./matilda-prep validate
+```
+
+Direct script workflow:
 
 ```bash
 ./scripts/run-preflight.sh
@@ -247,9 +255,25 @@ Run from the project root:
 
 Do not skip steps.
 
+For a one-shot lab workflow, you can run:
+
+```bash
+./matilda-prep run
+```
+
+The one-shot workflow still runs setup confirmation before modifying target VMs.
+
 ---
 
 ## Step 1: Preflight
+
+Preferred:
+
+```bash
+./matilda-prep preflight
+```
+
+Direct script:
 
 ```bash
 ./scripts/run-preflight.sh
@@ -271,6 +295,20 @@ Preflight is intended to be read-only and does not modify target VMs.
 
 ## Step 2: Setup
 
+Preferred:
+
+```bash
+./matilda-prep setup
+```
+
+Alias:
+
+```bash
+./matilda-prep apply
+```
+
+Direct script:
+
 ```bash
 ./scripts/run-setup.sh
 ```
@@ -282,6 +320,7 @@ Setup configures each target VM by:
 - creating the `matilda-svc` group
 - creating the `matilda-svc` user
 - creating `/home/matilda-svc/.ssh`
+- creating `/home/matilda-svc/.ansible/tmp`
 - installing the Matilda discovery public key
 - writing `/etc/sudoers.d/matilda-discovery`
 - validating sudoers syntax with `visudo`
@@ -291,6 +330,14 @@ Setup modifies target VMs and asks for confirmation before running.
 ---
 
 ## Step 3: Validate
+
+Preferred:
+
+```bash
+./matilda-prep validate
+```
+
+Direct script:
 
 ```bash
 ./scripts/run-validate.sh
@@ -306,6 +353,27 @@ Validation checks:
 For the main network validation command, the playbook prefers `ifconfig`. If `ifconfig` is missing, it uses `ip addr show` as a documented fallback and records this in the validation summary.
 
 Only targets that pass validation should be used for Matilda Network Discovery.
+
+---
+
+## Wrapper help
+
+Show available wrapper commands:
+
+```bash
+./matilda-prep help
+```
+
+Available commands:
+
+```text
+help
+preflight
+setup
+apply
+validate
+run
+```
 
 ---
 
@@ -382,6 +450,18 @@ Other UI options may vary by project or customer requirements.
 ---
 
 ## Troubleshooting
+
+### `./matilda-prep` returns permission denied
+
+The wrapper must be executable.
+
+Run this from the project root:
+
+```bash
+chmod +x matilda-prep
+```
+
+Then retry the command.
 
 ### Admin SSH fails
 
