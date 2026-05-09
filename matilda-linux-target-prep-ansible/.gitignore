@@ -1,4 +1,12 @@
+**/.DS_Store
 .env
+docs/matilda-docs-cache/
+inventory.v1.yml
 inventory.yml
-reports/*.txt
+reports/**
+!reports/
+!reports/.gitkeep
+.bin/
+.ansible/
+.gocache/
 *.retry

@@ -1,0 +1,4 @@
+---
+- name: Cloud API readiness scaffold
+  ansible.builtin.debug:
+    msg: "Cloud readiness modules will validate provider API credentials and permissions."

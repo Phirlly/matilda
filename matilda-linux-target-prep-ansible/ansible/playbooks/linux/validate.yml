@@ -1,0 +1,39 @@
+---
+- name: Validate Linux targets for Matilda Discovery
+  hosts: public_targets:private_targets
+  gather_facts: false
+  become: true
+
+  vars:
+    matilda_report_dir: "{{ playbook_dir }}/../../../reports"
+
+  pre_tasks:
+    - name: Ensure reports directory exists locally
+      ansible.builtin.file:
+        path: "{{ matilda_report_dir }}"
+        state: directory
+      delegate_to: localhost
+      run_once: true
+      become: false
+
+    - name: Reset validated discovery IP report
+      ansible.builtin.copy:
+        dest: "{{ matilda_report_dir }}/validated-discovery-ips.txt"
+        content: ""
+      delegate_to: localhost
+      run_once: true
+      become: false
+
+    - name: Reset validation summary report
+      ansible.builtin.copy:
+        dest: "{{ matilda_report_dir }}/validation-summary.txt"
+        content: "Host,DiscoveryIP,Command,FallbackUsed,LocalSudo,DeniedCommand,ProbeSSH,Ready,Remediation\n"
+      delegate_to: localhost
+      run_once: true
+      become: false
+
+  tasks:
+    - name: Validate Linux target readiness
+      ansible.builtin.import_role:
+        name: matilda_linux_target
+        tasks_from: validate

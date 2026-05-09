@@ -1,11 +1,8 @@
-# ==============================================================================
 # Stable Matilda Linux target defaults
-# ==============================================================================
-#
 # Do not put environment-specific IPs, usernames, or key paths here.
 # Runtime values such as target admin user/key, Probe host/key, and Matilda
-# public/private key paths are collected by scripts/common-env.sh and passed
-# to Ansible with --extra-vars.
+# public/private key paths are collected by the Go CLI and passed to Ansible
+# with --extra-vars.
 
 # Service account created on every Linux target for Matilda Discovery.
 matilda_service_user: matilda-svc
@@ -15,6 +12,10 @@ matilda_service_home: /home/matilda-svc
 
 # Sudoers drop-in file managed by this automation.
 matilda_sudoers_file: /etc/sudoers.d/matilda-discovery
+
+# Optional packet-level diagnostics. The Matilda prerequisite document marks
+# tcpdump as client-approved optional access, so the default keeps it disabled.
+enable_optional_tcpdump: false
 
 # Whether validation should include MatildaProbeVM -> target SSH/sudo checks.
 validate_from_probe: true

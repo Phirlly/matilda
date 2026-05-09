@@ -1,0 +1,4 @@
+---
+- name: UNIX support scaffold
+  ansible.builtin.debug:
+    msg: "UNIX support must use OS-specific AIX, Solaris, or HP-UX workflows."

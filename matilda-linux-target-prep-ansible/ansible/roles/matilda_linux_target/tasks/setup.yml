@@ -1,0 +1,74 @@
+---
+- name: Ensure matilda service group exists
+  ansible.builtin.group:
+    name: "{{ matilda_service_user }}"
+    system: true
+    state: present
+
+- name: Ensure matilda service user exists
+  ansible.builtin.user:
+    name: "{{ matilda_service_user }}"
+    group: "{{ matilda_service_user }}"
+    home: "{{ matilda_service_home }}"
+    shell: /bin/bash
+    system: true
+    create_home: true
+    state: present
+
+- name: Ensure matilda home ownership and permissions
+  ansible.builtin.file:
+    path: "{{ matilda_service_home }}"
+    state: directory
+    owner: "{{ matilda_service_user }}"
+    group: "{{ matilda_service_user }}"
+    mode: "0700"
+
+- name: Ensure .ssh directory exists
+  ansible.builtin.file:
+    path: "{{ matilda_service_home }}/.ssh"
+    state: directory
+    owner: "{{ matilda_service_user }}"
+    group: "{{ matilda_service_user }}"
+    mode: "0700"
+
+- name: Ensure Ansible remote tmp directory exists for matilda-svc
+  ansible.builtin.file:
+    path: "{{ matilda_service_home }}/.ansible/tmp"
+    state: directory
+    owner: "{{ matilda_service_user }}"
+    group: "{{ matilda_service_user }}"
+    mode: "0700"
+
+- name: Read Matilda public key from runtime-provided path
+  ansible.builtin.set_fact:
+    matilda_public_key: "{{ lookup('file', matilda_public_key_file) }}"
+
+- name: Install Matilda discovery public key without duplicates
+  ansible.posix.authorized_key:
+    user: "{{ matilda_service_user }}"
+    key: "{{ matilda_public_key }}"
+    path: "{{ matilda_service_home }}/.ssh/authorized_keys"
+    manage_dir: false
+    state: present
+
+- name: Ensure authorized_keys ownership and permissions
+  ansible.builtin.file:
+    path: "{{ matilda_service_home }}/.ssh/authorized_keys"
+    state: file
+    owner: "{{ matilda_service_user }}"
+    group: "{{ matilda_service_user }}"
+    mode: "0600"
+
+- name: Install Matilda sudoers file with syntax validation and backup
+  ansible.builtin.template:
+    src: "{{ matilda_sudoers_template }}"
+    dest: "{{ matilda_sudoers_file }}"
+    owner: root
+    group: root
+    mode: "0440"
+    backup: true
+    validate: /usr/sbin/visudo -cf %s
+
+- name: Validate installed sudoers file
+  ansible.builtin.command: "visudo -cf {{ matilda_sudoers_file }}"
+  changed_when: false

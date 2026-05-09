@@ -1,8 +1,5 @@
-# ==============================================================================
 # Defaults for private targets reached through MatildaProbeVM
-# ==============================================================================
-#
-# These variables are supplied at runtime by scripts/common-env.sh.
+# These variables are supplied at runtime by the Go CLI.
 #
 # Private targets are reached through MatildaProbeVM.
 # ProxyCommand is used instead of ProxyJump so the Probe admin key can be

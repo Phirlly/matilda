@@ -1,0 +1,14 @@
+---
+- name: Configure Linux targets for Matilda Discovery
+  hosts: public_targets:private_targets
+  gather_facts: true
+  become: true
+
+  vars:
+    matilda_sudoers_template: "{{ playbook_dir }}/../../../templates/sudoers/linux-full-documented.j2"
+
+  tasks:
+    - name: Configure Linux target readiness
+      ansible.builtin.import_role:
+        name: matilda_linux_target
+        tasks_from: setup

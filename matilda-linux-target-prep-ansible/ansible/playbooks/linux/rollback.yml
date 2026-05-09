@@ -1,0 +1,54 @@
+---
+- name: Conservative Linux rollback
+  hosts: public_targets:private_targets
+  gather_facts: false
+  become: true
+
+  tasks:
+    - name: Require an explicit rollback mode
+      ansible.builtin.assert:
+        that:
+          - matilda_rollback_mode is defined
+          - matilda_rollback_mode in ['sudoers_only', 'remove_key', 'lock_user', 'delete_user']
+        fail_msg: "Set matilda_rollback_mode to sudoers_only, remove_key, lock_user, or delete_user."
+
+    - name: Show rollback action
+      ansible.builtin.debug:
+        msg:
+          host: "{{ inventory_hostname }}"
+          mode: "{{ matilda_rollback_mode }}"
+
+    - name: Remove Matilda sudoers drop-in
+      ansible.builtin.file:
+        path: "{{ matilda_sudoers_file }}"
+        state: absent
+      when: matilda_rollback_mode == 'sudoers_only'
+
+    - name: Read Matilda public key for authorized_keys rollback
+      ansible.builtin.set_fact:
+        matilda_public_key: "{{ lookup('file', matilda_public_key_file) }}"
+      when: matilda_rollback_mode == 'remove_key'
+
+    - name: Remove Matilda discovery public key
+      ansible.posix.authorized_key:
+        user: "{{ matilda_service_user }}"
+        key: "{{ matilda_public_key }}"
+        path: "{{ matilda_service_home }}/.ssh/authorized_keys"
+        manage_dir: false
+        state: absent
+      when: matilda_rollback_mode == 'remove_key'
+
+    - name: Lock Matilda service account
+      ansible.builtin.user:
+        name: "{{ matilda_service_user }}"
+        password_lock: true
+        shell: /sbin/nologin
+        state: present
+      when: matilda_rollback_mode == 'lock_user'
+
+    - name: Delete Matilda service account and home directory
+      ansible.builtin.user:
+        name: "{{ matilda_service_user }}"
+        state: absent
+        remove: true
+      when: matilda_rollback_mode == 'delete_user'

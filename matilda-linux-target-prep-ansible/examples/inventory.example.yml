@@ -1,0 +1,16 @@
+all:
+  children:
+    public_targets:
+      hosts:
+        example-public-target:
+          ansible_host: <target-public-ip>
+          public_ip: <target-public-ip>
+          private_ip: <target-private-ip>
+          discovery_ip: <target-private-or-public-ip-used-by-probe>
+
+    private_targets:
+      hosts:
+        example-private-target:
+          ansible_host: <target-private-ip>
+          private_ip: <target-private-ip>
+          discovery_ip: <target-private-ip>
