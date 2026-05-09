@@ -1,0 +1,4 @@
+---
+- name: Kubernetes readiness scaffold
+  ansible.builtin.debug:
+    msg: "Kubernetes readiness modules will validate cluster API access and service-account permissions."

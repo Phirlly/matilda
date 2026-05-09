@@ -2,109 +2,24 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+BINARY="${SCRIPT_DIR}/.bin/matilda-prep"
 
-show_help() {
-  cat <<'EOF'
-Matilda Linux Target Prep
+HAS_GO=0
+if command -v go >/dev/null 2>&1; then
+  HAS_GO=1
+fi
 
-Usage:
-  ./matilda-prep <command>
+if [[ -x "${BINARY}" && ( "${MATILDA_PREP_USE_BINARY:-}" == "1" || "${HAS_GO}" == "0" ) ]]; then
+  exec "${BINARY}" "$@"
+fi
 
-Commands:
-  help        Show this help message
-  init        Create local .env and inventory.yml safely
-  preflight   Run read-only preflight checks
-  setup       Configure Linux targets for Matilda Discovery
-  apply       Alias for setup
-  validate    Validate targets are ready for Matilda Discovery
-  run         Run preflight, setup, and validate in order
+if [[ "${HAS_GO}" == "0" ]]; then
+  echo "ERROR: Go is required to run the Matilda Discovery Readiness CLI from source." >&2
+  echo "Build once with: go build -o .bin/matilda-prep ./cmd/matilda-prep" >&2
+  exit 1
+fi
 
-Recommended workflow:
-  ./matilda-prep init
-  ./matilda-prep preflight
-  ./matilda-prep setup
-  ./matilda-prep validate
-
-One-shot lab workflow:
-  ./matilda-prep run
-
-Notes:
-  - init creates local files only and does not run Ansible
-  - preflight is read-only
-  - setup modifies target VMs and asks for confirmation
-  - apply is an alias for setup
-  - validate writes reports under reports/
-  - .env and inventory.yml are local-only and ignored by git
-EOF
-}
-
-run_init_command() {
-  # shellcheck disable=SC1091
-  source "${SCRIPT_DIR}/scripts/lib/ui.sh"
-  # shellcheck disable=SC1091
-  source "${SCRIPT_DIR}/scripts/lib/init.sh"
-  run_init
-}
-
-run_preflight() {
-  "${SCRIPT_DIR}/scripts/run-preflight.sh"
-}
-
-run_setup() {
-  "${SCRIPT_DIR}/scripts/run-setup.sh"
-}
-
-run_validate() {
-  "${SCRIPT_DIR}/scripts/run-validate.sh"
-}
-
-run_all() {
-  echo "============================================================"
-  echo "Matilda Linux Target Prep - RUN"
-  echo "Workflow: preflight -> setup -> validate"
-  echo "============================================================"
-  echo
-  echo "Step 1 of 3: Preflight"
-  run_preflight
-
-  echo
-  echo "Step 2 of 3: Setup"
-  echo "Setup modifies target VMs and will ask for confirmation."
-  run_setup
-
-  echo
-  echo "Step 3 of 3: Validate"
-  run_validate
-
-  echo
-  echo "Run complete. Use reports/validated-discovery-ips.txt in Matilda Network Discovery."
-}
-
-COMMAND="${1:-help}"
-
-case "${COMMAND}" in
-  help|-h|--help)
-    show_help
-    ;;
-  init)
-    run_init_command
-    ;;
-  preflight)
-    run_preflight
-    ;;
-  setup|apply)
-    run_setup
-    ;;
-  validate)
-    run_validate
-    ;;
-  run)
-    run_all
-    ;;
-  *)
-    echo "ERROR: Unknown command: ${COMMAND}" >&2
-    echo >&2
-    show_help >&2
-    exit 1
-    ;;
-esac
+export GOCACHE="${GOCACHE:-${SCRIPT_DIR}/.gocache}"
+mkdir -p "${SCRIPT_DIR}/.bin"
+go build -o "${BINARY}" "${SCRIPT_DIR}/cmd/matilda-prep"
+exec "${BINARY}" "$@"

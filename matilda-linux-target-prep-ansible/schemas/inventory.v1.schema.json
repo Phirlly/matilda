@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Matilda Discovery Readiness Inventory v1",
+  "type": "object",
+  "required": ["version", "targets"],
+  "properties": {
+    "version": { "const": 1 },
+    "profiles": { "type": "object" },
+    "targets": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["platform", "access_path", "discovery_ip", "privilege_method"],
+        "properties": {
+          "platform": {
+            "type": "string",
+            "enum": ["linux", "unix", "windows", "cloud", "kubernetes"]
+          },
+          "os_family": { "type": "string" },
+          "os_version": { "type": "string" },
+          "cloud_provider": {
+            "type": "string",
+            "enum": ["", "aws", "azure", "gcp", "oci", "on_prem"]
+          },
+          "access_path": {
+            "type": "string",
+            "enum": ["direct", "via_probe", "customer_managed", "api"]
+          },
+          "ansible_host": { "type": "string" },
+          "discovery_ip": { "type": "string" },
+          "admin_user": { "type": "string" },
+          "admin_private_key_file": { "type": "string" },
+          "privilege_method": {
+            "type": "string",
+            "enum": ["sudo", "dzdo", "pbrun", "suexec", "winrm", "cloud_api", "k8s_api", "none"]
+          },
+          "configure_mode": {
+            "type": "string",
+            "enum": ["remote", "generate_script", "generate_instructions", "validate_credentials"]
+          }
+        }
+      }
+    }
+  }
+}

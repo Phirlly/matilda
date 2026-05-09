@@ -1,0 +1,4 @@
+---
+- name: Windows support scaffold
+  ansible.builtin.debug:
+    msg: "Windows support begins with generated PowerShell readiness instructions."

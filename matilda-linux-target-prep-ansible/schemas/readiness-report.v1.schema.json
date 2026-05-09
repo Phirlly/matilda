@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Matilda Discovery Readiness Report v1",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": ["host", "discovery_ip", "ready", "remediation"],
+    "properties": {
+      "host": { "type": "string" },
+      "discovery_ip": { "type": "string" },
+      "command": { "type": "string" },
+      "fallback_used": { "type": "string" },
+      "local_sudo": { "type": "string" },
+      "denied_command": { "type": "string" },
+      "probe_ssh": { "type": "string" },
+      "ready": { "type": "string" },
+      "remediation": { "type": "string" }
+    }
+  }
+}

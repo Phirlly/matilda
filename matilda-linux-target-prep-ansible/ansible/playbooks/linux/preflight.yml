@@ -1,0 +1,16 @@
+---
+- name: Preflight checks for Matilda Linux target preparation
+  hosts: public_targets:private_targets
+  gather_facts: true
+  become: true
+
+  tasks:
+    - name: Run Linux target preflight checks
+      ansible.builtin.import_role:
+        name: matilda_linux_target
+        tasks_from: preflight
+
+    - name: Run Probe-to-target reachability checks
+      ansible.builtin.import_role:
+        name: matilda_probe_checks
+        tasks_from: linux_ssh

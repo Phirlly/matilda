@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Matilda Discovery Readiness Targets CSV v1",
+  "type": "object",
+  "required": ["hostname", "platform", "ansible_host", "discovery_ip", "access_path", "privilege_method"],
+  "properties": {
+    "hostname": { "type": "string" },
+    "platform": { "type": "string" },
+    "os_family": { "type": "string" },
+    "ansible_host": { "type": "string" },
+    "discovery_ip": { "type": "string" },
+    "access_path": { "type": "string" },
+    "privilege_method": { "type": "string" },
+    "private_ip": { "type": "string" },
+    "public_ip": { "type": "string" },
+    "cloud_provider": { "type": "string" }
+  }
+}

@@ -1,0 +1,8 @@
+---
+- name: Kubernetes readiness scaffold
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Run Kubernetes readiness scaffold
+      ansible.builtin.import_role:
+        name: matilda_kubernetes_readiness

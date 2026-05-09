@@ -1,0 +1,8 @@
+---
+- name: Cloud API readiness scaffold
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Run cloud readiness scaffold
+      ansible.builtin.import_role:
+        name: matilda_cloud_readiness

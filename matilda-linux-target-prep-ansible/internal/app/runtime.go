@@ -1,0 +1,673 @@
+package app
+
+import (
+	"bufio"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"matilda-discovery-readiness/internal/config"
+	"matilda-discovery-readiness/internal/inventory"
+	"matilda-discovery-readiness/internal/reports"
+	"matilda-discovery-readiness/internal/runner"
+	"matilda-discovery-readiness/internal/safety"
+)
+
+var ErrCancelled = errors.New("operation cancelled")
+
+type Runtime struct {
+	Root string
+	In   io.Reader
+	Out  io.Writer
+	Err  io.Writer
+}
+
+func New(root string, in io.Reader, out io.Writer, errOut io.Writer) *Runtime {
+	return &Runtime{Root: root, In: in, Out: out, Err: errOut}
+}
+
+func (r *Runtime) Init() error {
+	heading(r.Out, "INIT", "local file setup only; no target changes")
+	mode := promptDefault(r.In, r.Out, "Choose init mode: 1) guided wizard  2) copy examples only", "1")
+
+	switch strings.TrimSpace(mode) {
+	case "1":
+		if err := r.createEnvGuided(); err != nil {
+			return err
+		}
+		if err := r.createInventoryGuided(); err != nil {
+			return err
+		}
+	case "2":
+		if err := copyWithSafety(r, filepath.Join(r.Root, "examples", "env.example"), filepath.Join(r.Root, ".env")); err != nil {
+			return err
+		}
+		if err := copyWithSafety(r, filepath.Join(r.Root, "examples", "inventory.example.yml"), filepath.Join(r.Root, "inventory.yml")); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("invalid init mode %q", mode)
+	}
+
+	fmt.Fprintln(r.Out)
+	successLine(r.Out, "Init complete.")
+	nextLine(r.Out, "./matilda-prep doctor")
+	return nil
+}
+
+func (r *Runtime) Doctor() error {
+	heading(r.Out, "DOCTOR", "local checks; no target changes")
+	checks := []runner.Check{
+		runner.CommandCheck("go", "go", "version"),
+		runner.FileCheck("inventory.yml", filepath.Join(r.Root, "inventory.yml")),
+		runner.FileCheck("ansible config", filepath.Join(r.Root, "ansible", "ansible.cfg")),
+		runner.DirCheck("reports", filepath.Join(r.Root, "reports")),
+		runner.FileCheck("env example", filepath.Join(r.Root, "examples", "env.example")),
+		runner.FileCheck("inventory example", filepath.Join(r.Root, "examples", "inventory.example.yml")),
+	}
+
+	failed := false
+	var results []runner.Result
+	for _, check := range checks {
+		result := check.Run()
+		results = append(results, result)
+		if result.Status == runner.StatusFail {
+			failed = true
+		}
+	}
+
+	for _, check := range []struct {
+		name string
+		cmd  string
+		args []string
+	}{
+		{name: "ansible-playbook", cmd: "ansible-playbook", args: []string{"--version"}},
+		{name: "ansible-doc", cmd: "ansible-doc", args: []string{"--version"}},
+	} {
+		out, err := runner.RunCapture(r.Root, check.cmd, check.args...)
+		if err != nil {
+			results = append(results, runner.Result{Name: check.name, Status: runner.StatusFail, Detail: err.Error()})
+			failed = true
+		} else {
+			results = append(results, runner.Result{Name: check.name, Status: runner.StatusPass, Detail: firstLine(out)})
+		}
+	}
+
+	if _, err := runner.RunCapture(r.Root, "ansible-doc", "-t", "module", "ansible.posix.authorized_key"); err != nil {
+		results = append(results, runner.Result{Name: "ansible.posix.authorized_key", Status: runner.StatusFail, Detail: "install with: ansible-galaxy collection install ansible.posix"})
+		failed = true
+	} else {
+		results = append(results, runner.Result{Name: "ansible.posix.authorized_key", Status: runner.StatusPass, Detail: "available"})
+	}
+
+	env, _ := config.LoadEnv(filepath.Join(r.Root, ".env"))
+	for _, key := range config.RequiredKeys {
+		value := strings.TrimSpace(env[key])
+		if value == "" {
+			results = append(results, runner.Result{Name: ".env " + key, Status: runner.StatusSkip, Detail: "will prompt when needed"})
+			continue
+		}
+		if config.IsLocalFileKey(key) {
+			if _, err := os.Stat(config.ExpandPath(value)); err != nil {
+				results = append(results, runner.Result{Name: ".env " + key, Status: runner.StatusFail, Detail: "file not found: " + config.ExpandPath(value)})
+				failed = true
+			} else {
+				results = append(results, runner.Result{Name: ".env " + key, Status: runner.StatusPass, Detail: "file exists"})
+			}
+		} else {
+			results = append(results, runner.Result{Name: ".env " + key, Status: runner.StatusPass, Detail: "set"})
+		}
+	}
+
+	section(r.Out, "Checks")
+	printChecks(r.Out, results)
+	if failed {
+		return errors.New("doctor found issues to fix before a seamless run")
+	}
+	successLine(r.Out, "Local environment looks ready.")
+	return nil
+}
+
+func firstLine(text string) string {
+	for i, r := range text {
+		if r == '\n' || r == '\r' {
+			return text[:i]
+		}
+	}
+	return text
+}
+
+func (r *Runtime) InventoryValidate() error {
+	return r.validateInventory(true)
+}
+
+func (r *Runtime) validateInventory(showHeading bool) error {
+	if showHeading {
+		heading(r.Out, "INVENTORY VALIDATE", "read-only inventory checks")
+	}
+	section(r.Out, "Inventory")
+	path := filepath.Join(r.Root, "inventory.yml")
+	result, err := inventory.ValidateFile(path)
+	printChecks(r.Out, result.Checks)
+	if err != nil {
+		return err
+	}
+	successLine(r.Out, fmt.Sprintf("Inventory valid: %d target(s) detected.", result.TargetCount))
+	return nil
+}
+
+func (r *Runtime) InventoryImport(csvPath string) error {
+	heading(r.Out, "INVENTORY IMPORT", "CSV to current Linux-compatible inventory.yml")
+	targets, err := inventory.ReadCSV(csvPath)
+	if err != nil {
+		return err
+	}
+	outPath := filepath.Join(r.Root, "inventory.yml")
+	if err := safety.PrepareDestination(r.In, r.Out, outPath); err != nil {
+		if errors.Is(err, safety.ErrSkip) {
+			fmt.Fprintln(r.Out, "Kept existing inventory.yml")
+			return nil
+		}
+		return err
+	}
+	if err := inventory.WriteLinuxGroupedInventory(outPath, targets); err != nil {
+		return err
+	}
+	successLine(r.Out, fmt.Sprintf("Created %s with %d target(s).", outPath, len(targets)))
+	nextLine(r.Out, "./matilda-prep inventory validate")
+	return nil
+}
+
+func (r *Runtime) InventoryMigrate() error {
+	heading(r.Out, "INVENTORY MIGRATE", "current inventory.yml to normalized inventory.v1.yml")
+	input := filepath.Join(r.Root, "inventory.yml")
+	output := filepath.Join(r.Root, "inventory.v1.yml")
+	if err := safety.PrepareDestination(r.In, r.Out, output); err != nil {
+		if errors.Is(err, safety.ErrSkip) {
+			fmt.Fprintln(r.Out, "Kept existing inventory.v1.yml")
+			return nil
+		}
+		return err
+	}
+	if err := inventory.MigrateLinuxGroupedToV1(input, output); err != nil {
+		return err
+	}
+	successLine(r.Out, "Created inventory.v1.yml.")
+	return nil
+}
+
+func (r *Runtime) Preflight() error {
+	heading(r.Out, "PREFLIGHT", "read-only Linux readiness checks")
+	if err := r.validateInventory(false); err != nil {
+		return err
+	}
+	if err := r.ensureLinuxGroupedInventory(); err != nil {
+		return err
+	}
+	extra, err := r.collectRuntimeExtraVars()
+	if err != nil {
+		return err
+	}
+	section(r.Out, "Ansible")
+	return r.runAnsible("ansible/playbooks/linux/preflight.yml", extra)
+}
+
+func (r *Runtime) Setup() error {
+	heading(r.Out, "SETUP", "modifies Linux target systems")
+	if err := r.checkSetupDependencies(); err != nil {
+		return err
+	}
+	if err := r.validateInventory(false); err != nil {
+		return err
+	}
+	if err := r.ensureLinuxGroupedInventory(); err != nil {
+		return err
+	}
+	extra, err := r.collectRuntimeExtraVars()
+	if err != nil {
+		return err
+	}
+
+	section(r.Out, "Target Changes")
+	printItems(r.Out, []string{
+		"create or update matilda-svc",
+		"install the Matilda public key",
+		"write sudoers configuration",
+	})
+	fmt.Fprintln(r.Out)
+	section(r.Out, "Confirm")
+	if !confirm(r.In, r.Out, "Continue with setup?") {
+		cancelledLine(r.Out, "Setup cancelled. No target changes were made.")
+		return ErrCancelled
+	}
+	section(r.Out, "Ansible")
+	return r.runAnsible("ansible/playbooks/linux/setup.yml", extra)
+}
+
+func (r *Runtime) Validate() error {
+	heading(r.Out, "VALIDATE", "Linux readiness validation and reports")
+	if err := r.validateInventory(false); err != nil {
+		return err
+	}
+	if err := r.ensureLinuxGroupedInventory(); err != nil {
+		return err
+	}
+	extra, err := r.collectRuntimeExtraVars()
+	if err != nil {
+		return err
+	}
+	section(r.Out, "Ansible")
+	runErr := r.runAnsible("ansible/playbooks/linux/validate.yml", extra)
+	reportErr := r.generateReport(false)
+	if runErr != nil {
+		if reportErr != nil {
+			return fmt.Errorf("%v; additionally report generation failed: %w", runErr, reportErr)
+		}
+		return runErr
+	}
+	return reportErr
+}
+
+func (r *Runtime) Run() error {
+	heading(r.Out, "RUN", "preflight -> setup -> validate -> report")
+	if err := r.Preflight(); err != nil {
+		return err
+	}
+	if err := r.Setup(); err != nil {
+		return err
+	}
+	return r.Validate()
+}
+
+func (r *Runtime) Report() error {
+	return r.generateReport(true)
+}
+
+func (r *Runtime) generateReport(showHeading bool) error {
+	if showHeading {
+		heading(r.Out, "REPORT", "generate readiness report files")
+	}
+	section(r.Out, "Report Files")
+	paths, err := reports.Generate(filepath.Join(r.Root, "reports"))
+	if err != nil {
+		return err
+	}
+	for _, path := range paths {
+		fmt.Fprintf(r.Out, "  wrote  %s\n", path)
+	}
+	successLine(r.Out, "Readiness reports generated.")
+	return nil
+}
+
+func (r *Runtime) Generate(args []string) error {
+	if len(args) == 0 || args[0] == "help" || args[0] == "-h" || args[0] == "--help" {
+		printGenerateHelp(r.Out)
+		return nil
+	}
+
+	platform := strings.ToLower(args[0])
+	heading(r.Out, "GENERATE", "local handoff artifacts only; no target changes")
+	section(r.Out, "Artifacts")
+	switch platform {
+	case "windows":
+		dir := filepath.Join(r.Root, "reports", "handoff", "windows")
+		scriptTemplate := filepath.Join(r.Root, "templates", "powershell", "windows-readiness.ps1.tmpl")
+		content, err := os.ReadFile(scriptTemplate)
+		if err != nil {
+			return err
+		}
+		scriptPath := filepath.Join(dir, "windows-readiness.ps1")
+		readmePath := filepath.Join(dir, "README.md")
+		if err := writeArtifact(scriptPath, content, 0644); err != nil {
+			return err
+		}
+		if err := writeArtifact(readmePath, []byte(windowsHandoffReadme()), 0644); err != nil {
+			return err
+		}
+		fmt.Fprintf(r.Out, "  wrote  %s\n", scriptPath)
+		fmt.Fprintf(r.Out, "  wrote  %s\n", readmePath)
+	case "unix":
+		dir := filepath.Join(r.Root, "reports", "handoff", "unix")
+		path := filepath.Join(dir, "unix-readiness.md")
+		if err := writeArtifact(path, []byte(unixHandoffReadme()), 0644); err != nil {
+			return err
+		}
+		fmt.Fprintf(r.Out, "  wrote  %s\n", path)
+	default:
+		return fmt.Errorf("unsupported generate target %q; use windows or unix", platform)
+	}
+	return nil
+}
+
+func (r *Runtime) Rollback(args []string) error {
+	mode, err := parseRollbackMode(args)
+	if err != nil {
+		return err
+	}
+	if mode == "help" {
+		printRollbackHelp(r.Out)
+		return nil
+	}
+
+	heading(r.Out, "ROLLBACK", "explicit Linux rollback mode; modifies target systems")
+	if err := r.validateInventory(false); err != nil {
+		return err
+	}
+	if err := r.ensureLinuxGroupedInventory(); err != nil {
+		return err
+	}
+
+	keys := r.connectionKeys()
+	if mode == "remove_key" {
+		keys = append(keys, "MATILDA_PUBLIC_KEY_FILE")
+	}
+	extra, err := r.collectRuntimeExtraVarsFor(keys)
+	if err != nil {
+		return err
+	}
+	extra = append(extra, "--extra-vars", "matilda_rollback_mode="+mode)
+
+	section(r.Out, "Target Changes")
+	changes := []string{
+		fmt.Sprintf("rollback mode: %s", mode),
+		"remove Matilda readiness configuration from Linux targets",
+	}
+	if mode == "delete_user" {
+		changes = append(changes, "delete-user removes the service account and its home directory")
+	}
+	printItems(r.Out, changes)
+	fmt.Fprintln(r.Out)
+	section(r.Out, "Confirm")
+	if !confirm(r.In, r.Out, "Continue with rollback?") {
+		cancelledLine(r.Out, "Rollback cancelled. No target changes were made.")
+		return ErrCancelled
+	}
+	section(r.Out, "Ansible")
+	return r.runAnsible("ansible/playbooks/linux/rollback.yml", extra)
+}
+
+func (r *Runtime) runAnsible(playbook string, extra []string) error {
+	args := []string{playbook}
+	args = append(args, extra...)
+	return runner.RunStream(r.Root, r.Out, r.Err, "ansible-playbook", args...)
+}
+
+func (r *Runtime) ensureLinuxGroupedInventory() error {
+	format, err := inventory.DetectFormat(filepath.Join(r.Root, "inventory.yml"))
+	if err != nil {
+		return err
+	}
+	if format != "linux-groups" {
+		return errors.New("current Linux Ansible workflows require inventory.yml with Linux direct/via-Probe groups; normalized v1 is valid for planning and migration but not yet used directly by the Ansible runner")
+	}
+	return nil
+}
+
+func (r *Runtime) checkSetupDependencies() error {
+	for _, cmd := range []string{"ansible-playbook", "ansible-doc"} {
+		if _, err := runner.RunCapture(r.Root, cmd, "--version"); err != nil {
+			return fmt.Errorf("%s was not found or could not run: %w", cmd, err)
+		}
+	}
+	if _, err := runner.RunCapture(r.Root, "ansible-doc", "-t", "module", "ansible.posix.authorized_key"); err != nil {
+		return errors.New("required Ansible module is unavailable: ansible.posix.authorized_key; install with: ansible-galaxy collection install ansible.posix")
+	}
+	return nil
+}
+
+func (r *Runtime) collectRuntimeExtraVars() ([]string, error) {
+	return r.collectRuntimeExtraVarsFor(config.RequiredKeys)
+}
+
+func (r *Runtime) collectRuntimeExtraVarsFor(keys []string) ([]string, error) {
+	envPath := filepath.Join(r.Root, ".env")
+	values, _ := config.LoadEnv(envPath)
+	reader := bufio.NewReader(r.In)
+
+	for _, key := range keys {
+		if strings.TrimSpace(values[key]) != "" {
+			continue
+		}
+		defaultValue := config.DefaultFor(key, values)
+		label := config.LabelFor(key)
+		value := promptWithReader(reader, r.Out, label, defaultValue)
+		values[key] = value
+	}
+
+	for _, key := range keys {
+		if !config.IsLocalFileKey(key) {
+			continue
+		}
+		value := config.ExpandPath(values[key])
+		values[key] = value
+		if _, err := os.Stat(value); err != nil {
+			return nil, fmt.Errorf("%s not found: %s", config.LabelFor(key), value)
+		}
+	}
+
+	return config.ExtraVarsFor(keys, values), nil
+}
+
+func (r *Runtime) connectionKeys() []string {
+	keys := []string{"TARGET_ADMIN_USER", "TARGET_ADMIN_PRIVATE_KEY_FILE"}
+	needsProbe, err := inventory.RequiresProbe(filepath.Join(r.Root, "inventory.yml"))
+	if err == nil && needsProbe {
+		keys = append(keys, "MATILDA_PROBE_ANSIBLE_HOST", "MATILDA_PROBE_USER", "MATILDA_PROBE_ADMIN_PRIVATE_KEY_FILE")
+	}
+	return keys
+}
+
+func (r *Runtime) createEnvGuided() error {
+	dest := filepath.Join(r.Root, ".env")
+	if err := safety.PrepareDestination(r.In, r.Out, dest); err != nil {
+		if errors.Is(err, safety.ErrSkip) {
+			fmt.Fprintln(r.Out, "Kept existing .env")
+			return nil
+		}
+		return err
+	}
+
+	values := map[string]string{}
+	reader := bufio.NewReader(r.In)
+	for _, key := range config.RequiredKeys {
+		values[key] = promptWithReader(reader, r.Out, config.LabelFor(key), config.DefaultFor(key, values))
+	}
+
+	var b strings.Builder
+	b.WriteString("# Local runtime values for Matilda Discovery Readiness Toolkit.\n")
+	b.WriteString("# Do not commit this file.\n\n")
+	for _, key := range config.RequiredKeys {
+		fmt.Fprintf(&b, "%s=%s\n", key, config.ShellQuote(values[key]))
+		if key == "TARGET_ADMIN_PRIVATE_KEY_FILE" || key == "MATILDA_PROBE_ADMIN_PRIVATE_KEY_FILE" {
+			b.WriteString("\n")
+		}
+	}
+	return os.WriteFile(dest, []byte(b.String()), 0600)
+}
+
+func (r *Runtime) createInventoryGuided() error {
+	dest := filepath.Join(r.Root, "inventory.yml")
+	if err := safety.PrepareDestination(r.In, r.Out, dest); err != nil {
+		if errors.Is(err, safety.ErrSkip) {
+			fmt.Fprintln(r.Out, "Kept existing inventory.yml")
+			return nil
+		}
+		return err
+	}
+
+	reader := bufio.NewReader(r.In)
+	countRaw := promptWithReader(reader, r.Out, "How many Linux targets do you want to add?", "")
+	var count int
+	if _, err := fmt.Sscanf(countRaw, "%d", &count); err != nil || count < 1 {
+		return errors.New("target count must be a positive number")
+	}
+
+	var targets []inventory.Target
+	for i := 1; i <= count; i++ {
+		fmt.Fprintf(r.Out, "\nTarget %d of %d\n", i, count)
+		name := promptWithReader(reader, r.Out, "Inventory hostname", "")
+		access := strings.ToLower(promptWithReader(reader, r.Out, "Access path: direct or via_probe", "direct"))
+		if access != "direct" && access != "via_probe" {
+			return fmt.Errorf("unsupported access path %q", access)
+		}
+		ansibleHost := promptWithReader(reader, r.Out, "Ansible host/IP", "")
+		privateIP := promptWithReader(reader, r.Out, "Private IP", ansibleHost)
+		discoveryIP := promptWithReader(reader, r.Out, "Discovery IP used by MatildaProbeVM", privateIP)
+		targets = append(targets, inventory.Target{
+			Hostname:        name,
+			Platform:        "linux",
+			OSFamily:        "linux",
+			AccessPath:      access,
+			AnsibleHost:     ansibleHost,
+			DiscoveryIP:     discoveryIP,
+			PrivateIP:       privateIP,
+			PrivilegeMethod: "sudo",
+		})
+	}
+
+	return inventory.WriteLinuxGroupedInventory(dest, targets)
+}
+
+func copyWithSafety(r *Runtime, source string, dest string) error {
+	if err := safety.PrepareDestination(r.In, r.Out, dest); err != nil {
+		if errors.Is(err, safety.ErrSkip) {
+			fmt.Fprintf(r.Out, "Kept existing %s\n", filepath.Base(dest))
+			return nil
+		}
+		return err
+	}
+	content, err := os.ReadFile(source)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(dest, content, 0600); err != nil {
+		return err
+	}
+	fmt.Fprintf(r.Out, "Created %s\n", dest)
+	return nil
+}
+
+func writeArtifact(path string, content []byte, mode os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, content, mode)
+}
+
+func parseRollbackMode(args []string) (string, error) {
+	if len(args) == 0 {
+		return "", errors.New("rollback requires one mode: --sudoers-only, --remove-key, --lock-user, or --delete-user")
+	}
+
+	modes := map[string]string{
+		"--sudoers-only": "sudoers_only",
+		"--remove-key":   "remove_key",
+		"--lock-user":    "lock_user",
+		"--delete-user":  "delete_user",
+	}
+	selected := ""
+	for _, arg := range args {
+		if arg == "help" || arg == "-h" || arg == "--help" {
+			return "help", nil
+		}
+		mode, ok := modes[arg]
+		if !ok {
+			return "", fmt.Errorf("unknown rollback option %q", arg)
+		}
+		if selected != "" {
+			return "", errors.New("rollback accepts exactly one mode at a time")
+		}
+		selected = mode
+	}
+	if selected == "" {
+		return "", errors.New("rollback requires one explicit mode")
+	}
+	return selected, nil
+}
+
+func printRollbackHelp(out io.Writer) {
+	fmt.Fprintln(out, strings.TrimSpace(`
+Rollback modes:
+  ./matilda-prep rollback --sudoers-only   Remove the Matilda sudoers drop-in
+  ./matilda-prep rollback --remove-key     Remove the Matilda public key from authorized_keys
+  ./matilda-prep rollback --lock-user      Lock the matilda-svc account
+  ./matilda-prep rollback --delete-user    Remove the matilda-svc account and home directory
+
+Rollback always requires confirmation. Use one mode per run so the mutation is auditable.
+`))
+}
+
+func printGenerateHelp(out io.Writer) {
+	fmt.Fprintln(out, strings.TrimSpace(`
+Generate local handoff artifacts:
+  ./matilda-prep generate windows
+  ./matilda-prep generate unix
+
+Generated files are written under reports/handoff/ and do not change targets.
+`))
+}
+
+func windowsHandoffReadme() string {
+	return `# Windows Readiness Handoff
+
+This package is a generated starting point for Windows platform owners.
+
+- Review WinRM listener and firewall readiness.
+- Confirm SMB TCP/445 access only where Matilda documentation requires it.
+- Validate IIS discovery prerequisites when IIS is in scope.
+- Review EDR/AV policy before running discovery checks.
+- Do not copy private keys to Windows targets.
+
+Remote Windows configuration is intentionally not automated until the WinRM workflow is validated.
+`
+}
+
+func unixHandoffReadme() string {
+	return `# UNIX Readiness Handoff
+
+Use this generated note for AIX, Solaris, and HP-UX planning.
+
+- Do not assume Linux paths, packages, sudo behavior, or shell features.
+- Prefer customer-reviewed commands and generated instructions first.
+- Use matilda-svc as the default service account unless the customer requires another name.
+- Model privilege with sudo, dzdo, pbrun, suexec, none, or another documented customer-managed workflow.
+- Generate command allow-lists and validation instructions before automating.
+- Do not copy private keys to targets.
+
+Remote UNIX automation should be added per OS family only after it is validated on that platform.
+`
+}
+
+func confirm(in io.Reader, out io.Writer, prompt string) bool {
+	reader := bufio.NewReader(in)
+	fmt.Fprintf(out, "  %s [y/N]: ", prompt)
+	answer, _ := reader.ReadString('\n')
+	switch strings.ToLower(strings.TrimSpace(answer)) {
+	case "y", "yes":
+		return true
+	default:
+		return false
+	}
+}
+
+func promptDefault(in io.Reader, out io.Writer, prompt string, def string) string {
+	reader := bufio.NewReader(in)
+	return promptWithReader(reader, out, prompt, def)
+}
+
+func promptWithReader(reader *bufio.Reader, out io.Writer, prompt string, def string) string {
+	if def != "" {
+		fmt.Fprintf(out, "%s [%s]: ", prompt, def)
+	} else {
+		fmt.Fprintf(out, "%s: ", prompt)
+	}
+	text, _ := reader.ReadString('\n')
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return def
+	}
+	return text
+}

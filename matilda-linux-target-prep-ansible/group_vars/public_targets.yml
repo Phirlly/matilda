@@ -1,8 +1,5 @@
-# ==============================================================================
 # Defaults for targets reachable directly from the operator machine
-# ==============================================================================
-#
-# These variables are supplied at runtime by scripts/common-env.sh.
+# These variables are supplied at runtime by the Go CLI.
 
 ansible_user: "{{ target_admin_user }}"
 ansible_ssh_private_key_file: "{{ target_admin_private_key_file }}"

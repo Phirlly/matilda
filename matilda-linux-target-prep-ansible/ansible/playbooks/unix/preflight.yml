@@ -1,0 +1,8 @@
+---
+- name: UNIX preflight scaffold
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Run UNIX readiness scaffold
+      ansible.builtin.import_role:
+        name: matilda_unix_target
