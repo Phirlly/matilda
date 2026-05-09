@@ -59,19 +59,90 @@ The validation workflow prefers `ifconfig` because the Matilda prerequisite PDF 
 
 ## What users usually edit
 
-Most users only edit:
+Most users only edit local files:
 
 ```text
+.env
 inventory.yml
 ```
 
-This file contains the target VM list and the IPs Matilda should discover.
+`.env` contains runtime values such as key paths and Probe SSH details.
 
-Use `inventory.example.yml` as the safe example.
+`inventory.yml` contains the target VM list and the IPs Matilda should discover.
 
-Do not distribute an `inventory.yml` that contains real customer or lab IP addresses.
+Use these safe templates:
 
-`inventory.yml` is local-only and ignored by git.
+```text
+.env.example
+inventory.example.yml
+```
+
+Do not distribute `.env` or `inventory.yml` with real customer or lab values.
+
+Both `.env` and `inventory.yml` are local-only and ignored by git.
+
+---
+
+## Initialize local files
+
+Use `init` to create or update local starter files safely:
+
+```bash
+./matilda-prep init
+```
+
+`init` can help create:
+
+```text
+.env
+inventory.yml
+```
+
+`init` supports two modes:
+
+```text
+1) Guided wizard
+2) Copy example templates only
+```
+
+Guided mode is recommended because it asks for values and generates usable local files.
+
+`init` is safe:
+
+- it does not run Ansible
+- it does not connect to MatildaProbeVM
+- it does not connect to targets
+- it does not modify target VMs
+- it asks what to do if `.env` already exists
+- it asks what to do if `inventory.yml` already exists
+
+When `.env` or `inventory.yml` already exists, `init` offers:
+
+```text
+1) Keep existing file
+2) Back up existing file and create a new one
+3) Overwrite existing file without backup
+```
+
+Choose option `1` to keep the current file.
+
+Choose option `2` to create a timestamped backup before replacing it.
+
+Backups use this format:
+
+```text
+.env.backup-YYYYMMDD-HHMMSS
+inventory.yml.backup-YYYYMMDD-HHMMSS
+```
+
+After running `init`, review:
+
+```text
+.env
+inventory.yml
+```
+
+Then run preflight.
 
 ---
 
@@ -211,7 +282,13 @@ You do not have to create `.env`.
 
 If `.env` does not exist, the scripts prompt for required values.
 
-If you do not want to type the same values every time, copy:
+If you do not want to type the same values every time, create `.env` using the guided init wizard:
+
+```bash
+./matilda-prep init
+```
+
+Or manually copy:
 
 ```bash
 cp .env.example .env
@@ -240,10 +317,13 @@ MATILDA_PROBE_PRIVATE_KEY_ON_PROBE=/home/opc/.ssh/MatildaProbeKey.pem
 Preferred workflow:
 
 ```bash
+./matilda-prep init
 ./matilda-prep preflight
 ./matilda-prep setup
 ./matilda-prep validate
 ```
+
+If `.env` and `inventory.yml` already exist, you can skip `init`.
 
 Direct script workflow:
 
@@ -253,7 +333,7 @@ Direct script workflow:
 ./scripts/run-validate.sh
 ```
 
-Do not skip steps.
+Do not skip preflight, setup, or validate.
 
 For a one-shot lab workflow, you can run:
 
@@ -262,6 +342,42 @@ For a one-shot lab workflow, you can run:
 ```
 
 The one-shot workflow still runs setup confirmation before modifying target VMs.
+
+---
+
+## Step 0: Init
+
+Preferred:
+
+```bash
+./matilda-prep init
+```
+
+Init can create local starter files:
+
+```text
+.env
+inventory.yml
+```
+
+Init offers guided prompts for:
+
+```text
+Target admin SSH user
+Target admin private key path
+MatildaProbeVM SSH host/IP
+MatildaProbeVM SSH user
+MatildaProbeVM admin private key path
+Matilda discovery public key path on this machine
+Matilda discovery private key path on MatildaProbeVM
+Target inventory entries
+```
+
+Init asks before replacing existing `.env` or `inventory.yml`.
+
+Init can create timestamped backups before replacing files.
+
+Init does not run Ansible and does not modify targets.
 
 ---
 
@@ -368,11 +484,38 @@ Available commands:
 
 ```text
 help
+init
 preflight
 setup
 apply
 validate
 run
+```
+
+---
+
+## Modular wrapper files
+
+The wrapper is split into small files for readability and maintainability:
+
+```text
+matilda-prep
+scripts/lib/ui.sh
+scripts/lib/init.sh
+scripts/run-preflight.sh
+scripts/run-setup.sh
+scripts/run-validate.sh
+```
+
+Responsibilities:
+
+```text
+matilda-prep                  CLI dispatcher and help text
+scripts/lib/ui.sh             Shared prompt and file-safety helpers
+scripts/lib/init.sh           Init wizard and local file generation
+scripts/run-preflight.sh      Direct preflight script
+scripts/run-setup.sh          Direct setup script
+scripts/run-validate.sh       Direct validation script
 ```
 
 ---
@@ -462,6 +605,23 @@ chmod +x matilda-prep
 ```
 
 Then retry the command.
+
+### `init` overwrote a file by mistake
+
+If you chose backup before replacement, restore the timestamped backup:
+
+```text
+.env.backup-YYYYMMDD-HHMMSS
+inventory.yml.backup-YYYYMMDD-HHMMSS
+```
+
+If you overwrote without backup, recreate the file using known values or rerun:
+
+```bash
+./matilda-prep init
+```
+
+and choose guided mode.
 
 ### Admin SSH fails
 

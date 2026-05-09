@@ -12,6 +12,7 @@ Usage:
 
 Commands:
   help        Show this help message
+  init        Create local .env and inventory.yml safely
   preflight   Run read-only preflight checks
   setup       Configure Linux targets for Matilda Discovery
   apply       Alias for setup
@@ -19,6 +20,7 @@ Commands:
   run         Run preflight, setup, and validate in order
 
 Recommended workflow:
+  ./matilda-prep init
   ./matilda-prep preflight
   ./matilda-prep setup
   ./matilda-prep validate
@@ -27,12 +29,21 @@ One-shot lab workflow:
   ./matilda-prep run
 
 Notes:
+  - init creates local files only and does not run Ansible
   - preflight is read-only
   - setup modifies target VMs and asks for confirmation
   - apply is an alias for setup
   - validate writes reports under reports/
-  - inventory.yml is local-only and ignored by git
+  - .env and inventory.yml are local-only and ignored by git
 EOF
+}
+
+run_init_command() {
+  # shellcheck disable=SC1091
+  source "${SCRIPT_DIR}/scripts/lib/ui.sh"
+  # shellcheck disable=SC1091
+  source "${SCRIPT_DIR}/scripts/lib/init.sh"
+  run_init
 }
 
 run_preflight() {
@@ -74,6 +85,9 @@ COMMAND="${1:-help}"
 case "${COMMAND}" in
   help|-h|--help)
     show_help
+    ;;
+  init)
+    run_init_command
     ;;
   preflight)
     run_preflight
