@@ -226,9 +226,9 @@ func MigrateLinuxGroupedToV1(input string, output string) error {
 	b.WriteString("  default:\n")
 	b.WriteString("    probe:\n")
 	b.WriteString("      host: <probe-host-or-ip>\n")
-	b.WriteString("      user: opc\n")
-	b.WriteString("      admin_private_key_file: /path/to/probe-admin-key\n")
-	b.WriteString("      discovery_private_key_on_probe: /home/opc/.ssh/MatildaProbeKey.pem\n\n")
+	b.WriteString("      user: <probe-admin-user>\n")
+	b.WriteString("      admin_private_key_file: <path-to-probe-admin-key>\n")
+	b.WriteString("      discovery_private_key_on_probe: <discovery-private-key-path-on-probe>\n\n")
 	b.WriteString("targets:\n")
 	for _, target := range targets {
 		fmt.Fprintf(&b, "  %s:\n", target.Hostname)

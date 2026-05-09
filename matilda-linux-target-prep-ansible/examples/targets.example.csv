@@ -1,3 +1,3 @@
 hostname,platform,os_family,ansible_host,discovery_ip,access_path,privilege_method,private_ip,public_ip,cloud_provider
-app01,linux,oracle_linux,192.0.2.10,10.0.0.20,direct,sudo,10.0.0.20,192.0.2.10,oci
-app02,linux,oracle_linux,10.0.1.138,10.0.1.138,via_probe,sudo,10.0.1.138,,oci
+app01,linux,oracle_linux,192.0.2.10,10.10.0.20,direct,sudo,10.10.0.20,192.0.2.10,oci
+app02,linux,oracle_linux,10.10.1.20,10.10.1.20,via_probe,sudo,10.10.1.20,,oci

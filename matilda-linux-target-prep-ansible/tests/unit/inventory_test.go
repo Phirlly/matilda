@@ -83,7 +83,7 @@ targets:
   win01:
     platform: windows
     access_path: direct
-    ansible_host: 10.0.0.20
+    ansible_host: 10.10.0.20
     privilege_method: winrm
 `)
 
@@ -177,7 +177,7 @@ func TestMigrateLinuxGroupedToV1(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(got)
-	for _, want := range []string{"version: 1", "app01:", "access_path: direct", "app02:", "access_path: via_probe"} {
+	for _, want := range []string{"version: 1", "user: <probe-admin-user>", "discovery_private_key_on_probe: <discovery-private-key-path-on-probe>", "app01:", "access_path: direct", "app02:", "access_path: via_probe"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("migrated output missing %q:\n%s", want, text)
 		}

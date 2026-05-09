@@ -53,3 +53,11 @@ func TestShellQuote(t *testing.T) {
 		t.Fatalf("unexpected quoted value: %s", got)
 	}
 }
+
+func TestDefaultForDoesNotAssumeEnvironmentValues(t *testing.T) {
+	for _, key := range []string{"TARGET_ADMIN_USER", "MATILDA_PROBE_USER", "MATILDA_PROBE_PRIVATE_KEY_ON_PROBE"} {
+		if got := config.DefaultFor(key, map[string]string{"MATILDA_PROBE_USER": "probe-user"}); got != "" {
+			t.Fatalf("DefaultFor(%s) = %q, want empty", key, got)
+		}
+	}
+}

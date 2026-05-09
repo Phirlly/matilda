@@ -93,18 +93,7 @@ func LabelFor(key string) string {
 }
 
 func DefaultFor(key string, values map[string]string) string {
-	switch key {
-	case "TARGET_ADMIN_USER", "MATILDA_PROBE_USER":
-		return "opc"
-	case "MATILDA_PROBE_PRIVATE_KEY_ON_PROBE":
-		user := values["MATILDA_PROBE_USER"]
-		if user == "" {
-			user = "opc"
-		}
-		return "/home/" + user + "/.ssh/MatildaProbeKey.pem"
-	default:
-		return ""
-	}
+	return ""
 }
 
 func IsLocalFileKey(key string) bool {

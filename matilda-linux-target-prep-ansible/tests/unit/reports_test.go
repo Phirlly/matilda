@@ -11,7 +11,7 @@ import (
 
 func TestGenerateReports(t *testing.T) {
 	dir := t.TempDir()
-	summary := "Host,DiscoveryIP,Command,FallbackUsed,LocalSudo,DeniedCommand,ProbeSSH,Ready,Remediation\napp01,10.0.0.10,ifconfig,NO,OK,OK,OK,YES,None\napp02,10.0.0.20,ifconfig,NO,FAIL,NOT_RUN,NOT_RUN,NO,Fix sudo\n"
+	summary := "Host,DiscoveryIP,Command,FallbackUsed,LocalSudo,DeniedCommand,ProbeSSH,Ready,Remediation\napp01,10.0.0.10,ifconfig,NO,OK,OK,OK,YES,None\napp02,10.10.0.20,ifconfig,NO,FAIL,NOT_RUN,NOT_RUN,NO,Fix sudo\n"
 	if err := os.WriteFile(filepath.Join(dir, "validation-summary.txt"), []byte(summary), 0600); err != nil {
 		t.Fatal(err)
 	}
