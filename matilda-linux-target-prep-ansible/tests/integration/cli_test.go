@@ -18,7 +18,14 @@ func TestCLIHelpIncludesUserEntryPoints(t *testing.T) {
 	if err != nil {
 		t.Fatalf("help failed: %v", err)
 	}
-	for _, want := range []string{"inventory validate", "generate TARGET", "rollback MODE", "ui"} {
+	for _, want := range []string{
+		"inventory validate",
+		"generate TARGET",
+		"Windows readiness package",
+		"UNIX admin instructions",
+		"rollback MODE",
+		"ui",
+	} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("help output missing %q:\n%s", want, out.String())
 		}
@@ -88,8 +95,33 @@ func TestCLIGenerateWindowsPackage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate windows failed: %v\n%s", err, out.String())
 	}
-	if _, err := os.Stat(filepath.Join(root, "reports", "handoff", "windows", "windows-readiness.ps1")); err != nil {
+	if _, err := os.Stat(filepath.Join(root, "reports", "guidance", "windows", "windows-readiness.ps1")); err != nil {
 		t.Fatalf("expected generated PowerShell package: %v", err)
+	}
+	readme, err := os.ReadFile(filepath.Join(root, "reports", "guidance", "windows", "README.md"))
+	if err != nil {
+		t.Fatalf("expected generated Windows README: %v", err)
+	}
+	if !strings.Contains(string(readme), "Windows Readiness Package") {
+		t.Fatalf("Windows README should use readiness package wording:\n%s", string(readme))
+	}
+}
+
+func TestCLIGenerateUnixAdminInstructions(t *testing.T) {
+	root := withTempProject(t, validLinuxGroupedInventory(), "")
+
+	var out bytes.Buffer
+	err := cli.Execute([]string{"generate", "unix"}, strings.NewReader(""), &out, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("generate unix failed: %v\n%s", err, out.String())
+	}
+	path := filepath.Join(root, "reports", "guidance", "unix", "unix-readiness.md")
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("expected generated UNIX admin instructions: %v", err)
+	}
+	if !strings.Contains(string(content), "UNIX Admin Instructions") {
+		t.Fatalf("UNIX instructions should use admin instructions wording:\n%s", string(content))
 	}
 }
 

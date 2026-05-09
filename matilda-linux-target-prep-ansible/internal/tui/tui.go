@@ -103,7 +103,7 @@ func printScreen(out io.Writer, s style, snap app.Snapshot) {
 	clearIfInteractive(out)
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, s.title("Matilda Discovery Readiness"))
-	fmt.Fprintln(out, s.dim("Target preparation, validation, reports, and handoff workspace"))
+	fmt.Fprintln(out, s.dim("Target preparation, validation, reports, and platform guidance"))
 	fmt.Fprintln(out)
 
 	printStatus(out, s, snap)
@@ -197,7 +197,7 @@ func printMenu(out io.Writer, s style, items []menuItem) {
 	for _, item := range items {
 		labelWidth = max(labelWidth, len(item.Label))
 	}
-	labelWidth = min(labelWidth, 22)
+	labelWidth = min(labelWidth, max(18, min(38, s.width/2)))
 	currentGroup := ""
 	for _, item := range items {
 		if item.Group != currentGroup {
@@ -205,7 +205,7 @@ func printMenu(out io.Writer, s style, items []menuItem) {
 			fmt.Fprintf(out, "%s\n", s.dim(currentGroup))
 		}
 		descWidth := max(12, s.width-labelWidth-10)
-		fmt.Fprintf(out, "  %2s  %-*s  %s\n", s.key(item.Key), labelWidth, item.Label, s.dim(truncate(item.Description, descWidth)))
+		fmt.Fprintf(out, "  %2s  %-*s  %s\n", s.key(item.Key), labelWidth, truncate(item.Label, labelWidth), s.dim(truncate(item.Description, descWidth)))
 	}
 	fmt.Fprintf(out, "  %2s  %-*s  %s\n", s.key("q"), labelWidth, "Quit", s.dim("leave the TUI"))
 	fmt.Fprintln(out)

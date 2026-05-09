@@ -16,11 +16,13 @@ Recommended Linux workflow:
 
 `setup` modifies target systems by creating or updating the Matilda service account, installing the Matilda discovery public key, and writing sudoers configuration.
 
-For planning handoffs that do not touch targets:
+For platform guidance that does not touch targets:
 
 ```bash
 ./matilda-prep generate windows
 ./matilda-prep generate unix
 ```
+
+`generate windows` creates a local Windows readiness package. `generate unix` creates local admin instructions for AIX, Solaris, and HP-UX planning.
 
 Matilda discovery itself remains agentless and read-only. Do not copy private keys to target systems.

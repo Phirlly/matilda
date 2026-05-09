@@ -194,7 +194,7 @@ func pageTemplate() *template.Template {
     <div class="top">
       <div>
         <h1>{{.Title}}</h1>
-        <p>Target readiness, validated IPs, reports, and handoff artifacts in one local workspace.</p>
+        <p>Target readiness, validated IPs, reports, and platform guidance in one local workspace.</p>
       </div>
     </div>
   </header>
@@ -209,7 +209,7 @@ func pageTemplate() *template.Template {
       <div class="shell-head">
         <div>
           <div class="shell-title">Workflow Actions</div>
-          <div class="shell-subtitle">Run checks, generate handoff artifacts, validate targets, and review output.</div>
+          <div class="shell-subtitle">Run checks, generate platform guidance, validate targets, and review output.</div>
         </div>
       </div>
       <div class="shell-body">

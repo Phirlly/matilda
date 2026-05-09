@@ -140,7 +140,7 @@ Commands:
   validate              Validate targets and generate readiness reports
   run                   Run preflight, setup, validate, report
   report                Generate CSV, JSON, Markdown, and HTML reports
-  generate TARGET       Generate Windows or UNIX handoff artifacts
+  generate TARGET       Generate Windows readiness package or UNIX admin instructions
   tui                   Guided terminal workflow
   ui                    Start local browser UI
   rollback MODE         Run one explicit Linux rollback mode
@@ -154,7 +154,7 @@ Recommended workflow:
   ./matilda-prep validate
   ./matilda-prep report
 
-Generated handoff artifacts:
+Generated readiness guidance:
   ./matilda-prep generate windows
   ./matilda-prep generate unix
 

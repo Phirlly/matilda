@@ -309,11 +309,11 @@ func (r *Runtime) Generate(args []string) error {
 	}
 
 	platform := strings.ToLower(args[0])
-	heading(r.Out, "GENERATE", "local handoff artifacts only; no target changes")
+	heading(r.Out, "GENERATE", "local readiness guidance only; no target changes")
 	section(r.Out, "Artifacts")
 	switch platform {
 	case "windows":
-		dir := filepath.Join(r.Root, "reports", "handoff", "windows")
+		dir := filepath.Join(r.Root, "reports", "guidance", "windows")
 		scriptTemplate := filepath.Join(r.Root, "templates", "powershell", "windows-readiness.ps1.tmpl")
 		content, err := os.ReadFile(scriptTemplate)
 		if err != nil {
@@ -324,15 +324,15 @@ func (r *Runtime) Generate(args []string) error {
 		if err := writeArtifact(scriptPath, content, 0644); err != nil {
 			return err
 		}
-		if err := writeArtifact(readmePath, []byte(windowsHandoffReadme()), 0644); err != nil {
+		if err := writeArtifact(readmePath, []byte(windowsReadinessPackageReadme()), 0644); err != nil {
 			return err
 		}
 		fmt.Fprintf(r.Out, "  wrote  %s\n", scriptPath)
 		fmt.Fprintf(r.Out, "  wrote  %s\n", readmePath)
 	case "unix":
-		dir := filepath.Join(r.Root, "reports", "handoff", "unix")
+		dir := filepath.Join(r.Root, "reports", "guidance", "unix")
 		path := filepath.Join(dir, "unix-readiness.md")
-		if err := writeArtifact(path, []byte(unixHandoffReadme()), 0644); err != nil {
+		if err := writeArtifact(path, []byte(unixAdminInstructionsReadme()), 0644); err != nil {
 			return err
 		}
 		fmt.Fprintf(r.Out, "  wrote  %s\n", path)
@@ -602,18 +602,19 @@ Rollback always requires confirmation. Use one mode per run so the mutation is a
 
 func printGenerateHelp(out io.Writer) {
 	fmt.Fprintln(out, strings.TrimSpace(`
-Generate local handoff artifacts:
+Generate local readiness guidance:
   ./matilda-prep generate windows
   ./matilda-prep generate unix
 
-Generated files are written under reports/handoff/ and do not change targets.
+Windows output is a local readiness package. UNIX output is local admin instructions.
+Generated files are written under reports/guidance/ and do not change targets.
 `))
 }
 
-func windowsHandoffReadme() string {
-	return `# Windows Readiness Handoff
+func windowsReadinessPackageReadme() string {
+	return `# Windows Readiness Package
 
-This package is a generated starting point for Windows platform owners.
+This package is a generated starting point for Windows platform owners. It is local guidance only and does not change Windows targets.
 
 - Review WinRM listener and firewall readiness.
 - Confirm SMB TCP/445 access only where Matilda documentation requires it.
@@ -625,10 +626,10 @@ Remote Windows configuration is intentionally not automated until the WinRM work
 `
 }
 
-func unixHandoffReadme() string {
-	return `# UNIX Readiness Handoff
+func unixAdminInstructionsReadme() string {
+	return `# UNIX Admin Instructions
 
-Use this generated note for AIX, Solaris, and HP-UX planning.
+Use these generated instructions for AIX, Solaris, and HP-UX planning. They are local guidance only and do not change UNIX targets.
 
 - Do not assume Linux paths, packages, sudo behavior, or shell features.
 - Prefer customer-reviewed commands and generated instructions first.

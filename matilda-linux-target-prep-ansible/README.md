@@ -29,7 +29,7 @@ Current Linux workflow:
 - validates Probe-to-target SSH and sudo
 - writes readiness reports and validated discovery IPs
 
-The tool can also generate local handoff artifacts for Windows and UNIX planning. Those handoffs do not change targets.
+The tool can also generate local Windows readiness packages and UNIX admin instructions for platform planning. These generated files do not change targets.
 
 ## Important Safety Notes
 
@@ -207,7 +207,7 @@ Implemented now:
 - public/direct targets
 - private targets reached through MatildaProbeVM
 - Probe-to-target SSH/sudo validation
-- Windows and UNIX generated handoff artifacts
+- Windows readiness package and UNIX admin instructions
 
 Structured for future modules:
 

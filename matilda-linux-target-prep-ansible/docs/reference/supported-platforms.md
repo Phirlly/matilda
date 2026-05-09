@@ -10,11 +10,13 @@ The toolkit is structured for:
 
 Only Linux target setup is implemented now.
 
-Windows and UNIX handoff generation is available through:
+Generate local Windows readiness packages and UNIX admin instructions with:
 
 ```bash
 ./matilda-prep generate windows
 ./matilda-prep generate unix
 ```
+
+These commands write local guidance files only. They do not connect to Windows or UNIX targets and do not change any target configuration.
 
 Other platforms are scaffolded so they can be added as separate modules without modifying the Linux role.
