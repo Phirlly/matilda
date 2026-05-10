@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -71,7 +72,6 @@ func (r *Runtime) Init() error {
 func (r *Runtime) Doctor() error {
 	heading(r.Out, "DOCTOR", "local checks; no target changes")
 	checks := []runner.Check{
-		runner.CommandCheck("go", "go", "version"),
 		runner.FileCheck("inventory.yml", filepath.Join(r.Root, "inventory.yml")),
 		runner.FileCheck("ansible config", filepath.Join(r.Root, "ansible", "ansible.cfg")),
 		runner.DirCheck("reports", filepath.Join(r.Root, "reports")),
@@ -80,7 +80,11 @@ func (r *Runtime) Doctor() error {
 	}
 
 	failed := false
-	var results []runner.Result
+	goResult := goDoctorCheck()
+	results := []runner.Result{goResult}
+	if goResult.Status == runner.StatusFail {
+		failed = true
+	}
 	for _, check := range checks {
 		result := check.Run()
 		results = append(results, result)
@@ -143,6 +147,18 @@ func (r *Runtime) Doctor() error {
 	}
 	successLine(r.Out, "Local environment looks ready.")
 	return nil
+}
+
+func goDoctorCheck() runner.Result {
+	if _, err := exec.LookPath("go"); err != nil {
+		if errors.Is(err, exec.ErrNotFound) {
+			return runner.Result{Name: "go", Status: runner.StatusSkip, Detail: "not required when using a packaged or prebuilt matilda-prep binary"}
+		}
+		return runner.Result{Name: "go", Status: runner.StatusFail, Detail: err.Error()}
+	}
+
+	result := runner.CommandCheck("go", "go", "version").Run()
+	return result
 }
 
 func firstLine(text string) string {

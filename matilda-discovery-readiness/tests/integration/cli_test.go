@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -106,6 +107,85 @@ func TestCLIInventoryValidateUsesProjectInventory(t *testing.T) {
 	}
 	if len(runEntries) == 0 {
 		t.Fatalf("expected inventory validate to create a run history record")
+	}
+}
+
+func TestCLIDoctorDoesNotRequireGoAfterBinaryStarts(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses Unix shell scripts to stub local commands")
+	}
+
+	root := withTempProject(t, validLinuxGroupedInventory(), "")
+	writeFile(t, filepath.Join(root, "examples", "env.example"), "TARGET_ADMIN_USER=opc\n")
+	writeFile(t, filepath.Join(root, "examples", "inventory.example.yml"), validLinuxGroupedInventory())
+	if err := os.MkdirAll(filepath.Join(root, "reports"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	binDir := t.TempDir()
+	for _, name := range []string{"ansible-playbook", "ansible-doc"} {
+		writeFile(t, filepath.Join(binDir, name), "#!/bin/sh\necho "+name+" test\n")
+		if err := os.Chmod(filepath.Join(binDir, name), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", binDir)
+
+	var out bytes.Buffer
+	err := cli.Execute([]string{"doctor"}, strings.NewReader(""), &out, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("doctor should not require go once matilda-prep is already running: %v\n%s", err, out.String())
+	}
+	for _, want := range []string{
+		"SKIP  go",
+		"not required when using a packaged or prebuilt matilda-prep binary",
+		"PASS  ansible-playbook",
+		"PASS  ansible-doc",
+		"Local environment looks ready",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("doctor output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestCLIDoctorFailsWhenGoExistsButIsBroken(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses Unix shell scripts to stub local commands")
+	}
+
+	root := withTempProject(t, validLinuxGroupedInventory(), "")
+	writeFile(t, filepath.Join(root, "examples", "env.example"), "TARGET_ADMIN_USER=opc\n")
+	writeFile(t, filepath.Join(root, "examples", "inventory.example.yml"), validLinuxGroupedInventory())
+	if err := os.MkdirAll(filepath.Join(root, "reports"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	binDir := t.TempDir()
+	for _, name := range []string{"ansible-playbook", "ansible-doc"} {
+		writeFile(t, filepath.Join(binDir, name), "#!/bin/sh\necho "+name+" test\n")
+		if err := os.Chmod(filepath.Join(binDir, name), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFile(t, filepath.Join(binDir, "go"), "#!/bin/sh\necho go is broken >&2\nexit 2\n")
+	if err := os.Chmod(filepath.Join(binDir, "go"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+
+	var out bytes.Buffer
+	err := cli.Execute([]string{"doctor"}, strings.NewReader(""), &out, &bytes.Buffer{})
+	if err == nil {
+		t.Fatalf("doctor should fail when go exists but is broken:\n%s", out.String())
+	}
+	for _, want := range []string{
+		"FAIL  go",
+		"go is broken",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("doctor output missing %q:\n%s", want, out.String())
+		}
 	}
 }
 

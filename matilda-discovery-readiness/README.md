@@ -57,7 +57,7 @@ Operator machine:
 - SSH access to the target admin account.
 - SSH access to MatildaProbeVM when private targets or Probe validation are used.
 
-Windows operator machines are not validated in this release candidate. Use a Linux or macOS operator machine, or use WSL with Go, Ansible, and SSH configured.
+Windows operator machines are not validated in this release candidate. Use a Linux or macOS operator machine. For WSL source checkouts, configure Go, Ansible, and SSH. For WSL release packages, use the Linux package and configure Ansible and SSH.
 
 Linux targets:
 
