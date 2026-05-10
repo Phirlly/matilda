@@ -261,7 +261,6 @@ The repository structure already anticipates these features, but they should be 
 
 - direct normalized v1 inventory execution
 - browser inventory editor/import preview
-- live browser progress streaming for long Ansible runs
 - richer terminal progress panes
 - target detail views with remediation history
 - full run history beyond latest action state
@@ -288,6 +287,8 @@ Reference docs:
 - [Privilege methods](docs/reference/privilege-methods.md)
 - [Terminal console architecture](docs/reference/terminal-console-architecture.md)
 - [Matilda discovery launch reference](docs/reference/matilda-discovery-launch.md)
+- [Repository maintenance](docs/reference/repository-maintenance.md)
+- [Browser live streaming design](docs/reference/browser-live-streaming.md)
 
 `docs/matilda-docs-cache/` is local reference material only and is not tracked.
 
