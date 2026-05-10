@@ -64,6 +64,22 @@ func TestStatusPrintsSummaryAndExits(t *testing.T) {
 	}
 }
 
+func TestStatusUsesInventoryCountBeforeReportsExist(t *testing.T) {
+	withTempProject(t, validLinuxGroupedInventory(), "")
+
+	var out bytes.Buffer
+	err := cli.Execute([]string{"status"}, strings.NewReader(""), &out, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("status failed: %v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "Ready      0/1") {
+		t.Fatalf("status should use inventory target count before reports exist:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "Reports    Pending") {
+		t.Fatalf("status should show reports pending before validate:\n%s", out.String())
+	}
+}
+
 func TestStartAliasOpensConsole(t *testing.T) {
 	withTempProject(t, validLinuxGroupedInventory(), validationSummary())
 

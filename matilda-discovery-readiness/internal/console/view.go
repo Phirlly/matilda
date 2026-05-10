@@ -64,7 +64,7 @@ func renderHeader(s consoleStyles, snap app.Snapshot, width int) string {
 		"Inventory %s  Targets %d  Ready %s  Reports %s",
 		inlineStatusText(s, snap.InventoryOK, "OK", "Fix"),
 		snap.TargetCount,
-		s.ok.Render(fmt.Sprintf("%d/%d", snap.ReportSummary.Ready, snap.ReportSummary.Total)),
+		s.ok.Render(fmt.Sprintf("%d/%d", snap.ReportSummary.Ready, snap.ReadinessTotal())),
 		reportState(s, snap.ReportError),
 	)
 	return lipgloss.JoinVertical(
@@ -260,7 +260,7 @@ func renderPlainStatus(s ui.Style, snap app.Snapshot) string {
 	printPlainKV(&b, s, []plainKV{
 		{key: "Inventory", value: plainStatus(s, snap.InventoryOK, "OK", "Fix")},
 		{key: "Targets", value: fmt.Sprintf("%d", snap.TargetCount)},
-		{key: "Ready", value: s.OK(fmt.Sprintf("%d/%d", snap.ReportSummary.Ready, snap.ReportSummary.Total))},
+		{key: "Ready", value: s.OK(fmt.Sprintf("%d/%d", snap.ReportSummary.Ready, snap.ReadinessTotal()))},
 		{key: "Reports", value: plainReportStatus(s, snap.ReportError)},
 	})
 	fmt.Fprintln(&b)
