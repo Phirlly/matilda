@@ -51,11 +51,14 @@ These areas are not automated in this release candidate:
 
 Operator machine:
 
-- Go when running from source.
+- Linux or macOS with Bash.
+- Go when cloning and running from source.
 - Ansible.
 - SSH access to the target admin account.
 - SSH access to MatildaProbeVM when private targets or Probe validation are used.
 - Local `.env` and `inventory.yml`.
+
+Windows operator machines are not validated in this release candidate. Use WSL only if Go, Ansible, and SSH are configured there.
 
 Linux targets:
 
@@ -77,6 +80,7 @@ MatildaProbeVM:
 - Reports are local generated artifacts and are ignored by git.
 - `.matilda/` run history is local state and is ignored by git.
 - Non-Linux v1 inventory targets are structurally valid, but Linux remote actions skip them.
+- Prebuilt release binaries are operating-system and CPU-architecture specific. A source clone can be used on validated operator platforms with Go installed.
 
 ## Release Candidate Validation
 

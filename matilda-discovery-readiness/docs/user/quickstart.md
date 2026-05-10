@@ -4,6 +4,17 @@ Use this quickstart to prepare and validate Linux target readiness for Matilda P
 
 The current release candidate automates Linux target readiness for direct and Probe-routed targets. Windows and UNIX commands generate local guidance only. Cloud and Kubernetes readiness are not automated in this release candidate.
 
+Use a Linux or macOS operator machine. Windows operator machines are not validated in this release candidate; use WSL only if Go, Ansible, and SSH are configured there.
+
+Clone and enter the repository:
+
+```bash
+git clone <repo-url>
+cd matilda-discovery-readiness
+```
+
+When running from a source clone, `./matilda-prep` builds the local Go binary into `.bin/` automatically and then runs it.
+
 Open the Matilda Terminal Console:
 
 ```bash

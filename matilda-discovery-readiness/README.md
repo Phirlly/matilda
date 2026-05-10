@@ -51,10 +51,13 @@ Important rules:
 
 Operator machine:
 
-- Go, when running from source.
+- macOS or Linux with Bash.
+- Go, when cloning and running from source.
 - Ansible.
 - SSH access to the target admin account.
 - SSH access to MatildaProbeVM when private targets or Probe validation are used.
+
+Windows operator machines are not validated in this release candidate. Use a Linux or macOS operator machine, or use WSL with Go, Ansible, and SSH configured.
 
 Linux targets:
 
@@ -70,6 +73,15 @@ MatildaProbeVM, when private targets or Probe validation are used:
 - Has `nc` or `ncat` available for Probe-to-target TCP checks.
 
 ## Quick Start
+
+Clone and enter the repository:
+
+```bash
+git clone <repo-url>
+cd matilda-discovery-readiness
+```
+
+When running from a source clone, `./matilda-prep` builds the local Go binary into `.bin/` automatically and then runs it. Packaged release assets can include a prebuilt binary for a specific operating system and CPU architecture, but the source-clone path is the most portable way to run this release candidate.
 
 Create local configuration files:
 

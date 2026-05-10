@@ -18,7 +18,11 @@ Not automated in this release candidate:
 
 ## 1. Prepare The Checkout
 
-From a source checkout, install Go and Ansible on the operator machine. From a packaged release that already includes a runnable `matilda-prep` binary, Go is not required.
+Use a Linux or macOS operator machine. Windows operator machines are not validated in this release candidate; use WSL only if Go, Ansible, and SSH are configured there.
+
+From a source checkout, install Go and Ansible on the operator machine. The `./matilda-prep` launcher builds the local Go binary into `.bin/` automatically before running it.
+
+From a packaged release that already includes a runnable binary for your operating system and CPU architecture, Go is not required.
 
 ```bash
 git clone <repo-url>
