@@ -2,15 +2,15 @@
 
 Use this quickstart to prepare and validate Linux target readiness for Matilda Probe-based discovery.
 
-The current release candidate automates Linux target readiness for direct and Probe-routed targets. Windows and UNIX commands generate local guidance only. Cloud and Kubernetes readiness are not automated in this release candidate.
+This release automates Linux target readiness for direct and Probe-routed targets. Windows and UNIX commands generate local guidance only. Cloud and Kubernetes readiness are not automated in this release.
 
-Use a Linux or macOS operator machine. Windows operator machines are not validated in this release candidate. For WSL source checkouts, configure Go, Ansible, and SSH. For WSL release packages, use the Linux package and configure Ansible and SSH.
+Use a Linux or macOS operator machine. Windows operator machines are not validated in this release. For WSL source checkouts, configure Go, Ansible, and SSH. For WSL release packages, use the Linux package and configure Ansible and SSH.
 
-Clone and enter the repository:
+Clone the repository and enter the toolkit directory:
 
 ```bash
-git clone <repo-url>
-cd matilda-discovery-readiness
+git clone https://github.com/Phirlly/matilda.git
+cd matilda/matilda-discovery-readiness
 ```
 
 When running from a source clone, `./matilda-prep` builds the local Go binary into `.bin/` automatically and then runs it.
@@ -37,7 +37,7 @@ Recommended Linux workflow:
 ./matilda-prep report
 ```
 
-For a fresh clone or release candidate checkout, run the operator smoke test in [operator-smoke-test.md](operator-smoke-test.md) before changing targets.
+For a fresh clone or release package, run the operator smoke test in [operator-smoke-test.md](operator-smoke-test.md) before changing targets.
 
 Use `./matilda-prep status` when you want a non-interactive status summary without entering the interactive console.
 

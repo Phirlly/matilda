@@ -6,10 +6,10 @@ The Probe pulls discovery tasks from Matilda SaaS, connects locally to targets, 
 
 The current toolkit automates Linux target readiness. Linux targets are accessed over SSH either directly from the operator machine or through MatildaProbeVM.
 
-Other access models are for planning only in this release candidate:
+Other access models are for planning only in this release:
 
 - UNIX targets use SSH-based planning guidance.
 - Windows targets use generated readiness package guidance.
-- Cloud and Kubernetes readiness are not automated in this release candidate.
+- Cloud and Kubernetes readiness are not automated in this release.
 
 Preparation may modify target systems. Matilda discovery itself is agentless and read-only.

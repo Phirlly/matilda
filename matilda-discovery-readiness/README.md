@@ -12,7 +12,7 @@ The toolkit provides a guided terminal console, a local browser UI, inventory ch
 
 ## Supported Today
 
-Validated in this release candidate:
+Validated in this release:
 
 - Linux targets reached directly from the operator machine.
 - Linux targets reached through MatildaProbeVM.
@@ -27,7 +27,7 @@ Guidance only:
 - Windows readiness package generation.
 - UNIX admin instruction generation for planning.
 
-Not automated in this release candidate:
+Not automated in this release:
 
 - Windows remote setup or validation.
 - UNIX remote setup or validation.
@@ -57,7 +57,7 @@ Operator machine:
 - SSH access to the target admin account.
 - SSH access to MatildaProbeVM when private targets or Probe validation are used.
 
-Windows operator machines are not validated in this release candidate. Use a Linux or macOS operator machine. For WSL source checkouts, configure Go, Ansible, and SSH. For WSL release packages, use the Linux package and configure Ansible and SSH.
+Windows operator machines are not validated in this release. Use a Linux or macOS operator machine. For WSL source checkouts, configure Go, Ansible, and SSH. For WSL release packages, use the Linux package and configure Ansible and SSH.
 
 Linux targets:
 
@@ -74,14 +74,14 @@ MatildaProbeVM, when private targets or Probe validation are used:
 
 ## Quick Start
 
-Clone and enter the repository:
+Clone the repository and enter the toolkit directory:
 
 ```bash
-git clone <repo-url>
-cd matilda-discovery-readiness
+git clone https://github.com/Phirlly/matilda.git
+cd matilda/matilda-discovery-readiness
 ```
 
-When running from a source clone, `./matilda-prep` builds the local Go binary into `.bin/` automatically and then runs it. The source-clone path is the most portable way to run this release candidate.
+When running from a source clone, `./matilda-prep` builds the local Go binary into `.bin/` automatically and then runs it. The source-clone path is the most portable way to run the toolkit when Go is installed.
 
 Packaged release tarballs include the project files and a prebuilt `matilda-prep` binary for a specific operating system and CPU architecture. Extract the tarball, enter the extracted `matilda-discovery-readiness` directory, and run `./matilda-prep` from there. Standalone binary assets are not one-file installs; use them from a source checkout or extracted package root so the toolkit can find its Ansible, template, schema, and documentation files.
 

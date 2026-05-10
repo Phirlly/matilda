@@ -13,7 +13,7 @@ This repository is maintained as the Matilda Discovery Readiness Toolkit.
 - Ansible owns remote target setup and validation.
 - Linux remains the tested remote automation baseline.
 - Windows and UNIX use generated guidance until remote automation is validated.
-- Cloud and Kubernetes readiness are not automated in the current release candidate.
+- Cloud and Kubernetes readiness are not automated in the current release.
 
 ## Keep Tracked
 
@@ -55,7 +55,7 @@ These files are local runtime material and must not be committed:
 - Make changes on `featureBranch` or another non-main branch.
 - Run validation on the branch before merging or fast-forwarding `main`.
 - Create release tags from `main` only after review and validation.
-- Prefer a new release candidate tag over moving a published tag unless the tag move is explicitly approved.
+- Prefer a new tag over moving a published tag unless the tag move is explicitly approved. For RCs, use the next RC tag.
 
 ## Validation
 
