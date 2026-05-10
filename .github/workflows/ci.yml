@@ -27,6 +27,41 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Check main pull request source branch
+        if: github.event_name == 'pull_request' && github.base_ref == 'main' && github.head_ref != 'dev'
+        run: |
+          echo "Pull requests into main must come from dev."
+          echo "Current source branch: ${{ github.head_ref }}"
+          exit 1
+        working-directory: .
+
+      - name: Check local-only files remain untracked
+        run: |
+          forbidden="$(
+            git ls-files \
+              AGENTS.md \
+              PLAN.md \
+              matilda-discovery-readiness/.env \
+              matilda-discovery-readiness/inventory.yml \
+              matilda-discovery-readiness/inventory.v1.yml \
+              matilda-discovery-readiness/PLAN.md \
+              matilda-discovery-readiness/AGENTS.md \
+              matilda-discovery-readiness/.matilda \
+              matilda-discovery-readiness/.bin \
+              matilda-discovery-readiness/.ansible \
+              matilda-discovery-readiness/.gocache \
+              matilda-discovery-readiness/dist \
+              matilda-discovery-readiness/docs/matilda-docs-cache \
+              matilda-discovery-readiness/reports \
+            | grep -v '^matilda-discovery-readiness/reports/\.gitkeep$' || true
+          )"
+          if [ -n "$forbidden" ]; then
+            echo "Local-only files must not be tracked:"
+            echo "$forbidden"
+            exit 1
+          fi
+        working-directory: .
+
       - name: Set up Go
         uses: actions/setup-go@v6
         with:

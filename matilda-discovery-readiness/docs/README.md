@@ -23,17 +23,17 @@ These explain support boundaries and launch handoff details:
 - [Privilege methods](reference/privilege-methods.md)
 - [Matilda discovery launch reference](reference/matilda-discovery-launch.md)
 
-## Release Reference
+## Release Workflow
 
 These are for release managers validating and packaging releases:
 
-- [Release baseline](reference/release-candidate.md)
+- [Release baseline](workflow/release-candidate.md)
 
 ## Maintainer Reference
 
 These are for maintainers changing the toolkit, not for first-time operators:
 
-- [Branching and release workflow](reference/branching-and-release-workflow.md)
-- [Repository maintenance](reference/repository-maintenance.md)
+- [Branching workflow](workflow/BRANCHING.md)
+- [Repository maintenance](workflow/repository-maintenance.md)
 - [Terminal console architecture](reference/terminal-console-architecture.md)
 - [Browser live streaming design](reference/browser-live-streaming.md)
