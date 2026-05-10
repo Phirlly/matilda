@@ -89,29 +89,47 @@ Each event uses JSON data:
 - Final events re-enable action buttons and refresh readiness metrics from `/api/status`.
 - Cancel requests post to `/api/actions/{id}/cancel`.
 
+## Dashboard Layout
+
+The browser dashboard keeps the readiness workflow visible without duplicating the terminal status summary:
+
+- Top metrics show inventory health, target count, ready targets, and remediation count.
+- Workflow actions are compact rows grouped by Local, Guidance, and Remote.
+- Read-only action rows do not reserve confirmation space.
+- Mutating action rows show the `Confirm target change` checkbox before they can start.
+- Activity Log stays directly below the action palette so streaming output is close to the command that started it.
+- Target Readiness, Validated IPs, and Report Files remain first-class dashboard sections.
+- Raw `inventory.yml` and `validation-summary.txt` content lives in collapsed detail panels named `Inventory file` and `Validation details`.
+- On mobile, Target Readiness and Report Files use labeled stacked rows instead of forcing page-level horizontal scrolling.
+
 ## Tests
 
 Required coverage:
 
 - browser HTML contains streaming client hooks.
+- browser HTML contains compact action rows and collapsed detail panels.
+- browser HTML contains responsive Target Readiness and Report Files table labels.
 - read-only action start returns a job id.
 - SSE emits started, output, and completed events.
 - job status endpoint returns completed output.
 - mutating action without confirmation returns `400`.
 - unknown action returns `400`.
 - concurrent action while one job is running returns `409`.
+- cancellation emits a `cancelled` terminal event.
 
 ## Validation
 
 Run:
 
 ```bash
-go test ./...
-go vet ./...
+GOCACHE=/private/tmp/matilda-gocache go test ./...
+GOCACHE=/private/tmp/matilda-gocache go vet ./...
+GOCACHE=/private/tmp/matilda-gocache go build -o /private/tmp/matilda-prep-check ./cmd/matilda-prep
 git diff --check
 bash -n matilda-prep
 ./matilda-prep help
 ./matilda-prep status
+./matilda-prep inventory validate
 ```
 
 Run Ansible syntax checks after remote workflow changes.
