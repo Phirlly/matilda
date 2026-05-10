@@ -280,6 +280,7 @@ Reference docs:
 - [Discovery access model](docs/reference/discovery-access-model.md)
 - [Supported platforms](docs/reference/supported-platforms.md)
 - [Privilege methods](docs/reference/privilege-methods.md)
+- [Release candidate baseline](docs/reference/release-candidate.md)
 - [Terminal console architecture](docs/reference/terminal-console-architecture.md)
 - [Matilda discovery launch reference](docs/reference/matilda-discovery-launch.md)
 - [Repository maintenance](docs/reference/repository-maintenance.md)
@@ -302,6 +303,7 @@ tests/unit/                          Go unit tests
 tests/integration/                   Go integration tests
 docs/                                User and reference documentation
 reports/                             Local generated output, ignored by git
+dist/                                Local release binaries and packages, ignored by git
 ```
 
 ## Development Checks

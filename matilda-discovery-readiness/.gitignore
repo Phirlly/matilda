@@ -7,6 +7,7 @@ reports/**
 !reports/
 !reports/.gitkeep
 .bin/
+dist/
 .ansible/
 .gocache/
 .matilda/
