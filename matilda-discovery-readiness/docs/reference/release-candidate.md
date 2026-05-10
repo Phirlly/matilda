@@ -128,8 +128,10 @@ For each target operating system and architecture:
 4. Strip macOS metadata from the stage when packaging on macOS.
 5. Create the tarball with `COPYFILE_DISABLE=1`.
 6. Verify the tarball by extracting it in a Linux container and running
-   `./matilda-prep help`, `./matilda-prep inventory validate`, and
-   `./matilda-prep status` from the extracted project root.
+   `./matilda-prep help` from the extracted project root.
+7. For `inventory validate` and `status`, copy a real operator `inventory.yml`
+   into the extracted project root first. Packaged tarballs intentionally do not
+   include local inventory or `.env` files.
 
 Example macOS packaging pattern for a Linux amd64 tarball:
 
@@ -147,6 +149,21 @@ xattr -cr "$stage/matilda-discovery-readiness" 2>/dev/null || true
 COPYFILE_DISABLE=1 tar -czf "dist/matilda-discovery-readiness-${version}-linux-amd64.tar.gz" -C "$stage" matilda-discovery-readiness
 ```
 
+Write checksums from the asset directory so users can validate downloaded files
+without recreating local `dist/...` paths:
+
+```bash
+(
+  cd dist
+  shasum -a 256 \
+    matilda-prep-darwin-arm64 \
+    matilda-prep-linux-amd64 \
+    "matilda-discovery-readiness-${version}-darwin-arm64.tar.gz" \
+    "matilda-discovery-readiness-${version}-linux-amd64.tar.gz" \
+    > checksums.txt
+)
+```
+
 Before publishing, verify no macOS metadata is present:
 
 ```bash
@@ -159,5 +176,5 @@ fi
 Then verify in Podman or another Linux runtime:
 
 ```bash
-podman run --rm --platform linux/amd64 -v "$PWD:/work:Z" -w /work alpine:latest sh -c 'tar -xzf dist/matilda-discovery-readiness-v0.1.0-rcN-linux-amd64.tar.gz -C /tmp && cd /tmp/matilda-discovery-readiness && ./matilda-prep help'
+podman run --rm --platform linux/amd64 -v "$PWD:/work:Z" -w /work alpine:latest sh -c 'tar -xzf dist/matilda-discovery-readiness-v0.1.0-rcN-linux-amd64.tar.gz -C /tmp && cd /tmp/matilda-discovery-readiness && cp /work/inventory.yml inventory.yml && ./matilda-prep help && ./matilda-prep inventory validate && ./matilda-prep status'
 ```
