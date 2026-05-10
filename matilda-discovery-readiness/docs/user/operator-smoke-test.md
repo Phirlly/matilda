@@ -18,7 +18,7 @@ Not automated in this release candidate:
 
 ## 1. Prepare The Checkout
 
-Use a Linux or macOS operator machine. Windows operator machines are not validated in this release candidate; use WSL only if Go, Ansible, and SSH are configured there.
+Use a Linux or macOS operator machine. Windows operator machines are not validated in this release candidate. For WSL source checkouts, configure Go, Ansible, and SSH; for WSL release packages, use the Linux package and configure Ansible and SSH.
 
 From a source checkout, install Go and Ansible on the operator machine. The `./matilda-prep` launcher builds the local Go binary into `.bin/` automatically before running it.
 
