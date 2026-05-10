@@ -28,3 +28,9 @@ This repository uses a protected-main workflow.
 4. Merge completed work into `dev`.
 5. Merge `dev` into `main` only after build/test checks pass.
 6. Create release tags from `main` after validation.
+
+## CI Gate
+
+Pull requests into `dev` and `main` must pass CI before merge. CI runs Go tests,
+Go vet, whitespace checks, launcher syntax checks, and Linux Ansible syntax
+checks.
