@@ -1,0 +1,106 @@
+# Operator Smoke Test
+
+Use this smoke test from a fresh clone or release candidate checkout before a customer discovery session. It verifies that the local operator machine, local configuration, inventory, terminal workflow, and browser UI are usable before any target changes.
+
+Supported today:
+
+- Linux target readiness for direct targets.
+- Linux target readiness for targets reached through MatildaProbeVM.
+- Linux preflight, setup, validate, report, and explicit rollback modes.
+- Local Windows readiness package generation and UNIX admin guidance generation.
+
+Guidance or scaffold only:
+
+- Windows remote automation.
+- UNIX remote automation.
+- Cloud API readiness automation.
+- Kubernetes readiness automation.
+
+## 1. Prepare The Checkout
+
+From a source checkout, install Go and Ansible on the operator machine. From a packaged release that already includes a runnable `matilda-prep` binary, Go is not required.
+
+```bash
+git clone <repo-url>
+cd matilda-discovery-readiness
+```
+
+## 2. Create Local Files
+
+Use the guided initializer:
+
+```bash
+./matilda-prep init
+```
+
+Or copy the examples and edit them:
+
+```bash
+cp examples/env.example .env
+cp examples/inventory.example.yml inventory.yml
+```
+
+Before continuing, replace every placeholder value. Keep private key files on the operator machine or MatildaProbeVM only. Do not copy private keys to targets.
+
+## 3. Run Local Smoke Checks
+
+These commands should work before any remote target change:
+
+```bash
+./matilda-prep doctor
+./matilda-prep inventory validate
+./matilda-prep status
+./matilda-prep ui
+```
+
+Expected result:
+
+- `doctor` reports local prerequisites as passing.
+- `inventory validate` reports the expected target count.
+- `status` shows `Inventory OK`.
+- `ui` prints a local browser URL and the dashboard loads without horizontal scrolling.
+
+If `status` says reports are pending, that is normal before the first `validate` run.
+
+## 4. Run Linux Readiness
+
+Run the Linux workflow only after the local smoke checks pass:
+
+```bash
+./matilda-prep preflight
+./matilda-prep setup
+./matilda-prep validate
+./matilda-prep report
+```
+
+`setup` modifies Linux targets. It asks for confirmation before creating or updating `matilda-svc`, installing the Matilda discovery public key, and writing sudoers configuration.
+
+Expected result after `validate`:
+
+- `./matilda-prep status` shows the ready count.
+- `reports/validated-discovery-ips.txt` contains only validated discovery IPs.
+- `reports/readiness.html` opens as the operator report.
+- Failed targets have remediation in `reports/readiness.*`.
+
+## 5. Rollback Smoke
+
+Rollback modes are explicit and should be tested against disposable targets before release:
+
+```bash
+./matilda-prep rollback --sudoers-only
+./matilda-prep rollback --remove-key
+./matilda-prep rollback --lock-user
+./matilda-prep rollback --delete-user
+```
+
+Run one mode at a time. Restore disposable targets with `./matilda-prep setup` and `./matilda-prep validate` after rollback testing if they will be reused.
+
+## 6. Common Fixes
+
+- Missing `.env`: run `./matilda-prep init` or copy `examples/env.example` to `.env`.
+- Missing `inventory.yml`: run `./matilda-prep init` or copy `examples/inventory.example.yml` to `inventory.yml`.
+- Placeholder inventory values: edit `ansible_host`, `discovery_ip`, and related target fields.
+- Missing key files: fix the path in `.env` and rerun `./matilda-prep doctor`.
+- Missing Ansible: install Ansible on the operator machine and rerun `./matilda-prep doctor`.
+- Probe cannot reach target TCP/22: check route tables, security lists, NSGs, and target firewalls.
+- Target SSH or sudo fails: fix admin SSH access and non-interactive sudo, then rerun `preflight`.

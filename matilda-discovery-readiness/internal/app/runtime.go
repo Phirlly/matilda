@@ -106,11 +106,22 @@ func (r *Runtime) Doctor() error {
 		}
 	}
 
-	env, _ := config.LoadEnv(filepath.Join(r.Root, ".env"))
+	envPath := filepath.Join(r.Root, ".env")
+	env, envErr := config.LoadEnv(envPath)
+	if envErr != nil {
+		results = append(results, runner.Result{Name: ".env", Status: runner.StatusSkip, Detail: "missing; run ./matilda-prep init or copy examples/env.example to .env for repeatable runs"})
+	} else {
+		results = append(results, runner.Result{Name: ".env", Status: runner.StatusPass, Detail: envPath})
+	}
 	for _, key := range config.RequiredKeys {
 		value := strings.TrimSpace(env[key])
 		if value == "" {
-			results = append(results, runner.Result{Name: ".env " + key, Status: runner.StatusSkip, Detail: "will prompt when needed"})
+			results = append(results, runner.Result{Name: ".env " + key, Status: runner.StatusSkip, Detail: "add to .env or answer the terminal prompt when running a remote command"})
+			continue
+		}
+		if config.LooksLikePlaceholder(value) {
+			results = append(results, runner.Result{Name: ".env " + key, Status: runner.StatusFail, Detail: "replace placeholder value"})
+			failed = true
 			continue
 		}
 		if config.IsLocalFileKey(key) {
@@ -462,6 +473,16 @@ func (r *Runtime) collectRuntimeExtraVarsFor(keys []string) ([]string, error) {
 		label := config.LabelFor(key)
 		value := promptWithReader(reader, r.Out, label, defaultValue)
 		values[key] = value
+	}
+
+	for _, key := range keys {
+		value := strings.TrimSpace(values[key])
+		if value == "" {
+			return nil, fmt.Errorf("%s is required; add %s to .env or rerun ./matilda-prep init", config.LabelFor(key), key)
+		}
+		if config.LooksLikePlaceholder(value) {
+			return nil, fmt.Errorf("%s still contains a placeholder; update %s in .env", config.LabelFor(key), key)
+		}
 	}
 
 	for _, key := range keys {

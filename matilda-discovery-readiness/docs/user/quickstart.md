@@ -24,6 +24,8 @@ Recommended Linux workflow:
 ./matilda-prep report
 ```
 
+For a fresh clone or release candidate checkout, run the operator smoke test in [operator-smoke-test.md](operator-smoke-test.md) before changing targets.
+
 Use `./matilda-prep status` when you want a non-interactive status summary without entering the interactive console.
 
 `setup` modifies target systems by creating or updating the Matilda service account, installing the Matilda discovery public key, and writing sudoers configuration.

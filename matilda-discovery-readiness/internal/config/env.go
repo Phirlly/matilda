@@ -105,6 +105,14 @@ func IsLocalFileKey(key string) bool {
 	return false
 }
 
+func LooksLikePlaceholder(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	if strings.HasPrefix(trimmed, "/path/to/") {
+		return true
+	}
+	return strings.Contains(trimmed, "<") && strings.Contains(trimmed, ">")
+}
+
 func ExpandPath(path string) string {
 	if strings.HasPrefix(path, "~/") {
 		if home, err := os.UserHomeDir(); err == nil {

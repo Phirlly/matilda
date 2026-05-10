@@ -113,6 +113,8 @@ For the local browser interface:
 
 Open the printed local URL in your browser.
 
+For a fresh-clone operator check, see [docs/user/operator-smoke-test.md](docs/user/operator-smoke-test.md).
+
 ## Configuration Files
 
 Most users only need two local files:
@@ -233,7 +235,8 @@ Implemented now:
 - public/direct targets
 - private targets reached through MatildaProbeVM
 - Probe-to-target SSH/sudo validation
-- Windows readiness package and UNIX admin instructions
+- normalized v1 inventory execution for Linux targets
+- local Windows readiness package generation and UNIX admin guidance generation
 
 Structured for future modules:
 
@@ -252,11 +255,9 @@ See [docs/reference/supported-platforms.md](docs/reference/supported-platforms.m
 
 The repository structure already anticipates these features, but they should be treated as in-progress unless documented otherwise:
 
-- direct normalized v1 inventory execution
 - browser inventory editor/import preview
 - richer terminal progress panes
 - target detail views with remediation history
-- full run history beyond latest action state
 - validated UNIX remote automation
 - validated Windows remote automation
 - cloud API readiness modules
@@ -267,6 +268,7 @@ The repository structure already anticipates these features, but they should be 
 User docs:
 
 - [Quickstart](docs/user/quickstart.md)
+- [Operator smoke test](docs/user/operator-smoke-test.md)
 - [Linux workflow](docs/user/linux.md)
 - [Inventory](docs/user/inventory.md)
 - [Reports](docs/user/reports.md)
