@@ -51,9 +51,14 @@ These files are local runtime material and must not be committed:
 
 ## Branch Workflow
 
+This repository uses the protected-main workflow defined in [Branching and Release Workflow](branching-and-release-workflow.md).
+
+- `main` is the production/release branch and must remain deployable.
 - Do not make direct code or documentation updates on `main`.
-- Make changes on `featureBranch` or another non-main branch.
-- Run validation on the branch before merging or fast-forwarding `main`.
+- `dev` is the integration branch for completed work from short-lived branches.
+- Create short-lived work branches from `dev`.
+- Merge completed work into `dev` first.
+- Merge `dev` into `main` only after build/test checks pass.
 - Create release tags from `main` only after review and validation.
 - Prefer a new tag over moving a published tag unless the tag move is explicitly approved. For RCs, use the next RC tag.
 

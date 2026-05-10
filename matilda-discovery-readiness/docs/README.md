@@ -33,6 +33,7 @@ These are for release managers validating and packaging releases:
 
 These are for maintainers changing the toolkit, not for first-time operators:
 
+- [Branching and release workflow](reference/branching-and-release-workflow.md)
 - [Repository maintenance](reference/repository-maintenance.md)
 - [Terminal console architecture](reference/terminal-console-architecture.md)
 - [Browser live streaming design](reference/browser-live-streaming.md)
