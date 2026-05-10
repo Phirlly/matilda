@@ -5,9 +5,9 @@ reports/*.txt
 *.retry
 
 # Folder and files to ignore
-matilda-linux-target-prep-ansible/docs/matilda-docs-cache
-matilda-linux-target-prep-ansible/inventory.yml
-matilda-linux-target-prep-ansible/.DS_Store
-matilda-linux-target-prep-ansible/PLAN.md
+matilda-discovery-readiness/docs/matilda-docs-cache
+matilda-discovery-readiness/inventory.yml
+matilda-discovery-readiness/.DS_Store
+matilda-discovery-readiness/PLAN.md
 /presentations
 /assessments
