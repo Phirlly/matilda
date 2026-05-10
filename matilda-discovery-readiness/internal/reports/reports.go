@@ -21,6 +21,7 @@ type Row struct {
 	ProbeSSH      string `json:"probe_ssh"`
 	Ready         string `json:"ready"`
 	Remediation   string `json:"remediation"`
+	FailureCode   string `json:"-"`
 }
 
 type Summary struct {
@@ -105,22 +106,97 @@ func readSummary(path string) ([]Row, error) {
 
 	var rows []Row
 	for _, record := range records[1:] {
-		for len(record) < 9 {
+		for len(record) < 10 {
 			record = append(record, "")
 		}
-		rows = append(rows, Row{
-			Host:          record[0],
-			DiscoveryIP:   record[1],
-			Command:       record[2],
-			FallbackUsed:  record[3],
-			LocalSudo:     record[4],
-			DeniedCommand: record[5],
-			ProbeSSH:      record[6],
-			Ready:         record[7],
-			Remediation:   record[8],
-		})
+		row := Row{
+			Host:          strings.TrimSpace(record[0]),
+			DiscoveryIP:   strings.TrimSpace(record[1]),
+			Command:       strings.TrimSpace(record[2]),
+			FallbackUsed:  strings.TrimSpace(record[3]),
+			LocalSudo:     strings.TrimSpace(record[4]),
+			DeniedCommand: strings.TrimSpace(record[5]),
+			ProbeSSH:      strings.TrimSpace(record[6]),
+			Ready:         strings.TrimSpace(record[7]),
+			Remediation:   compact(record[8]),
+			FailureCode:   strings.TrimSpace(record[9]),
+		}
+		row.Remediation = normalizeRemediation(row)
+		rows = append(rows, row)
 	}
 	return rows, nil
+}
+
+func normalizeRemediation(row Row) string {
+	raw := compact(row.Remediation)
+	if strings.EqualFold(row.Ready, "YES") {
+		if raw == "" {
+			return "None"
+		}
+		return raw
+	}
+
+	code := strings.ToUpper(strings.TrimSpace(row.FailureCode))
+	if code == "" {
+		code = inferFailureCode(raw)
+	}
+
+	switch code {
+	case "SUDO_PASSWORD_REQUIRED":
+		return withObserved("Passwordless sudo is not available for the Matilda service account. Rerun setup or review the Matilda sudoers drop-in so the discovery command can run with sudo -n.", raw)
+	case "SSH_PUBLICKEY_DENIED":
+		return withObserved("SSH public key authentication failed for the Matilda service account. Rerun setup and confirm the Probe private key matches the public key installed on the target.", raw)
+	case "SERVICE_ACCOUNT_LOCKED":
+		return withObserved("The Matilda service account is locked or has a non-login shell. Rerun setup or unlock the account and restore an interactive shell.", raw)
+	case "SERVICE_ACCOUNT_MISSING":
+		return withObserved("The Matilda service account is missing. Rerun setup to recreate the account, home directory, key, and sudoers configuration.", raw)
+	case "DENIED_COMMAND_ALLOWED":
+		return withObserved("The sudoers allow-list allowed an unapproved command. Review the Matilda sudoers drop-in and restrict access to documented discovery commands.", raw)
+	case "VALIDATION_COMMAND_MISSING":
+		return withObserved("Neither ifconfig nor ip is available on the target. Install net-tools for ifconfig or make iproute available, then rerun validate.", raw)
+	case "PROBE_VALIDATION_FAILED":
+		return withObserved("Probe-to-target validation failed. Confirm Probe SSH access, the private key path on the Probe, target TCP/22 reachability, and passwordless sudo for the service account.", raw)
+	}
+
+	if raw == "" {
+		return "Validation failed. Review validation-summary.txt and the Ansible output for the target-specific error."
+	}
+	return raw
+}
+
+func inferFailureCode(raw string) string {
+	text := strings.ToLower(raw)
+	switch {
+	case strings.Contains(text, "a password is required"):
+		return "SUDO_PASSWORD_REQUIRED"
+	case strings.Contains(text, "permission denied") && strings.Contains(text, "publickey"):
+		return "SSH_PUBLICKEY_DENIED"
+	case strings.Contains(text, "this account is currently not available"):
+		return "SERVICE_ACCOUNT_LOCKED"
+	case strings.Contains(text, "unknown user"):
+		return "SERVICE_ACCOUNT_MISSING"
+	case strings.Contains(text, "unapproved sudo command was not denied"):
+		return "DENIED_COMMAND_ALLOWED"
+	case strings.Contains(text, "neither ifconfig nor ip"):
+		return "VALIDATION_COMMAND_MISSING"
+	default:
+		return ""
+	}
+}
+
+func withObserved(message string, raw string) string {
+	raw = compact(raw)
+	if raw == "" || strings.EqualFold(raw, "None") {
+		return message
+	}
+	if len(raw) > 220 {
+		raw = strings.TrimSpace(raw[:220]) + "..."
+	}
+	return message + " Observed failure: " + raw
+}
+
+func compact(s string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(s)), " ")
 }
 
 func writeCSV(path string, rows []Row) error {

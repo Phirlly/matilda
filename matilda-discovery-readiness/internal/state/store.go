@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"matilda-discovery-readiness/internal/workflow"
 )
@@ -48,6 +49,21 @@ type ReportState struct {
 	ValidatedIPs   string `json:"validated_ips,omitempty"`
 }
 
+type RunRecord struct {
+	ID                string          `json:"id"`
+	Action            string          `json:"action"`
+	Status            workflow.Status `json:"status"`
+	StartedAt         string          `json:"started_at"`
+	EndedAt           string          `json:"ended_at,omitempty"`
+	Command           string          `json:"command,omitempty"`
+	ReadinessTotal    int             `json:"readiness_total"`
+	ReadinessReady    int             `json:"readiness_ready"`
+	ReadinessNotReady int             `json:"readiness_not_ready"`
+	ReportPaths       []string        `json:"report_paths,omitempty"`
+	Summary           string          `json:"summary,omitempty"`
+	Error             string          `json:"error,omitempty"`
+}
+
 type Update struct {
 	Workspace string
 	Inventory string
@@ -62,6 +78,10 @@ func New(root string) Store {
 
 func (s Store) Path() string {
 	return filepath.Join(s.root, ".matilda", "state.json")
+}
+
+func (s Store) RunsDir() string {
+	return filepath.Join(s.root, ".matilda", "runs")
 }
 
 func (s Store) Read() (Document, error) {
@@ -81,6 +101,53 @@ func (s Store) Read() (Document, error) {
 		doc.Actions = map[string]ActionState{}
 	}
 	return doc, nil
+}
+
+func (s Store) WriteRun(record RunRecord) error {
+	if record.ID == "" {
+		return errors.New("run record id is required")
+	}
+	if err := os.MkdirAll(s.RunsDir(), 0700); err != nil {
+		return err
+	}
+	content, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
+		return err
+	}
+	content = append(content, '\n')
+	return os.WriteFile(filepath.Join(s.RunsDir(), record.ID+".json"), content, 0600)
+}
+
+func (s Store) ListRuns(limit int) ([]RunRecord, error) {
+	entries, err := os.ReadDir(s.RunsDir())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Name() > entries[j].Name()
+	})
+	var records []RunRecord
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		content, err := os.ReadFile(filepath.Join(s.RunsDir(), entry.Name()))
+		if err != nil {
+			return nil, err
+		}
+		var record RunRecord
+		if err := json.Unmarshal(content, &record); err != nil {
+			return nil, err
+		}
+		records = append(records, record)
+		if limit > 0 && len(records) >= limit {
+			break
+		}
+	}
+	return records, nil
 }
 
 func (s Store) Update(update Update) (Document, error) {

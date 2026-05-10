@@ -54,3 +54,41 @@ func TestStateStoreMissingReadIsExplicit(t *testing.T) {
 		t.Fatalf("missing state err = %v, want ErrNotFound", err)
 	}
 }
+
+func TestStateStoreWritesAndListsRunHistory(t *testing.T) {
+	root := t.TempDir()
+	store := state.New(root)
+	record := state.RunRecord{
+		ID:                "20260510T010203.000000000Z-doctor",
+		Action:            "doctor",
+		Status:            workflow.StatusCompleted,
+		StartedAt:         "2026-05-10T01:02:03Z",
+		EndedAt:           "2026-05-10T01:02:04Z",
+		Command:           "./matilda-prep doctor",
+		ReadinessTotal:    2,
+		ReadinessReady:    1,
+		ReadinessNotReady: 1,
+		ReportPaths:       []string{"reports/readiness.html"},
+		Summary:           "completed: 1/2 targets ready",
+	}
+	if err := store.WriteRun(record); err != nil {
+		t.Fatalf("WriteRun failed: %v", err)
+	}
+	runs, err := store.ListRuns(10)
+	if err != nil {
+		t.Fatalf("ListRuns failed: %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("expected one run record, got %d", len(runs))
+	}
+	if runs[0].ID != record.ID || runs[0].Command != "./matilda-prep doctor" {
+		t.Fatalf("unexpected run record: %+v", runs[0])
+	}
+	content, err := os.ReadFile(filepath.Join(root, ".matilda", "runs", record.ID+".json"))
+	if err != nil {
+		t.Fatalf("read run record: %v", err)
+	}
+	if strings.Contains(string(content), "PRIVATE_KEY") {
+		t.Fatalf("run record should not contain secret-like keys:\n%s", string(content))
+	}
+}

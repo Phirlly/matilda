@@ -99,6 +99,14 @@ func TestCLIInventoryValidateUsesProjectInventory(t *testing.T) {
 	if strings.Contains(string(stateContent), "PRIVATE_KEY") {
 		t.Fatalf("state file should not contain secret-like environment keys:\n%s", string(stateContent))
 	}
+	runsDir := filepath.Join(rootFromCwd(t), ".matilda", "runs")
+	runEntries, err := os.ReadDir(runsDir)
+	if err != nil {
+		t.Fatalf("expected run history directory: %v", err)
+	}
+	if len(runEntries) == 0 {
+		t.Fatalf("expected inventory validate to create a run history record")
+	}
 }
 
 func TestCLIHelpScreensUseConsoleSections(t *testing.T) {
@@ -143,13 +151,21 @@ func TestCLIReportWritesExpectedFormats(t *testing.T) {
 	}
 }
 
-func TestCLILiveWorkflowRejectsV1InventoryUntilRunnerSupportsIt(t *testing.T) {
-	withTempProject(t, validV1Inventory(), "")
+func TestCLILiveWorkflowPlansV1InventoryForLinuxRunner(t *testing.T) {
+	root := withTempProject(t, validV1Inventory(), "")
 
 	var out bytes.Buffer
 	err := cli.Execute([]string{"preflight"}, strings.NewReader(""), &out, &bytes.Buffer{})
-	if err == nil || !strings.Contains(err.Error(), "Linux direct/via-Probe groups") {
-		t.Fatalf("expected current Linux inventory guard, got %v\n%s", err, out.String())
+	if err == nil || strings.Contains(err.Error(), "Linux direct/via-Probe groups") {
+		t.Fatalf("expected v1 runner planning to pass the old guard, got %v\n%s", err, out.String())
+	}
+	generated := filepath.Join(root, ".matilda", "runner", "inventory.linux.yml")
+	content, readErr := os.ReadFile(generated)
+	if readErr != nil {
+		t.Fatalf("expected generated runner inventory: %v\n%s", readErr, out.String())
+	}
+	if !strings.Contains(string(content), "public_targets:") || !strings.Contains(string(content), "app01:") {
+		t.Fatalf("generated runner inventory missing Linux target:\n%s", string(content))
 	}
 }
 

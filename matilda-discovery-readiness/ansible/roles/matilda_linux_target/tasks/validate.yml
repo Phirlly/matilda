@@ -10,6 +10,8 @@
     validation_denied_status: NOT_RUN
     validation_probe_status: "{{ 'NOT_RUN' if (validate_from_probe | default(true) | bool) else 'SKIPPED' }}"
     validation_remediation: Validation did not complete.
+    validation_failure_code: ""
+    validation_failure_detail: ""
 
 - name: Run validation checks with per-host reporting
   block:
@@ -145,7 +147,23 @@
         validation_remediation: None
 
   rescue:
-    - name: Capture validation failure remediation
+    - name: Capture raw validation failure detail
+      ansible.builtin.set_fact:
+        validation_failure_detail: >-
+          {{
+            (
+              ansible_failed_result.stderr
+              | default(ansible_failed_result.module_stderr, true)
+              | default(ansible_failed_result.stdout, true)
+              | default(ansible_failed_result.module_stdout, true)
+              | default(ansible_failed_result.msg, true)
+              | default('Validation failed', true)
+            )
+            | regex_replace('[\r\n,"]+', ' ')
+            | trim
+          }}
+
+    - name: Capture validation failure status
       ansible.builtin.set_fact:
         validation_ready: false
         validation_local_sudo_status: >-
@@ -154,8 +172,28 @@
           {{ 'FAIL' if (ansible_failed_task.name | default('')) is search('denied|unapproved') else validation_denied_status }}
         validation_probe_status: >-
           {{ 'FAIL' if (ansible_failed_task.name | default('')) is search('Probe') else validation_probe_status }}
+        validation_failure_code: >-
+          {%- set detail = validation_failure_detail | lower -%}
+          {%- set task = ansible_failed_task.name | default('') | lower -%}
+          {%- if 'a password is required' in detail -%}
+          SUDO_PASSWORD_REQUIRED
+          {%- elif 'permission denied' in detail and 'publickey' in detail -%}
+          SSH_PUBLICKEY_DENIED
+          {%- elif 'this account is currently not available' in detail -%}
+          SERVICE_ACCOUNT_LOCKED
+          {%- elif 'unknown user' in detail -%}
+          SERVICE_ACCOUNT_MISSING
+          {%- elif 'unapproved sudo command was not denied' in detail or task is search('denied|unapproved') -%}
+          DENIED_COMMAND_ALLOWED
+          {%- elif 'neither ifconfig nor ip' in detail -%}
+          VALIDATION_COMMAND_MISSING
+          {%- elif task is search('probe') -%}
+          PROBE_VALIDATION_FAILED
+          {%- else -%}
+          VALIDATION_FAILED
+          {%- endif -%}
         validation_remediation: >-
-          {{ (ansible_failed_result.stderr | default(ansible_failed_result.stdout | default(ansible_failed_result.msg | default('Validation failed')))) | regex_replace('[\r\n,]+', ' ') }}
+          {{ validation_failure_detail | default('Validation failed', true) }}
 
   always:
     - name: Mark discovery IP as validated when ready
@@ -171,7 +209,7 @@
     - name: Write validation summary row
       ansible.builtin.lineinfile:
         path: "{{ matilda_report_dir }}/validation-summary.txt"
-        line: "{{ inventory_hostname }},{{ discovery_ip }},{{ validation_command_label }},{{ 'YES' if (validation_used_ip_fallback | bool) else 'NO' }},{{ validation_local_sudo_status }},{{ validation_denied_status }},{{ validation_probe_status }},{{ 'YES' if (validation_ready | bool) else 'NO' }},{{ validation_remediation }}"
+        line: "{{ inventory_hostname }},{{ discovery_ip }},{{ validation_command_label }},{{ 'YES' if (validation_used_ip_fallback | bool) else 'NO' }},{{ validation_local_sudo_status }},{{ validation_denied_status }},{{ validation_probe_status }},{{ 'YES' if (validation_ready | bool) else 'NO' }},{{ validation_remediation }},{{ validation_failure_code }}"
         create: true
       delegate_to: localhost
       become: false
@@ -188,9 +226,10 @@
           denied_command: "{{ validation_denied_status }}"
           probe_validation: "{{ validation_probe_status }}"
           ready_for_matilda_discovery: "{{ validation_ready }}"
+          failure_code: "{{ validation_failure_code }}"
           remediation: "{{ validation_remediation }}"
 
 - name: Fail host when validation did not pass
   ansible.builtin.fail:
-    msg: "{{ inventory_hostname }} is not ready for Matilda discovery: {{ validation_remediation }}"
+    msg: "{{ inventory_hostname }} is not ready for Matilda discovery: {{ validation_failure_code }} {{ validation_remediation }}"
   when: not (validation_ready | bool)
