@@ -1,6 +1,6 @@
-# Release Candidate Baseline
+# Release Baseline
 
-This release manager reference defines the release candidate scope for Matilda Discovery Readiness Toolkit. Operators should start with the root [README](../../README.md) or [Quickstart](../user/quickstart.md).
+This release manager reference defines the release scope for Matilda Discovery Readiness Toolkit. Operators should start with the root [README](../../README.md) or [Quickstart](../user/quickstart.md).
 
 ## Supported Today
 
@@ -13,7 +13,7 @@ This release manager reference defines the release candidate scope for Matilda D
 
 ## Validated Workflows
 
-The release candidate baseline validates these Linux workflows:
+The release baseline validates these Linux workflows:
 
 - `./matilda-prep doctor`
 - `./matilda-prep inventory validate`
@@ -36,11 +36,11 @@ These commands generate local guidance artifacts only. They do not connect to ta
 - `./matilda-prep generate windows`
 - `./matilda-prep generate unix`
 
-Windows remote automation and UNIX remote automation are not implemented in this release candidate.
+Windows remote automation and UNIX remote automation are not implemented in this release.
 
 ## Not Automated
 
-These areas are not automated in this release candidate:
+These areas are not automated in this release:
 
 - Cloud API readiness for AWS, Azure, GCP, and OCI.
 - Kubernetes API readiness.
@@ -58,7 +58,7 @@ Operator machine:
 - SSH access to MatildaProbeVM when private targets or Probe validation are used.
 - Local `.env` and `inventory.yml`.
 
-Windows operator machines are not validated in this release candidate. For WSL source checkouts, configure Go, Ansible, and SSH. For WSL release packages, use the Linux package and configure Ansible and SSH.
+Windows operator machines are not validated in this release. For WSL source checkouts, configure Go, Ansible, and SSH. For WSL release packages, use the Linux package and configure Ansible and SSH.
 
 Linux targets:
 
@@ -86,18 +86,18 @@ MatildaProbeVM:
 
 ## Branch And Tag Workflow
 
-Release candidate changes must be completed on `featureBranch` or another non-main branch first.
+Release changes must be completed on `featureBranch` or another non-main branch first.
 
 1. Make changes on the non-main branch.
 2. Run validation on that branch.
 3. Push the branch for review.
 4. Merge or fast-forward `main` only after checks pass.
 5. Create release tags from `main`.
-6. After a release is published, prefer a new RC tag over moving the published tag unless the tag move is explicitly approved.
+6. After a release is published, prefer a new tag over moving the published tag unless the tag move is explicitly approved. For RCs, use the next RC tag.
 
-## Release Candidate Validation
+## Release Validation
 
-Before tagging an RC, run:
+Before tagging a release or RC, run:
 
 ```bash
 GOCACHE=/private/tmp/matilda-gocache go test ./...
@@ -136,7 +136,7 @@ For each target operating system and architecture:
 Example macOS packaging pattern for a Linux amd64 tarball:
 
 ```bash
-version=v0.1.0-rcN
+version=vX.Y.Z
 stage=/private/tmp/matilda-package-${version}-linux-amd64
 rm -rf "$stage"
 mkdir -p "$stage"
@@ -176,5 +176,5 @@ fi
 Then verify in Podman or another Linux runtime:
 
 ```bash
-podman run --rm --platform linux/amd64 -v "$PWD:/work:Z" -w /work alpine:latest sh -c 'tar -xzf dist/matilda-discovery-readiness-v0.1.0-rcN-linux-amd64.tar.gz -C /tmp && cd /tmp/matilda-discovery-readiness && cp /work/inventory.yml inventory.yml && ./matilda-prep help && ./matilda-prep inventory validate && ./matilda-prep status'
+podman run --rm --platform linux/amd64 -v "$PWD:/work:Z" -w /work alpine:latest sh -c 'tar -xzf dist/matilda-discovery-readiness-vX.Y.Z-linux-amd64.tar.gz -C /tmp && cd /tmp/matilda-discovery-readiness && cp /work/inventory.yml inventory.yml && ./matilda-prep help && ./matilda-prep inventory validate && ./matilda-prep status'
 ```

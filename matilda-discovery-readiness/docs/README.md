@@ -25,9 +25,9 @@ These explain support boundaries and launch handoff details:
 
 ## Release Reference
 
-These are for release managers validating and packaging a release candidate:
+These are for release managers validating and packaging releases:
 
-- [Release candidate baseline](reference/release-candidate.md)
+- [Release baseline](reference/release-candidate.md)
 
 ## Maintainer Reference
 

@@ -1,6 +1,6 @@
 # Supported Platforms
 
-This release candidate automates Linux target readiness only.
+This release automates Linux target readiness only.
 
 ## Automated Today
 
@@ -21,7 +21,7 @@ Generate local Windows readiness packages and UNIX admin instructions with:
 
 These commands write local guidance files only. They do not connect to Windows or UNIX targets and do not change target configuration.
 
-## Not Automated In This Release Candidate
+## Not Automated In This Release
 
 - Windows remote setup or validation.
 - UNIX remote setup or validation for AIX, Solaris, or HP-UX.

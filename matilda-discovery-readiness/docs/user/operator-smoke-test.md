@@ -1,6 +1,6 @@
 # Operator Smoke Test
 
-Use this smoke test from a fresh clone or release candidate checkout before a customer discovery session. It verifies that the local operator machine, local configuration, inventory, terminal workflow, and browser UI are usable before any target changes.
+Use this smoke test from a fresh clone or release package before a customer discovery session. It verifies that the local operator machine, local configuration, inventory, terminal workflow, and browser UI are usable before any target changes.
 
 Supported today:
 
@@ -9,7 +9,7 @@ Supported today:
 - Linux preflight, setup, validate, report, and explicit rollback modes.
 - Local Windows readiness package generation and UNIX admin guidance generation.
 
-Not automated in this release candidate:
+Not automated in this release:
 
 - Windows remote automation.
 - UNIX remote automation.
@@ -18,15 +18,15 @@ Not automated in this release candidate:
 
 ## 1. Prepare The Checkout
 
-Use a Linux or macOS operator machine. Windows operator machines are not validated in this release candidate. For WSL source checkouts, configure Go, Ansible, and SSH; for WSL release packages, use the Linux package and configure Ansible and SSH.
+Use a Linux or macOS operator machine. Windows operator machines are not validated in this release. For WSL source checkouts, configure Go, Ansible, and SSH; for WSL release packages, use the Linux package and configure Ansible and SSH.
 
 From a source checkout, install Go and Ansible on the operator machine. The `./matilda-prep` launcher builds the local Go binary into `.bin/` automatically before running it.
 
 Source checkout:
 
 ```bash
-git clone <repo-url>
-cd matilda-discovery-readiness
+git clone https://github.com/Phirlly/matilda.git
+cd matilda/matilda-discovery-readiness
 ```
 
 From a packaged release tarball that already includes a runnable binary for your operating system and CPU architecture, Go is not required. Extract the tarball, enter the extracted `matilda-discovery-readiness` directory, and run `./matilda-prep` from that directory:
