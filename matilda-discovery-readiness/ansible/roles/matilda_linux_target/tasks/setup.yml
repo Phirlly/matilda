@@ -43,13 +43,23 @@
   ansible.builtin.set_fact:
     matilda_public_key: "{{ lookup('file', matilda_public_key_file) }}"
 
+- name: Ensure authorized_keys file exists
+  ansible.builtin.copy:
+    dest: "{{ matilda_service_home }}/.ssh/authorized_keys"
+    content: ""
+    force: false
+    owner: "{{ matilda_service_user }}"
+    group: "{{ matilda_service_user }}"
+    mode: "0600"
+
 - name: Install Matilda discovery public key without duplicates
-  ansible.posix.authorized_key:
-    user: "{{ matilda_service_user }}"
-    key: "{{ matilda_public_key }}"
+  ansible.builtin.lineinfile:
     path: "{{ matilda_service_home }}/.ssh/authorized_keys"
-    manage_dir: false
+    line: "{{ matilda_public_key }}"
     state: present
+    owner: "{{ matilda_service_user }}"
+    group: "{{ matilda_service_user }}"
+    mode: "0600"
 
 - name: Ensure authorized_keys ownership and permissions
   ansible.builtin.file:

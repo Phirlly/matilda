@@ -106,13 +106,6 @@ func (r *Runtime) Doctor() error {
 		}
 	}
 
-	if _, err := runner.RunCapture(r.Root, "ansible-doc", "-t", "module", "ansible.posix.authorized_key"); err != nil {
-		results = append(results, runner.Result{Name: "ansible.posix.authorized_key", Status: runner.StatusFail, Detail: "install with: ansible-galaxy collection install ansible.posix"})
-		failed = true
-	} else {
-		results = append(results, runner.Result{Name: "ansible.posix.authorized_key", Status: runner.StatusPass, Detail: "available"})
-	}
-
 	env, _ := config.LoadEnv(filepath.Join(r.Root, ".env"))
 	for _, key := range config.RequiredKeys {
 		value := strings.TrimSpace(env[key])
@@ -448,9 +441,6 @@ func (r *Runtime) checkSetupDependencies() error {
 		if _, err := runner.RunCapture(r.Root, cmd, "--version"); err != nil {
 			return fmt.Errorf("%s was not found or could not run: %w", cmd, err)
 		}
-	}
-	if _, err := runner.RunCapture(r.Root, "ansible-doc", "-t", "module", "ansible.posix.authorized_key"); err != nil {
-		return errors.New("required Ansible module is unavailable: ansible.posix.authorized_key; install with: ansible-galaxy collection install ansible.posix")
 	}
 	return nil
 }

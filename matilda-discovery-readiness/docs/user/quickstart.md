@@ -2,6 +2,8 @@
 
 Matilda Discovery Readiness Toolkit prepares and validates target readiness, Probe readiness, and platform readiness for Matilda Probe-based discovery.
 
+The release candidate baseline automates Linux target readiness for direct and Probe-routed targets. Windows and UNIX commands generate local guidance only, and cloud/Kubernetes readiness remains scaffolded for future modules.
+
 Open the Matilda Terminal Console:
 
 ```bash
