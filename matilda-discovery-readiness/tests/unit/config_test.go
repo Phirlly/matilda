@@ -61,3 +61,16 @@ func TestDefaultForDoesNotAssumeEnvironmentValues(t *testing.T) {
 		}
 	}
 }
+
+func TestLooksLikePlaceholder(t *testing.T) {
+	for _, value := range []string{"<target-admin-user>", "/path/to/key.pem"} {
+		if !config.LooksLikePlaceholder(value) {
+			t.Fatalf("expected placeholder: %q", value)
+		}
+	}
+	for _, value := range []string{"opc", "/home/opc/.ssh/key.pem"} {
+		if config.LooksLikePlaceholder(value) {
+			t.Fatalf("expected real value: %q", value)
+		}
+	}
+}

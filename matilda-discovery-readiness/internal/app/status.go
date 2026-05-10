@@ -286,17 +286,20 @@ func (r *Runtime) RunWorkflowActionTo(action string, confirmed bool, out io.Writ
 func remoteInputsReady(root string) error {
 	values, err := config.LoadEnv(filepath.Join(root, ".env"))
 	if err != nil {
-		return errors.New("interactive remote actions require .env; run init or use a direct CLI command for prompts")
+		return errors.New("browser remote actions require .env; run ./matilda-prep init or use a terminal command for prompts")
 	}
 	for _, key := range config.RequiredKeys {
 		value := strings.TrimSpace(values[key])
 		if value == "" {
-			return fmt.Errorf("interactive remote actions require .env value %s", key)
+			return fmt.Errorf("browser remote actions require .env value %s", key)
+		}
+		if config.LooksLikePlaceholder(value) {
+			return fmt.Errorf("browser remote actions require a real value for %s; replace the placeholder in .env", key)
 		}
 		if config.IsLocalFileKey(key) {
 			path := config.ExpandPath(value)
 			if _, err := os.Stat(path); err != nil {
-				return fmt.Errorf("interactive remote actions require existing file for %s: %s", key, path)
+				return fmt.Errorf("browser remote actions require an existing file for %s: %s", key, path)
 			}
 		}
 	}

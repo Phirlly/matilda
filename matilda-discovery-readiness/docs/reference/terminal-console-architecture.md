@@ -137,7 +137,7 @@ The architecture can be extended with:
 
 - granular check-level workflow events
 - `--json`, `--plain`, and `--no-color` output modes
-- full run history beyond latest action state
+- run history filtering and export
 - richer remediation detail views
 
 These extensions should build on the existing shared action, state, and rendering model rather than duplicating command logic.
