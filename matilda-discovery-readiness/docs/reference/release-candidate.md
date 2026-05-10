@@ -82,6 +82,17 @@ MatildaProbeVM:
 - Non-Linux v1 inventory targets are structurally valid, but Linux remote actions skip them.
 - Prebuilt release binaries are operating-system and CPU-architecture specific. A source clone can be used on validated operator platforms with Go installed.
 
+## Branch And Tag Workflow
+
+Release candidate changes must be completed on `featureBranch` or another non-main branch first.
+
+1. Make changes on the non-main branch.
+2. Run validation on that branch.
+3. Push the branch for review.
+4. Merge or fast-forward `main` only after checks pass.
+5. Create release tags from `main`.
+6. After a release is published, prefer a new RC tag over moving the published tag unless the tag move is explicitly approved.
+
 ## Release Candidate Validation
 
 Before tagging an RC, run:

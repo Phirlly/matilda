@@ -49,6 +49,14 @@ These files are local runtime material and must not be committed:
 - Do not copy private keys to target systems.
 - Keep `matilda-prep` as the binary unless an install alias is explicitly introduced.
 
+## Branch Workflow
+
+- Do not make direct code or documentation updates on `main`.
+- Make changes on `featureBranch` or another non-main branch.
+- Run validation on the branch before merging or fast-forwarding `main`.
+- Create release tags from `main` only after review and validation.
+- Prefer a new release candidate tag over moving a published tag unless the tag move is explicitly approved.
+
 ## Validation
 
 Run these checks before opening a PR:
