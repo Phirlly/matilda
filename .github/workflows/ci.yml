@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - dev
+      - main
+  push:
+    branches:
+      - dev
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Go and Ansible checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: matilda-discovery-readiness
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: matilda-discovery-readiness/go.mod
+          cache-dependency-path: matilda-discovery-readiness/go.sum
+
+      - name: Install Ansible
+        run: |
+          python3 -m pip install --user ansible-core
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Check pull request whitespace
+        if: github.event_name == 'pull_request'
+        run: git diff --check "${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+        working-directory: .
+
+      - name: Check push whitespace
+        if: github.event_name == 'push'
+        run: git diff --check "${{ github.event.before }}..${{ github.sha }}"
+        working-directory: .
+
+      - name: Run Go tests
+        run: go test ./...
+
+      - name: Run Go vet
+        run: go vet ./...
+
+      - name: Check launcher syntax
+        run: bash -n matilda-prep
+
+      - name: Check Linux Ansible syntax
+        env:
+          ANSIBLE_CONFIG: ansible/ansible.cfg
+          ANSIBLE_LOCAL_TEMP: /tmp/matilda-ansible-local
+        run: |
+          ansible-playbook --syntax-check ansible/playbooks/linux/preflight.yml
+          ansible-playbook --syntax-check ansible/playbooks/linux/setup.yml
+          ansible-playbook --syntax-check ansible/playbooks/linux/validate.yml
+          ansible-playbook --syntax-check ansible/playbooks/linux/rollback.yml
