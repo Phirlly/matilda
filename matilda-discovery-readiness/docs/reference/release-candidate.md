@@ -58,7 +58,7 @@ Operator machine:
 - SSH access to MatildaProbeVM when private targets or Probe validation are used.
 - Local `.env` and `inventory.yml`.
 
-Windows operator machines are not validated in this release candidate. Use WSL only if Go, Ansible, and SSH are configured there.
+Windows operator machines are not validated in this release candidate. For WSL source checkouts, configure Go, Ansible, and SSH. For WSL release packages, use the Linux package and configure Ansible and SSH.
 
 Linux targets:
 
