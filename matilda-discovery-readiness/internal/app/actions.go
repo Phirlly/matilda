@@ -30,6 +30,15 @@ func WorkflowActions() []ActionSpec {
 	}
 }
 
+func WorkflowActionByID(id string) (ActionSpec, bool) {
+	for _, action := range WorkflowActions() {
+		if action.ID == id {
+			return action, true
+		}
+	}
+	return ActionSpec{}, false
+}
+
 func WorkflowActionGroups() []ActionGroup {
 	var groups []ActionGroup
 	index := map[string]int{}
