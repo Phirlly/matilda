@@ -355,9 +355,11 @@ func pageTemplate() *template.Template {
     table{border-collapse:collapse;width:100%;font-size:13px}
     th,td{border-top:1px solid var(--line);padding:9px 10px;text-align:left;vertical-align:top}
     th{background:var(--panel2);font-size:12px;color:var(--muted);text-transform:uppercase}
+    .responsive-table td{overflow-wrap:anywhere}
     .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
     .pill{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:3px 8px;background:var(--panel2);font-weight:650;margin:0 6px 6px 0}
     @media (max-width:980px){header{padding:18px}main{padding:18px}.grid,.detail-grid,.metrics{grid-template-columns:1fr}.action-row,.action-row.mutating{grid-template-columns:minmax(0,1fr);grid-template-areas:"copy" "confirm" "button"}.action-row.readonly{grid-template-areas:"copy" "button"}.action-confirm{justify-content:flex-start}.action-row.readonly .action-confirm{display:none}.action-row button{width:100%}}
+    @media (max-width:720px){.table-panel{overflow-x:visible}.responsive-table,.responsive-table thead,.responsive-table tbody,.responsive-table tr,.responsive-table td{display:block;width:100%}.responsive-table thead{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}.responsive-table tr{border-top:1px solid var(--line);padding:9px 14px}.responsive-table td{display:grid;grid-template-columns:minmax(104px,38%) minmax(0,1fr);gap:10px;border-top:0;padding:6px 0}.responsive-table td::before{content:attr(data-label);color:var(--muted);font-size:11px;font-weight:750;text-transform:uppercase}.responsive-table td[colspan]{display:block;color:var(--muted)}.responsive-table td[colspan]::before{content:""}}
     @media (max-width:520px){.detail-panel summary{align-items:flex-start;flex-direction:column}.detail-panel summary::after{position:absolute;top:12px;right:14px}.detail-panel summary{position:relative;padding-right:48px}.detail-panel summary small{white-space:normal}}
   </style>
 </head>
@@ -415,15 +417,15 @@ func pageTemplate() *template.Template {
         <pre id="activity-log" class="mono">No browser action has run in this view.</pre>
       {{end}}
     </section>
-    <section style="margin-top:18px">
+    <section class="table-panel" style="margin-top:18px">
       <h2>Target Readiness</h2>
-      <table>
+      <table class="responsive-table readiness-table">
         <thead><tr><th>Host</th><th>Discovery IP</th><th>Ready</th><th>Local sudo</th><th>Denied command</th><th>Probe SSH</th><th>Remediation</th></tr></thead>
         <tbody id="target-rows">
           {{if .Snapshot.ReportRows}}
-            {{range .Snapshot.ReportRows}}<tr><td>{{.Host}}</td><td class="mono">{{.DiscoveryIP}}</td><td class="{{readyClass .Ready}}">{{.Ready}}</td><td class="{{readyClass .LocalSudo}}">{{.LocalSudo}}</td><td class="{{readyClass .DeniedCommand}}">{{.DeniedCommand}}</td><td class="{{readyClass .ProbeSSH}}">{{.ProbeSSH}}</td><td>{{.Remediation}}</td></tr>{{end}}
+            {{range .Snapshot.ReportRows}}<tr><td data-label="Host">{{.Host}}</td><td data-label="Discovery IP" class="mono">{{.DiscoveryIP}}</td><td data-label="Ready" class="{{readyClass .Ready}}">{{.Ready}}</td><td data-label="Local sudo" class="{{readyClass .LocalSudo}}">{{.LocalSudo}}</td><td data-label="Denied command" class="{{readyClass .DeniedCommand}}">{{.DeniedCommand}}</td><td data-label="Probe SSH" class="{{readyClass .ProbeSSH}}">{{.ProbeSSH}}</td><td data-label="Remediation">{{.Remediation}}</td></tr>{{end}}
           {{else}}
-            <tr><td colspan="7">No validation rows yet. Run validate to populate target readiness.</td></tr>
+            <tr><td colspan="7" data-label="">No validation rows yet. Run validate to populate target readiness.</td></tr>
           {{end}}
         </tbody>
       </table>
@@ -439,13 +441,13 @@ func pageTemplate() *template.Template {
           {{end}}
         </div>
       </section>
-      <section>
+      <section class="table-panel">
         <h2>Report Files</h2>
-        <table>
+        <table class="responsive-table files-table">
           <thead><tr><th>File</th><th>Status</th><th>Size</th></tr></thead>
           <tbody id="report-files">
             {{range .Snapshot.ReportFiles}}
-              <tr><td>{{if .Exists}}<a href="/download/{{base .Path}}">{{.Name}}</a>{{else}}{{.Name}}{{end}}</td><td class="{{if .Exists}}ok{{else}}warn{{end}}">{{existsText .Exists}}</td><td>{{.Size}}</td></tr>
+              <tr><td data-label="File">{{if .Exists}}<a href="/download/{{base .Path}}">{{.Name}}</a>{{else}}{{.Name}}{{end}}</td><td data-label="Status" class="{{if .Exists}}ok{{else}}warn{{end}}">{{existsText .Exists}}</td><td data-label="Size">{{.Size}}</td></tr>
             {{end}}
           </tbody>
         </table>
@@ -521,7 +523,7 @@ func pageTemplate() *template.Template {
 
         const targetRows = document.getElementById('target-rows');
         const rows = snapshot.report_rows || [];
-        targetRows.innerHTML = rows.length ? rows.map((row) => '<tr><td>' + escapeHTML(row.host) + '</td><td class="mono">' + escapeHTML(row.discovery_ip) + '</td><td class="' + readyClass(row.ready) + '">' + escapeHTML(row.ready) + '</td><td class="' + readyClass(row.local_sudo) + '">' + escapeHTML(row.local_sudo) + '</td><td class="' + readyClass(row.denied_command) + '">' + escapeHTML(row.denied_command) + '</td><td class="' + readyClass(row.probe_ssh) + '">' + escapeHTML(row.probe_ssh) + '</td><td>' + escapeHTML(row.remediation) + '</td></tr>').join('') : '<tr><td colspan="7">No validation rows yet. Run validate to populate target readiness.</td></tr>';
+        targetRows.innerHTML = rows.length ? rows.map((row) => '<tr><td data-label="Host">' + escapeHTML(row.host) + '</td><td data-label="Discovery IP" class="mono">' + escapeHTML(row.discovery_ip) + '</td><td data-label="Ready" class="' + readyClass(row.ready) + '">' + escapeHTML(row.ready) + '</td><td data-label="Local sudo" class="' + readyClass(row.local_sudo) + '">' + escapeHTML(row.local_sudo) + '</td><td data-label="Denied command" class="' + readyClass(row.denied_command) + '">' + escapeHTML(row.denied_command) + '</td><td data-label="Probe SSH" class="' + readyClass(row.probe_ssh) + '">' + escapeHTML(row.probe_ssh) + '</td><td data-label="Remediation">' + escapeHTML(row.remediation) + '</td></tr>').join('') : '<tr><td colspan="7" data-label="">No validation rows yet. Run validate to populate target readiness.</td></tr>';
 
         const ips = snapshot.validated_ips || [];
         document.getElementById('validated-ips').innerHTML = ips.length ? ips.map((ip) => '<div class="mono pill">' + escapeHTML(ip) + '</div>').join('') : '<p>No validated IPs yet.</p>';
@@ -533,7 +535,7 @@ func pageTemplate() *template.Template {
           const statusClass = file.exists ? 'ok' : 'warn';
           const fileName = encodeURIComponent(fileBase(file.path));
           const label = file.exists ? '<a href="/download/' + fileName + '">' + name + '</a>' : name;
-          return '<tr><td>' + label + '</td><td class="' + statusClass + '">' + status + '</td><td>' + escapeHTML(file.size || 0) + '</td></tr>';
+          return '<tr><td data-label="File">' + label + '</td><td data-label="Status" class="' + statusClass + '">' + status + '</td><td data-label="Size">' + escapeHTML(file.size || 0) + '</td></tr>';
         }).join('');
       }
       function finishStream(status, error) {

@@ -37,7 +37,7 @@ func TestWebStatusAndDashboardRoutes(t *testing.T) {
 			t.Fatalf("dashboard should not render redundant summary %q:\n%s", redundant, dashboard.Body.String())
 		}
 	}
-	for _, want := range []string{"action-copy", "action-confirm", "action-row readonly", "action-row mutating", "detail-grid", "detail-panel", "Confirm target change", "/api/actions/start", "EventSource", "cancel-job"} {
+	for _, want := range []string{"action-copy", "action-confirm", "action-row readonly", "action-row mutating", "responsive-table readiness-table", "responsive-table files-table", `data-label="Discovery IP"`, `data-label="File"`, "detail-grid", "detail-panel", "Confirm target change", "/api/actions/start", "EventSource", "cancel-job"} {
 		if !strings.Contains(dashboard.Body.String(), want) {
 			t.Fatalf("dashboard action palette missing %q:\n%s", want, dashboard.Body.String())
 		}
