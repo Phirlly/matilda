@@ -293,22 +293,28 @@ func (r *Runtime) RunWorkflowActionTo(action string, confirmed bool, out io.Writ
 func remoteInputsReady(root string) error {
 	values, err := config.LoadEnv(filepath.Join(root, ".env"))
 	if err != nil {
-		return errors.New("browser remote actions require .env; run ./matilda-prep init or use a terminal command for prompts")
+		return errors.New("browser remote actions require .env because the browser cannot prompt for SSH values; run ./matilda-prep init or copy examples/env.example to .env")
 	}
+	var issues []string
 	for _, key := range config.RequiredKeys {
 		value := strings.TrimSpace(values[key])
 		if value == "" {
-			return fmt.Errorf("browser remote actions require .env value %s", key)
+			issues = append(issues, fmt.Sprintf("%s is missing", key))
+			continue
 		}
 		if config.LooksLikePlaceholder(value) {
-			return fmt.Errorf("browser remote actions require a real value for %s; replace the placeholder in .env", key)
+			issues = append(issues, fmt.Sprintf("%s still has a placeholder", key))
+			continue
 		}
 		if config.IsLocalFileKey(key) {
 			path := config.ExpandPath(value)
 			if _, err := os.Stat(path); err != nil {
-				return fmt.Errorf("browser remote actions require an existing file for %s: %s", key, path)
+				issues = append(issues, fmt.Sprintf("%s file does not exist: %s", key, path))
 			}
 		}
+	}
+	if len(issues) > 0 {
+		return fmt.Errorf("browser remote actions require complete .env values because the browser cannot prompt; fix: %s", strings.Join(issues, "; "))
 	}
 	return nil
 }
@@ -319,6 +325,9 @@ func (s Snapshot) JSON() ([]byte, error) {
 
 func nextStep(s Snapshot) string {
 	if !s.InventoryOK {
+		if inventoryMissing(s.InventoryError) {
+			return "Run ./matilda-prep init to create inventory.yml, or copy examples/inventory.example.yml and edit target values."
+		}
 		return "Fix inventory.yml, then run inventory validate."
 	}
 	if s.ReportError != "" {
@@ -331,6 +340,11 @@ func nextStep(s Snapshot) string {
 		return "Use validated discovery IPs in Matilda Network Discovery."
 	}
 	return "Run preflight before setup."
+}
+
+func inventoryMissing(errText string) bool {
+	errText = strings.ToLower(errText)
+	return strings.Contains(errText, "no such file") || strings.Contains(errText, "missing:")
 }
 
 func fileStatus(name string, path string) FileStatus {

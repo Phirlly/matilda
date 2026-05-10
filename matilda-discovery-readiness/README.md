@@ -99,6 +99,8 @@ Run local checks:
 ./matilda-prep status
 ```
 
+`doctor` checks local prerequisites and confirms the required Ansible, template, schema, and example files are present in the checkout or extracted package root.
+
 Run the recommended Linux readiness workflow:
 
 ```bash
