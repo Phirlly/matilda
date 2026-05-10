@@ -1,5 +1,7 @@
 # Terminal Console Architecture
 
+Maintainer reference. Operators do not need this document to run the toolkit; start with the root [README](../../README.md).
+
 The Matilda Discovery Readiness Toolkit uses one terminal product surface:
 
 - `./matilda-prep` opens the Matilda Terminal Console.

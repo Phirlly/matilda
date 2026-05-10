@@ -1,8 +1,8 @@
 # Privilege Methods
 
-Privilege method is explicit per target.
+Linux automation supports `sudo` today.
 
-Supported model values:
+Recognized inventory values:
 
 - `sudo`
 - `dzdo`
@@ -13,4 +13,4 @@ Supported model values:
 - `k8s_api`
 - `none`
 
-Only tested methods should be automated. Customer-managed privilege systems should receive generated allow-lists and validation instructions until direct automation is validated.
+Only `sudo` is automated for Linux target readiness in this release candidate. Other values can be recorded in inventory for planning, but they do not enable remote automation.

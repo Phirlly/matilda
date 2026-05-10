@@ -9,7 +9,7 @@ Supported today:
 - Linux preflight, setup, validate, report, and explicit rollback modes.
 - Local Windows readiness package generation and UNIX admin guidance generation.
 
-Guidance or scaffold only:
+Not automated in this release candidate:
 
 - Windows remote automation.
 - UNIX remote automation.
@@ -50,8 +50,15 @@ These commands should work before any remote target change:
 ./matilda-prep doctor
 ./matilda-prep inventory validate
 ./matilda-prep status
+```
+
+Then start the browser UI:
+
+```bash
 ./matilda-prep ui
 ```
+
+Open the printed local URL, confirm the dashboard loads, then stop the server with Ctrl+C.
 
 Expected result:
 
@@ -84,7 +91,7 @@ Expected result after `validate`:
 
 ## 5. Rollback Smoke
 
-Rollback modes are explicit and should be tested against disposable targets before release:
+Rollback modes are explicit and should be tested against disposable or approved targets before release:
 
 ```bash
 ./matilda-prep rollback --sudoers-only

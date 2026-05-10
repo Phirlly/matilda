@@ -1,14 +1,16 @@
-# Supported Platform Direction
+# Supported Platforms
 
-The toolkit is structured for:
+This release candidate automates Linux target readiness only.
 
-- Linux
-- UNIX: AIX, Solaris, HP-UX
-- Windows
-- Cloud API readiness: AWS, Azure, GCP, OCI
-- Kubernetes API readiness
+## Automated Today
 
-Only Linux target setup and validation are implemented now. The release candidate baseline has been validated for Linux targets reached directly and Linux targets reached through MatildaProbeVM. The repository and product names remain broader because the toolkit also owns Probe-to-target readiness, generated Windows/UNIX platform guidance, reporting, and future cloud/Kubernetes readiness modules.
+- Linux target readiness.
+- Direct Linux targets reached from the operator machine.
+- Linux targets reached through MatildaProbeVM.
+- Oracle Linux / RHEL-like systems as the validated baseline.
+- Probe-to-target SSH and sudo validation.
+
+## Guidance Only
 
 Generate local Windows readiness packages and UNIX admin instructions with:
 
@@ -17,6 +19,20 @@ Generate local Windows readiness packages and UNIX admin instructions with:
 ./matilda-prep generate unix
 ```
 
-These commands write local guidance files only. They do not connect to Windows or UNIX targets and do not change any target configuration.
+These commands write local guidance files only. They do not connect to Windows or UNIX targets and do not change target configuration.
 
-Windows, UNIX, cloud, and Kubernetes automation is not implemented yet. Those platforms are scaffolded so they can be added as separate modules without modifying the Linux role.
+## Not Automated In This Release Candidate
+
+- Windows remote setup or validation.
+- UNIX remote setup or validation for AIX, Solaris, or HP-UX.
+- Cloud API readiness for AWS, Azure, GCP, or OCI.
+- Kubernetes API readiness.
+
+Use the Linux workflow only for Linux targets:
+
+```bash
+./matilda-prep preflight
+./matilda-prep setup
+./matilda-prep validate
+./matilda-prep report
+```

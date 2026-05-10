@@ -1,5 +1,7 @@
 # Repository Maintenance
 
+Maintainer reference. Operators do not need this document to run the toolkit; start with the root [README](../../README.md).
+
 This repository is maintained as the Matilda Discovery Readiness Toolkit.
 
 ## Current Shape
@@ -11,7 +13,7 @@ This repository is maintained as the Matilda Discovery Readiness Toolkit.
 - Ansible owns remote target setup and validation.
 - Linux remains the tested remote automation baseline.
 - Windows and UNIX use generated guidance until remote automation is validated.
-- Cloud and Kubernetes readiness modules are scaffolded for future implementation.
+- Cloud and Kubernetes readiness are not automated in the current release candidate.
 
 ## Keep Tracked
 

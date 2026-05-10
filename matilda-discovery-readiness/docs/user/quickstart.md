@@ -1,8 +1,8 @@
 # Quickstart
 
-Matilda Discovery Readiness Toolkit prepares and validates target readiness, Probe readiness, and platform readiness for Matilda Probe-based discovery.
+Use this quickstart to prepare and validate Linux target readiness for Matilda Probe-based discovery.
 
-The release candidate baseline automates Linux target readiness for direct and Probe-routed targets. Windows and UNIX commands generate local guidance only, and cloud/Kubernetes readiness remains scaffolded for future modules.
+The current release candidate automates Linux target readiness for direct and Probe-routed targets. Windows and UNIX commands generate local guidance only. Cloud and Kubernetes readiness are not automated in this release candidate.
 
 Open the Matilda Terminal Console:
 
@@ -28,7 +28,7 @@ For a fresh clone or release candidate checkout, run the operator smoke test in 
 
 Use `./matilda-prep status` when you want a non-interactive status summary without entering the interactive console.
 
-`setup` modifies target systems by creating or updating the Matilda service account, installing the Matilda discovery public key, and writing sudoers configuration.
+`setup` modifies Linux targets by creating or updating the Matilda service account, installing the Matilda discovery public key, and writing sudoers configuration. It asks for confirmation before making changes.
 
 For platform guidance that does not touch targets:
 

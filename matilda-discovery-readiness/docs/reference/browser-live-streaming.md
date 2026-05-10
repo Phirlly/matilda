@@ -1,5 +1,7 @@
 # Browser Live Streaming Design
 
+Maintainer reference. Operators do not need this document to run the toolkit; start with the root [README](../../README.md) or [Browser UI](../user/browser-ui.md).
+
 The browser UI streams workflow action output so it matches the Matilda Terminal Console behavior.
 
 ## Goals

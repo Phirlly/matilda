@@ -1,8 +1,8 @@
 # Linux Target Readiness
 
-The current implemented workflow supports Linux targets, with Oracle Linux and RHEL-like systems as the validated baseline.
+The implemented workflow supports Linux targets, with Oracle Linux and RHEL-like systems as the validated baseline.
 
-Linux targets need:
+The workflow verifies or prepares:
 
 - SSH access for an admin account used by Ansible.
 - Non-interactive sudo for that admin account.
