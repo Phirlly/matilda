@@ -65,8 +65,50 @@ func TestInteractiveRemoteActionRequiresEnvFile(t *testing.T) {
 	rt := app.New(t.TempDir(), strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
 
 	result := rt.RunWorkflowAction("preflight", false)
-	if result.OK || !strings.Contains(result.Error, "require .env") {
+	if result.OK || !strings.Contains(result.Error, "require .env") || !strings.Contains(result.Error, "browser cannot prompt") {
 		t.Fatalf("expected .env requirement for interactive remote action, got %+v", result)
+	}
+}
+
+func TestInteractiveRemoteActionReportsAllEnvIssues(t *testing.T) {
+	root := t.TempDir()
+	writeUnitFile(t, filepath.Join(root, ".env"), strings.Join([]string{
+		"TARGET_ADMIN_USER=<target-admin-user>",
+		"TARGET_ADMIN_PRIVATE_KEY_FILE=/missing/target-admin-key",
+		"MATILDA_PROBE_ANSIBLE_HOST=203.0.113.20",
+		"MATILDA_PROBE_ADMIN_PRIVATE_KEY_FILE=/missing/probe-admin-key",
+		"MATILDA_PUBLIC_KEY_FILE=/missing/matilda.pub",
+		"MATILDA_PROBE_PRIVATE_KEY_ON_PROBE=/home/opc/MatildaProbeKey.pem",
+		"",
+	}, "\n"))
+	rt := app.New(root, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+
+	result := rt.RunWorkflowAction("preflight", false)
+	if result.OK {
+		t.Fatalf("expected preflight to fail with incomplete .env")
+	}
+	for _, want := range []string{
+		"TARGET_ADMIN_USER still has a placeholder",
+		"TARGET_ADMIN_PRIVATE_KEY_FILE file does not exist",
+		"MATILDA_PROBE_USER is missing",
+		"MATILDA_PROBE_ADMIN_PRIVATE_KEY_FILE file does not exist",
+		"MATILDA_PUBLIC_KEY_FILE file does not exist",
+	} {
+		if !strings.Contains(result.Error, want) {
+			t.Fatalf("remote action error missing %q:\n%s", want, result.Error)
+		}
+	}
+}
+
+func TestSnapshotNextStepGuidesMissingInventorySetup(t *testing.T) {
+	rt := app.New(t.TempDir(), strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+
+	snap := rt.Snapshot()
+	if snap.InventoryOK {
+		t.Fatalf("expected missing inventory to fail")
+	}
+	if !strings.Contains(snap.NextStep, "./matilda-prep init") || !strings.Contains(snap.NextStep, "inventory.example.yml") {
+		t.Fatalf("unexpected next step for missing inventory: %s", snap.NextStep)
 	}
 }
 

@@ -12,7 +12,9 @@ When `validate` fails, still check the generated report files. The `Remediation`
 Common issues:
 
 - Missing Ansible: install Ansible on the operator machine, then rerun `./matilda-prep doctor`.
+- Missing toolkit files in `doctor`: run the command from the source checkout root or extracted release package root. Do not move the standalone binary away from the repository files it needs.
 - Missing inventory values: replace placeholder `ansible_host` and `discovery_ip` values before running remote actions.
+- Browser remote action says `.env` is incomplete: fix every listed missing, placeholder, or missing-file value in `.env`. Browser actions cannot stop for interactive SSH prompts.
 - SSH cannot reach TCP/22: confirm the target address, routing, security lists or NSGs, and target firewalls from the operator or MatildaProbeVM path being tested.
 - Probe cannot reach target TCP/22: check route tables, security lists, NSGs, and target firewalls.
 - SSH as `matilda-svc` fails: verify the target `authorized_keys` entry matches the private key on MatildaProbeVM.
