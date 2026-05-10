@@ -123,3 +123,45 @@ func TestGenerateReportsNormalizesLegacyRawFailures(t *testing.T) {
 		}
 	}
 }
+
+func TestGenerateReportsNormalizesGenericValidationFailures(t *testing.T) {
+	dir := t.TempDir()
+	summary := strings.Join([]string{
+		"Host,DiscoveryIP,Command,FallbackUsed,LocalSudo,DeniedCommand,ProbeSSH,Ready,Remediation,FailureCode",
+		"app01,10.0.0.10,ifconfig,NO,OK,OK,FAIL,NO,ssh: connect to host 10.0.0.10 port 22: Connection timed out,VALIDATION_FAILED",
+		"app02,10.0.0.20,ifconfig,NO,OK,OK,FAIL,NO,ssh: connect to host 10.0.0.20 port 22: Connection refused,VALIDATION_FAILED",
+		"app03,10.0.0.30,ifconfig,NO,OK,OK,FAIL,NO,ssh: Could not resolve hostname probe.local: nodename nor servname provided,VALIDATION_FAILED",
+		"app04,10.0.0.40,ifconfig,NO,FAIL,NOT_RUN,NOT_RUN,NO,sudo: sorry you must have a tty to run sudo,VALIDATION_FAILED",
+		"app05,10.0.0.50,ifconfig,NO,FAIL,NOT_RUN,NOT_RUN,NO,sudo: user matilda-svc is not allowed to execute /sbin/ifconfig as root,VALIDATION_FAILED",
+		"app06,10.0.0.60,ifconfig,NO,FAIL,NOT_RUN,NOT_RUN,NO,exec: ansible-playbook: executable file not found in PATH,VALIDATION_FAILED",
+		"app07,10.0.0.70,ifconfig,NO,OK,OK,FAIL,NO,matilda-svc@10.0.0.70: Permission denied (publickey).,VALIDATION_FAILED",
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(dir, "validation-summary.txt"), []byte(summary), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := reports.Rows(dir)
+	if err != nil {
+		t.Fatalf("Rows failed: %v", err)
+	}
+	for _, want := range []string{
+		"MatildaProbeVM cannot reach target TCP/22",
+		"TCP/22 was refused",
+		"could not resolve the configured host",
+		"Sudo requires a TTY",
+		"not allowed to run the discovery command",
+		"local operator prerequisite is missing",
+		"Probe-to-target path",
+	} {
+		found := false
+		for _, row := range rows {
+			if strings.Contains(row.Remediation, want) {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("rows missing normalized remediation %q: %+v", want, rows)
+		}
+	}
+}

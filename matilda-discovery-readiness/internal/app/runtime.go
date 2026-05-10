@@ -103,7 +103,7 @@ func (r *Runtime) Doctor() error {
 	} {
 		out, err := runner.RunCapture(r.Root, check.cmd, check.args...)
 		if err != nil {
-			results = append(results, runner.Result{Name: check.name, Status: runner.StatusFail, Detail: err.Error()})
+			results = append(results, runner.Result{Name: check.name, Status: runner.StatusFail, Detail: localPrerequisiteDetail(check.name, err)})
 			failed = true
 		} else {
 			results = append(results, runner.Result{Name: check.name, Status: runner.StatusPass, Detail: firstLine(out)})
@@ -426,6 +426,9 @@ func (r *Runtime) Rollback(args []string) error {
 }
 
 func (r *Runtime) runAnsible(playbook string, inventoryPath string, extra []string) error {
+	if err := requireLocalCommand("ansible-playbook", "remote workflows"); err != nil {
+		return err
+	}
 	var args []string
 	if strings.TrimSpace(inventoryPath) != "" {
 		args = append(args, "-i", inventoryPath)
@@ -466,10 +469,27 @@ func (r *Runtime) prepareLinuxRunnerInventory() (string, error) {
 func (r *Runtime) checkSetupDependencies() error {
 	for _, cmd := range []string{"ansible-playbook", "ansible-doc"} {
 		if _, err := runner.RunCapture(r.Root, cmd, "--version"); err != nil {
-			return fmt.Errorf("%s was not found or could not run: %w", cmd, err)
+			return fmt.Errorf("%s was not found or could not run: %s", cmd, localPrerequisiteDetail(cmd, err))
 		}
 	}
 	return nil
+}
+
+func requireLocalCommand(name string, workflow string) error {
+	if _, err := exec.LookPath(name); err != nil {
+		if errors.Is(err, exec.ErrNotFound) {
+			return fmt.Errorf("%s is not installed or not on PATH; run ./matilda-prep doctor and install Ansible before running %s", name, workflow)
+		}
+		return fmt.Errorf("%s could not be checked: %w", name, err)
+	}
+	return nil
+}
+
+func localPrerequisiteDetail(name string, err error) string {
+	if errors.Is(err, exec.ErrNotFound) || strings.Contains(err.Error(), "executable file not found") {
+		return fmt.Sprintf("%s is not installed or not on PATH; install Ansible and rerun ./matilda-prep doctor", name)
+	}
+	return err.Error()
 }
 
 func (r *Runtime) collectRuntimeExtraVars() ([]string, error) {
