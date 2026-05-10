@@ -29,14 +29,20 @@
         matilda_public_key: "{{ lookup('file', matilda_public_key_file) }}"
       when: matilda_rollback_mode == 'remove_key'
 
-    - name: Remove Matilda discovery public key
-      ansible.posix.authorized_key:
-        user: "{{ matilda_service_user }}"
-        key: "{{ matilda_public_key }}"
+    - name: Check Matilda authorized_keys file for rollback
+      ansible.builtin.stat:
         path: "{{ matilda_service_home }}/.ssh/authorized_keys"
-        manage_dir: false
-        state: absent
+      register: matilda_authorized_keys_stat
       when: matilda_rollback_mode == 'remove_key'
+
+    - name: Remove Matilda discovery public key
+      ansible.builtin.lineinfile:
+        path: "{{ matilda_service_home }}/.ssh/authorized_keys"
+        line: "{{ matilda_public_key }}"
+        state: absent
+      when:
+        - matilda_rollback_mode == 'remove_key'
+        - matilda_authorized_keys_stat.stat.exists | default(false)
 
     - name: Lock Matilda service account
       ansible.builtin.user:

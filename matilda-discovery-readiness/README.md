@@ -43,7 +43,7 @@ Current Linux workflow:
 - validates Probe-to-target SSH and sudo
 - writes readiness reports and validated discovery IPs
 
-The tool can also generate local Windows readiness packages and UNIX admin instructions for platform planning. These generated files do not change targets.
+Release candidate validation has passed for Linux targets reachable directly and Linux targets reached through MatildaProbeVM. The tool can also generate local Windows readiness packages and UNIX admin instructions for platform planning. These generated files do not change targets. Windows, UNIX, cloud, and Kubernetes automation remains scaffolded or guidance-only until those modules are implemented.
 
 ## Important Safety Notes
 
@@ -67,15 +67,8 @@ Install these on the machine where you run the toolkit:
 
 - Go
 - Ansible
-- `ansible.posix` collection
 - SSH access to the target admin account
 - SSH access to MatildaProbeVM when private targets or Probe validation are used
-
-Install the Ansible collection if needed:
-
-```bash
-ansible-galaxy collection install ansible.posix
-```
 
 For Probe-to-target TCP checks, MatildaProbeVM should have `nc` or `ncat` available.
 
