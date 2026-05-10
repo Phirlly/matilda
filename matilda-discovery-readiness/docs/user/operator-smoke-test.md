@@ -18,20 +18,34 @@ Not automated in this release candidate:
 
 ## 1. Prepare The Checkout
 
-Use a Linux or macOS operator machine. Windows operator machines are not validated in this release candidate; use WSL only if Go, Ansible, and SSH are configured there.
+Use a Linux or macOS operator machine. Windows operator machines are not validated in this release candidate. For WSL source checkouts, configure Go, Ansible, and SSH; for WSL release packages, use the Linux package and configure Ansible and SSH.
 
 From a source checkout, install Go and Ansible on the operator machine. The `./matilda-prep` launcher builds the local Go binary into `.bin/` automatically before running it.
 
-From a packaged release tarball that already includes a runnable binary for your operating system and CPU architecture, Go is not required. Extract the tarball, enter the extracted `matilda-discovery-readiness` directory, and run `./matilda-prep` from that directory.
-
-Standalone binary assets are not one-file installs. Use them from a source checkout or extracted package root so the toolkit can find its Ansible, template, schema, and documentation files.
+Source checkout:
 
 ```bash
 git clone <repo-url>
 cd matilda-discovery-readiness
 ```
 
+From a packaged release tarball that already includes a runnable binary for your operating system and CPU architecture, Go is not required. Extract the tarball, enter the extracted `matilda-discovery-readiness` directory, and run `./matilda-prep` from that directory:
+
+```bash
+tar -xzf matilda-discovery-readiness-<version>-<os>-<arch>.tar.gz
+cd matilda-discovery-readiness
+```
+
+Standalone binary assets are not one-file installs. Use them from a source checkout or extracted package root so the toolkit can find its Ansible, template, schema, and documentation files.
+
 ## 2. Create Local Files
+
+If you already have working local files from another checkout, copy them into the checkout or extracted package root:
+
+```bash
+cp /path/to/.env .env
+cp /path/to/inventory.yml inventory.yml
+```
 
 Use the guided initializer:
 
