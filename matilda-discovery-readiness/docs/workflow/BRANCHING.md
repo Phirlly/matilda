@@ -17,6 +17,7 @@ merged through `dev` before it can reach `main`.
   - Integration branch.
   - Receives completed work from short-lived branches.
   - Must pass build/test checks before being merged into `main`.
+  - Do not use `dev` as a personal working branch.
 
 - Short-lived work branches
   - Created from `dev` for focused work.
@@ -37,6 +38,23 @@ merged through `dev` before it can reach `main`.
 10. Merge completed work into `dev`.
 11. Promote `dev` into `main` with a separate pull request after `dev` is validated.
 12. Create release tags from `main` after release validation.
+
+## Main To Dev Sync
+
+Do not sync `main` back into `dev` after every promotion.
+
+When GitHub merges `dev` into `main`, it may create a merge commit that makes
+`main` appear ahead of `dev` even when both branches have identical files. That
+history-only difference is not a problem.
+
+Sync `main` back into `dev` only when there is a real need:
+
+- `main` has file changes that are not in `dev`.
+- GitHub blocks a required pull request because `dev` is behind `main`.
+- The `dev` to `main` promotion has conflicts that must be resolved before merge.
+
+When a sync is needed, use a short-lived branch and pull request back into
+`dev`. Do not update protected branches directly.
 
 ## Before Editing
 
@@ -128,9 +146,10 @@ Pull requests into `main` must not be merged until:
 - The promotion pull request diff is reviewed.
 - Any required release or live Linux validation has been completed.
 
-If GitHub marks the `dev` to `main` pull request as behind, sync `main` history
-back into `dev` through a short-lived branch and pull request. Do not update
-protected branches directly.
+If GitHub shows `dev` behind `main`, first check whether there is a file diff.
+If there is no file diff and the pull request is not blocked, continue with the
+promotion. If the pull request is blocked or `main` has real file changes, follow
+the main-to-dev sync rule above.
 
 ## Repository Protection Settings
 

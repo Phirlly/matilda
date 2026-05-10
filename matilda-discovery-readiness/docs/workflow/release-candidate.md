@@ -95,7 +95,8 @@ Release work follows the protected-main workflow in [Branching Workflow](BRANCHI
 5. Merge the release work into `dev` by pull request only after review and CI pass.
 6. Promote `dev` into `main` by a separate pull request only after release validation and CI pass.
 7. Create release tags from `main`.
-8. After a release is published, prefer a new tag over moving the published tag unless the tag move is explicitly approved. For RCs, use the next RC tag.
+8. Do not sync `main` back into `dev` after release unless there is a real file difference, conflict, or branch-protection blocker.
+9. After a release is published, prefer a new tag over moving the published tag unless the tag move is explicitly approved. For RCs, use the next RC tag.
 
 ## Release Validation
 

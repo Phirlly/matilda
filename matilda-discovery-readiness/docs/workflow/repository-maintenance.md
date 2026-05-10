@@ -56,12 +56,14 @@ This repository uses the protected-main workflow defined in [Branching Workflow]
 - `main` is the production/release branch and must remain deployable.
 - Do not make direct code or documentation updates on `main`.
 - `dev` is the integration branch for completed work from short-lived branches.
+- Do not use `dev` as a personal working branch.
 - Create short-lived work branches from `dev`.
 - Read related implementation, tests, docs, examples, schemas, and templates before editing.
 - Write a short plan before implementation.
 - Review the diff, tests, docs, and any release notes before opening or accepting a PR.
 - Merge completed work into `dev` by pull request only after local validation and CI pass.
 - Promote `dev` into `main` by a separate pull request only after validation and CI pass.
+- Do not sync `main` back into `dev` after every promotion; sync only for a real file difference, conflict, or branch-protection blocker.
 - Create release tags from `main` only after review and validation.
 - Prefer a new tag over moving a published tag unless the tag move is explicitly approved. For RCs, use the next RC tag.
 
