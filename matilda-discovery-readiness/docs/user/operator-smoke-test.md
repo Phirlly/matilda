@@ -83,6 +83,7 @@ Open the printed local URL, confirm the dashboard loads, then stop the server wi
 Expected result:
 
 - `doctor` reports local prerequisites as passing.
+- `doctor` also confirms required toolkit files are present. If it reports missing playbooks, templates, or schemas, run from the source checkout root or extracted release package root instead of moving the binary by itself.
 - `inventory validate` reports the expected target count.
 - `status` shows `Inventory OK`.
 - `ui` prints a local browser URL and the dashboard loads without horizontal scrolling.
@@ -126,6 +127,7 @@ Run one mode at a time. Restore disposable targets with `./matilda-prep setup` a
 
 - Missing `.env`: run `./matilda-prep init` or copy `examples/env.example` to `.env`.
 - Missing `inventory.yml`: run `./matilda-prep init` or copy `examples/inventory.example.yml` to `inventory.yml`.
+- Missing toolkit files: use a source checkout or extracted release package root. Standalone binary assets still need the repository files beside them.
 - Placeholder inventory values: edit `ansible_host`, `discovery_ip`, and related target fields.
 - Missing key files: fix the path in `.env` and rerun `./matilda-prep doctor`.
 - Missing Ansible: install Ansible on the operator machine and rerun `./matilda-prep doctor`.

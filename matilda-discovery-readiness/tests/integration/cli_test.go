@@ -174,6 +174,46 @@ func TestCLIDoctorReportsMissingAnsibleClearly(t *testing.T) {
 	}
 }
 
+func TestCLIDoctorReportsMissingToolkitAssetsClearly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses Unix shell scripts to stub local commands")
+	}
+
+	root := withTempProject(t, validLinuxGroupedInventory(), "")
+	writeFile(t, filepath.Join(root, "examples", "env.example"), "TARGET_ADMIN_USER=opc\n")
+	writeFile(t, filepath.Join(root, "examples", "inventory.example.yml"), validLinuxGroupedInventory())
+	if err := os.MkdirAll(filepath.Join(root, "reports"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(root, "ansible", "playbooks", "linux", "validate.yml")); err != nil {
+		t.Fatal(err)
+	}
+
+	binDir := t.TempDir()
+	for _, name := range []string{"ansible-playbook", "ansible-doc"} {
+		writeFile(t, filepath.Join(binDir, name), "#!/bin/sh\necho "+name+" test\n")
+		if err := os.Chmod(filepath.Join(binDir, name), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", binDir)
+
+	var out bytes.Buffer
+	err := cli.Execute([]string{"doctor"}, strings.NewReader(""), &out, &bytes.Buffer{})
+	if err == nil {
+		t.Fatalf("doctor should fail when toolkit assets are missing:\n%s", out.String())
+	}
+	for _, want := range []string{
+		"FAIL  linux validate playbook",
+		"source checkout",
+		"extracted release package root",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("doctor output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
 func TestCLIDoctorFailsWhenGoExistsButIsBroken(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses Unix shell scripts to stub local commands")
@@ -333,6 +373,17 @@ func withTempProject(t *testing.T, inventory string, summary string) string {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "README.md"), "# test project\n")
 	writeFile(t, filepath.Join(root, "ansible", "ansible.cfg"), "[defaults]\ninventory = ../inventory.yml\nroles_path = roles\n")
+	for _, path := range []string{
+		filepath.Join(root, "ansible", "playbooks", "linux", "preflight.yml"),
+		filepath.Join(root, "ansible", "playbooks", "linux", "setup.yml"),
+		filepath.Join(root, "ansible", "playbooks", "linux", "validate.yml"),
+		filepath.Join(root, "ansible", "playbooks", "linux", "rollback.yml"),
+		filepath.Join(root, "templates", "sudoers", "linux-full-documented.j2"),
+		filepath.Join(root, "templates", "powershell", "windows-readiness.ps1.tmpl"),
+		filepath.Join(root, "schemas", "inventory.v1.schema.json"),
+	} {
+		writeFile(t, path, "# test asset\n")
+	}
 	if inventory != "" {
 		writeFile(t, filepath.Join(root, "inventory.yml"), inventory)
 	}

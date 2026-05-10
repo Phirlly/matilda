@@ -74,6 +74,13 @@ func (r *Runtime) Doctor() error {
 	checks := []runner.Check{
 		runner.FileCheck("inventory.yml", filepath.Join(r.Root, "inventory.yml")),
 		runner.FileCheck("ansible config", filepath.Join(r.Root, "ansible", "ansible.cfg")),
+		runner.FileCheck("linux preflight playbook", filepath.Join(r.Root, "ansible", "playbooks", "linux", "preflight.yml")),
+		runner.FileCheck("linux setup playbook", filepath.Join(r.Root, "ansible", "playbooks", "linux", "setup.yml")),
+		runner.FileCheck("linux validate playbook", filepath.Join(r.Root, "ansible", "playbooks", "linux", "validate.yml")),
+		runner.FileCheck("linux rollback playbook", filepath.Join(r.Root, "ansible", "playbooks", "linux", "rollback.yml")),
+		runner.FileCheck("linux sudoers template", filepath.Join(r.Root, "templates", "sudoers", "linux-full-documented.j2")),
+		runner.FileCheck("windows readiness template", filepath.Join(r.Root, "templates", "powershell", "windows-readiness.ps1.tmpl")),
+		runner.FileCheck("inventory v1 schema", filepath.Join(r.Root, "schemas", "inventory.v1.schema.json")),
 		runner.DirCheck("reports", filepath.Join(r.Root, "reports")),
 		runner.FileCheck("env example", filepath.Join(r.Root, "examples", "env.example")),
 		runner.FileCheck("inventory example", filepath.Join(r.Root, "examples", "inventory.example.yml")),
@@ -143,6 +150,8 @@ func (r *Runtime) Doctor() error {
 	section(r.Out, "Checks")
 	printChecks(r.Out, results)
 	if failed {
+		fmt.Fprintln(r.Out)
+		nextLine(r.Out, "Fix failed checks above. If toolkit files are missing, run from the source checkout or extracted release package root.")
 		return errors.New("doctor found issues to fix before a seamless run")
 	}
 	successLine(r.Out, "Local environment looks ready.")
