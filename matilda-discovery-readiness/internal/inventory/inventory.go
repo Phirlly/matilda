@@ -31,6 +31,12 @@ type ValidationResult struct {
 	Format      string
 }
 
+type LinuxRunnerPlan struct {
+	Format         string
+	Targets        []Target
+	SkippedTargets []Target
+}
+
 func ValidateFile(path string) (ValidationResult, error) {
 	var result ValidationResult
 	content, err := os.ReadFile(path)
@@ -93,11 +99,49 @@ func RequiresProbe(path string) (bool, error) {
 		targets = parseLinuxGroupedTargets(text)
 	}
 	for _, target := range targets {
-		if target.AccessPath == "via_probe" {
+		if target.AccessPath == "via_probe" && (target.Platform == "" || target.Platform == "linux") {
 			return true, nil
 		}
 	}
 	return false, nil
+}
+
+func PlanLinuxRunner(path string) (LinuxRunnerPlan, error) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return LinuxRunnerPlan{}, err
+	}
+	text := string(content)
+	if strings.Contains(text, "public_targets:") || strings.Contains(text, "private_targets:") {
+		targets := parseLinuxGroupedTargets(text)
+		if len(targets) == 0 {
+			return LinuxRunnerPlan{}, errors.New("inventory contains no Linux targets")
+		}
+		return LinuxRunnerPlan{Format: "linux-groups", Targets: targets}, nil
+	}
+	if strings.Contains(text, "version: 1") && strings.Contains(text, "targets:") {
+		targets := parseV1Targets(text)
+		var linuxTargets []Target
+		var skipped []Target
+		var problems []string
+		for _, target := range targets {
+			platform := strings.ToLower(target.Platform)
+			if platform != "linux" {
+				skipped = append(skipped, target)
+				continue
+			}
+			validateAccessTarget(&problems, target.Hostname, target, "sudo")
+			linuxTargets = append(linuxTargets, target)
+		}
+		if len(problems) > 0 {
+			return LinuxRunnerPlan{}, fmt.Errorf("inventory v1 Linux runner planning failed: %s", strings.Join(problems, "; "))
+		}
+		if len(linuxTargets) == 0 {
+			return LinuxRunnerPlan{}, errors.New("inventory v1 contains no Linux targets for the current Linux workflow; non-Linux targets are valid inventory data but are skipped by Linux remote actions")
+		}
+		return LinuxRunnerPlan{Format: "v1", Targets: linuxTargets, SkippedTargets: skipped}, nil
+	}
+	return LinuxRunnerPlan{}, errors.New("unsupported inventory format")
 }
 
 func ReadCSV(path string) ([]Target, error) {
@@ -373,6 +417,10 @@ func parseV1Targets(text string) []Target {
 			current.AnsibleHost = value
 		case "discovery_ip":
 			current.DiscoveryIP = value
+		case "private_ip":
+			current.PrivateIP = value
+		case "public_ip":
+			current.PublicIP = value
 		case "admin_user":
 			// Kept for normalized inventory compatibility; runtime credentials are still local .env values.
 		case "privilege_method":

@@ -51,4 +51,5 @@
         name: "{{ matilda_service_user }}"
         state: absent
         remove: true
+        force: true
       when: matilda_rollback_mode == 'delete_user'

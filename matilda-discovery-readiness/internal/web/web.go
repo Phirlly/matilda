@@ -280,6 +280,16 @@ func pageTemplate() *template.Template {
 			}
 			return "Missing"
 		},
+		"runStatusClass": func(value any) string {
+			switch strings.ToLower(fmt.Sprint(value)) {
+			case "completed":
+				return "ok"
+			case "failed", "cancelled":
+				return "bad"
+			default:
+				return "warn"
+			}
+		},
 		"actionClass": func(action app.ActionSpec) string {
 			if action.Mutating {
 				return "danger"
@@ -453,6 +463,19 @@ func pageTemplate() *template.Template {
         </table>
       </section>
     </div>
+    <section class="table-panel" style="margin-top:18px">
+      <h2>Recent Runs</h2>
+      <table class="responsive-table runs-table">
+        <thead><tr><th>Ended</th><th>Action</th><th>Status</th><th>Summary</th></tr></thead>
+        <tbody id="run-history">
+          {{if .Snapshot.Runs}}
+            {{range .Snapshot.Runs}}<tr><td data-label="Ended">{{.EndedAt}}</td><td data-label="Action">{{.Action}}</td><td data-label="Status" class="{{runStatusClass .Status}}">{{.Status}}</td><td data-label="Summary">{{.Summary}}</td></tr>{{end}}
+          {{else}}
+            <tr><td colspan="4" data-label="">No run history yet.</td></tr>
+          {{end}}
+        </tbody>
+      </table>
+    </section>
     <div class="detail-grid">
       <details class="detail-panel">
         <summary><span>Inventory file</span><small>inventory.yml</small></summary>
@@ -479,6 +502,12 @@ func pageTemplate() *template.Template {
         const normalized = String(value || '').toUpperCase();
         if (normalized === 'YES' || normalized === 'OK') return 'ok';
         if (normalized === 'NO' || normalized === 'FAIL') return 'bad';
+        return 'warn';
+      }
+      function runStatusClass(value) {
+        const normalized = String(value || '').toLowerCase();
+        if (normalized === 'completed') return 'ok';
+        if (normalized === 'failed' || normalized === 'cancelled') return 'bad';
         return 'warn';
       }
       function fileBase(path) {
@@ -537,6 +566,9 @@ func pageTemplate() *template.Template {
           const label = file.exists ? '<a href="/download/' + fileName + '">' + name + '</a>' : name;
           return '<tr><td data-label="File">' + label + '</td><td data-label="Status" class="' + statusClass + '">' + status + '</td><td data-label="Size">' + escapeHTML(file.size || 0) + '</td></tr>';
         }).join('');
+
+        const runs = snapshot.runs || [];
+        document.getElementById('run-history').innerHTML = runs.length ? runs.map((run) => '<tr><td data-label="Ended">' + escapeHTML(run.ended_at || run.started_at || '') + '</td><td data-label="Action">' + escapeHTML(run.action) + '</td><td data-label="Status" class="' + runStatusClass(run.status) + '">' + escapeHTML(run.status) + '</td><td data-label="Summary">' + escapeHTML(run.summary || '') + '</td></tr>').join('') : '<tr><td colspan="4" data-label="">No run history yet.</td></tr>';
       }
       function finishStream(status, error) {
         if (error) appendLog('\n' + status + ': ' + error + '\n');

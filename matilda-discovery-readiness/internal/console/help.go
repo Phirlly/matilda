@@ -80,7 +80,7 @@ func PrintInventoryHelp(out io.Writer) {
 	printHelpSection(out, s, "Commands", []helpRow{
 		{Command: "./matilda-prep inventory validate", Detail: "check inventory shape and required target fields"},
 		{Command: "./matilda-prep inventory import targets.csv", Detail: "create inventory.yml from CSV"},
-		{Command: "./matilda-prep inventory migrate", Detail: "create normalized inventory.v1.yml for planning"},
+		{Command: "./matilda-prep inventory migrate", Detail: "create normalized inventory.v1.yml for Linux runner use"},
 	})
 	fmt.Fprintln(out)
 	printHelpSection(out, s, "Required CSV Columns", []helpRow{

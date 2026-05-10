@@ -27,7 +27,7 @@
     - name: Reset validation summary report
       ansible.builtin.copy:
         dest: "{{ matilda_report_dir }}/validation-summary.txt"
-        content: "Host,DiscoveryIP,Command,FallbackUsed,LocalSudo,DeniedCommand,ProbeSSH,Ready,Remediation\n"
+        content: "Host,DiscoveryIP,Command,FallbackUsed,LocalSudo,DeniedCommand,ProbeSSH,Ready,Remediation,FailureCode\n"
       delegate_to: localhost
       run_once: true
       become: false

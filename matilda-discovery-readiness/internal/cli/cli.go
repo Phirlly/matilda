@@ -109,6 +109,18 @@ func rollbackAction(args []string) string {
 			return ""
 		}
 	}
+	if len(args) == 1 {
+		switch args[0] {
+		case "--sudoers-only":
+			return "rollback-sudoers"
+		case "--remove-key":
+			return "rollback-remove-key"
+		case "--lock-user":
+			return "rollback-lock-user"
+		case "--delete-user":
+			return "rollback-delete-user"
+		}
+	}
 	return "rollback"
 }
 

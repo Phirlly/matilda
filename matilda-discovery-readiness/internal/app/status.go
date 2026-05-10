@@ -30,21 +30,22 @@ type FileStatus struct {
 }
 
 type Snapshot struct {
-	InventoryPath   string          `json:"inventory_path"`
-	InventoryFormat string          `json:"inventory_format"`
-	InventoryOK     bool            `json:"inventory_ok"`
-	InventoryError  string          `json:"inventory_error"`
-	InventoryChecks []runner.Result `json:"inventory_checks"`
-	TargetCount     int             `json:"target_count"`
-	ReportSummary   reports.Summary `json:"report_summary"`
-	ReportRows      []reports.Row   `json:"report_rows"`
-	ReportError     string          `json:"report_error"`
-	ValidatedIPs    []string        `json:"validated_ips"`
-	ReportFiles     []FileStatus    `json:"report_files"`
-	StatePath       string          `json:"state_path"`
-	State           state.Document  `json:"state"`
-	StateError      string          `json:"state_error,omitempty"`
-	NextStep        string          `json:"next_step"`
+	InventoryPath   string            `json:"inventory_path"`
+	InventoryFormat string            `json:"inventory_format"`
+	InventoryOK     bool              `json:"inventory_ok"`
+	InventoryError  string            `json:"inventory_error"`
+	InventoryChecks []runner.Result   `json:"inventory_checks"`
+	TargetCount     int               `json:"target_count"`
+	ReportSummary   reports.Summary   `json:"report_summary"`
+	ReportRows      []reports.Row     `json:"report_rows"`
+	ReportError     string            `json:"report_error"`
+	ValidatedIPs    []string          `json:"validated_ips"`
+	ReportFiles     []FileStatus      `json:"report_files"`
+	Runs            []state.RunRecord `json:"runs"`
+	StatePath       string            `json:"state_path"`
+	State           state.Document    `json:"state"`
+	StateError      string            `json:"state_error,omitempty"`
+	NextStep        string            `json:"next_step"`
 }
 
 type ActionResult struct {
@@ -94,6 +95,9 @@ func (r *Runtime) Snapshot() Snapshot {
 	} else if !errors.Is(err, state.ErrNotFound) {
 		snap.StateError = err.Error()
 	}
+	if runs, err := store.ListRuns(5); err == nil {
+		snap.Runs = runs
+	}
 	snap.NextStep = nextStep(snap)
 	return snap
 }
@@ -118,7 +122,8 @@ func (r *Runtime) RecordAction(action string, err error) {
 
 func (r *Runtime) RecordWorkflowResult(result workflow.Result) error {
 	snap := r.Snapshot()
-	_, err := state.New(r.Root).Update(state.Update{
+	store := state.New(r.Root)
+	_, err := store.Update(state.Update{
 		Workspace: r.Root,
 		Inventory: displayPath(r.Root, filepath.Join(r.Root, "inventory.yml")),
 		Result:    result,
@@ -135,7 +140,10 @@ func (r *Runtime) RecordWorkflowResult(result workflow.Result) error {
 			ValidatedIPs:   displayPathIfExists(r.Root, filepath.Join(r.Root, "reports", "validated-discovery-ips.txt")),
 		},
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	return store.WriteRun(r.runRecord(result, snap))
 }
 
 func (r *Runtime) RunLocalAction(action string) ActionResult {

@@ -30,7 +30,7 @@ type Result struct {
 }
 
 func Start(action string) Result {
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
 	return Result{
 		Action:    action,
 		Status:    StatusStarted,
@@ -42,7 +42,7 @@ func Start(action string) Result {
 }
 
 func (r *Result) Finish(err error, cancelled bool) {
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
 	r.CompletedAt = now
 	switch {
 	case cancelled:

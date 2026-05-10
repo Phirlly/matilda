@@ -214,7 +214,8 @@ func (r *Runtime) Preflight() error {
 	if err := r.validateInventory(false); err != nil {
 		return err
 	}
-	if err := r.ensureLinuxGroupedInventory(); err != nil {
+	inventoryPath, err := r.prepareLinuxRunnerInventory()
+	if err != nil {
 		return err
 	}
 	extra, err := r.collectRuntimeExtraVars()
@@ -222,7 +223,7 @@ func (r *Runtime) Preflight() error {
 		return err
 	}
 	section(r.Out, "Ansible")
-	return r.runAnsible("ansible/playbooks/linux/preflight.yml", extra)
+	return r.runAnsible("ansible/playbooks/linux/preflight.yml", inventoryPath, extra)
 }
 
 func (r *Runtime) Setup() error {
@@ -233,7 +234,8 @@ func (r *Runtime) Setup() error {
 	if err := r.validateInventory(false); err != nil {
 		return err
 	}
-	if err := r.ensureLinuxGroupedInventory(); err != nil {
+	inventoryPath, err := r.prepareLinuxRunnerInventory()
+	if err != nil {
 		return err
 	}
 	extra, err := r.collectRuntimeExtraVars()
@@ -254,7 +256,7 @@ func (r *Runtime) Setup() error {
 		return ErrCancelled
 	}
 	section(r.Out, "Ansible")
-	return r.runAnsible("ansible/playbooks/linux/setup.yml", extra)
+	return r.runAnsible("ansible/playbooks/linux/setup.yml", inventoryPath, extra)
 }
 
 func (r *Runtime) Validate() error {
@@ -262,7 +264,8 @@ func (r *Runtime) Validate() error {
 	if err := r.validateInventory(false); err != nil {
 		return err
 	}
-	if err := r.ensureLinuxGroupedInventory(); err != nil {
+	inventoryPath, err := r.prepareLinuxRunnerInventory()
+	if err != nil {
 		return err
 	}
 	extra, err := r.collectRuntimeExtraVars()
@@ -270,7 +273,7 @@ func (r *Runtime) Validate() error {
 		return err
 	}
 	section(r.Out, "Ansible")
-	runErr := r.runAnsible("ansible/playbooks/linux/validate.yml", extra)
+	runErr := r.runAnsible("ansible/playbooks/linux/validate.yml", inventoryPath, extra)
 	reportErr := r.generateReport(false)
 	if runErr != nil {
 		if reportErr != nil {
@@ -368,7 +371,8 @@ func (r *Runtime) Rollback(args []string) error {
 	if err := r.validateInventory(false); err != nil {
 		return err
 	}
-	if err := r.ensureLinuxGroupedInventory(); err != nil {
+	inventoryPath, err := r.prepareLinuxRunnerInventory()
+	if err != nil {
 		return err
 	}
 
@@ -398,24 +402,45 @@ func (r *Runtime) Rollback(args []string) error {
 		return ErrCancelled
 	}
 	section(r.Out, "Ansible")
-	return r.runAnsible("ansible/playbooks/linux/rollback.yml", extra)
+	return r.runAnsible("ansible/playbooks/linux/rollback.yml", inventoryPath, extra)
 }
 
-func (r *Runtime) runAnsible(playbook string, extra []string) error {
-	args := []string{playbook}
+func (r *Runtime) runAnsible(playbook string, inventoryPath string, extra []string) error {
+	var args []string
+	if strings.TrimSpace(inventoryPath) != "" {
+		args = append(args, "-i", inventoryPath)
+	}
+	args = append(args, playbook)
 	args = append(args, extra...)
 	return runner.RunStreamContext(r.Context, r.Root, r.Out, r.Err, "ansible-playbook", args...)
 }
 
-func (r *Runtime) ensureLinuxGroupedInventory() error {
-	format, err := inventory.DetectFormat(filepath.Join(r.Root, "inventory.yml"))
+func (r *Runtime) prepareLinuxRunnerInventory() (string, error) {
+	plan, err := inventory.PlanLinuxRunner(filepath.Join(r.Root, "inventory.yml"))
 	if err != nil {
-		return err
+		return "", err
 	}
-	if format != "linux-groups" {
-		return errors.New("current Linux Ansible workflows require inventory.yml with Linux direct/via-Probe groups; normalized v1 is valid for planning and migration but not yet used directly by the Ansible runner")
+	if plan.Format == "linux-groups" {
+		return "", nil
 	}
-	return nil
+	generatedDir := filepath.Join(r.Root, ".matilda", "runner")
+	if err := os.MkdirAll(generatedDir, 0700); err != nil {
+		return "", err
+	}
+	generatedPath := filepath.Join(generatedDir, "inventory.linux.yml")
+	if err := inventory.WriteLinuxGroupedInventory(generatedPath, plan.Targets); err != nil {
+		return "", err
+	}
+	section(r.Out, "Inventory Plan")
+	successLine(r.Out, fmt.Sprintf("Prepared Linux runner inventory from v1: %s", displayPath(r.Root, generatedPath)))
+	if len(plan.SkippedTargets) > 0 {
+		var skipped []string
+		for _, target := range plan.SkippedTargets {
+			skipped = append(skipped, fmt.Sprintf("%s (%s)", target.Hostname, target.Platform))
+		}
+		nextLine(r.Out, "Skipped non-Linux v1 targets for this Linux workflow: "+strings.Join(skipped, ", "))
+	}
+	return generatedPath, nil
 }
 
 func (r *Runtime) checkSetupDependencies() error {

@@ -272,6 +272,11 @@ func renderPlainStatus(s ui.Style, snap app.Snapshot) string {
 		{key: "Validate", value: plainWorkflowState(s, snap.ReportError == "")},
 		{key: "Report", value: plainWorkflowState(s, snap.ReportError == "")},
 	})
+	if len(snap.Runs) > 0 {
+		fmt.Fprintln(&b)
+		fmt.Fprintln(&b, s.Section("Recent Runs"))
+		fmt.Fprint(&b, renderRunsText(snap, s.Width))
+	}
 	fmt.Fprintln(&b)
 	fmt.Fprintln(&b, s.Section("Target Readiness"))
 	fmt.Fprint(&b, renderReadinessText(snap, s.Width))
@@ -286,6 +291,29 @@ func renderPlainStatus(s ui.Style, snap app.Snapshot) string {
 	}
 	if snap.ReportError != "" {
 		fmt.Fprintf(&b, "%s %s\n", s.Warn("Report status:"), ui.Wrap(snap.ReportError, s.Width))
+	}
+	return b.String()
+}
+
+func renderRunsText(snap app.Snapshot, width int) string {
+	var b strings.Builder
+	for _, run := range snap.Runs {
+		when := run.EndedAt
+		if when == "" {
+			when = run.StartedAt
+		}
+		summary := run.Summary
+		if summary == "" {
+			summary = string(run.Status)
+		}
+		line := fmt.Sprintf("%s  %s  %s", run.Action, run.Status, summary)
+		if run.Command != "" {
+			line = fmt.Sprintf("%s  %s", line, run.Command)
+		}
+		if when != "" {
+			line = fmt.Sprintf("%s  %s", when, line)
+		}
+		fmt.Fprintln(&b, ui.Truncate(line, width))
 	}
 	return b.String()
 }

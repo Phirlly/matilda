@@ -99,6 +99,98 @@ targets:
 	}
 }
 
+func TestPlanLinuxRunnerFromV1Inventory(t *testing.T) {
+	path := writeTempFile(t, "inventory.yml", `version: 1
+
+targets:
+  app01:
+    platform: linux
+    access_path: direct
+    ansible_host: 203.0.113.10
+    public_ip: 203.0.113.10
+    private_ip: 10.0.0.10
+    discovery_ip: 10.0.0.10
+    privilege_method: sudo
+  app02:
+    platform: linux
+    access_path: via_probe
+    ansible_host: 10.0.1.20
+    discovery_ip: 10.0.1.20
+    privilege_method: sudo
+  win01:
+    platform: windows
+    access_path: direct
+    ansible_host: 10.10.0.20
+    privilege_method: winrm
+`)
+
+	plan, err := inventory.PlanLinuxRunner(path)
+	if err != nil {
+		t.Fatalf("PlanLinuxRunner failed: %v", err)
+	}
+	if plan.Format != "v1" || len(plan.Targets) != 2 || len(plan.SkippedTargets) != 1 {
+		t.Fatalf("unexpected plan: %+v", plan)
+	}
+	outPath := filepath.Join(t.TempDir(), "inventory.linux.yml")
+	if err := inventory.WriteLinuxGroupedInventory(outPath, plan.Targets); err != nil {
+		t.Fatalf("WriteLinuxGroupedInventory failed: %v", err)
+	}
+	got, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	for _, want := range []string{"public_targets:", "private_targets:", "app01:", "public_ip: 203.0.113.10", "private_ip: 10.0.0.10", "app02:"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("runner inventory missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestPlanLinuxRunnerRejectsUnsupportedV1Privilege(t *testing.T) {
+	path := writeTempFile(t, "inventory.yml", `version: 1
+
+targets:
+  app01:
+    platform: linux
+    access_path: direct
+    ansible_host: 203.0.113.10
+    discovery_ip: 10.0.0.10
+    privilege_method: pbrun
+`)
+
+	_, err := inventory.PlanLinuxRunner(path)
+	if err == nil || !strings.Contains(err.Error(), "privilege_method must be sudo") {
+		t.Fatalf("expected privilege method error, got %v", err)
+	}
+}
+
+func TestRequiresProbeIgnoresNonLinuxV1Targets(t *testing.T) {
+	path := writeTempFile(t, "inventory.yml", `version: 1
+
+targets:
+  app01:
+    platform: linux
+    access_path: direct
+    ansible_host: 203.0.113.10
+    discovery_ip: 10.0.0.10
+    privilege_method: sudo
+  win01:
+    platform: windows
+    access_path: via_probe
+    ansible_host: 10.10.0.20
+    privilege_method: winrm
+`)
+
+	needsProbe, err := inventory.RequiresProbe(path)
+	if err != nil {
+		t.Fatalf("RequiresProbe failed: %v", err)
+	}
+	if needsProbe {
+		t.Fatalf("non-Linux v1 targets should not require Probe inputs for Linux runner actions")
+	}
+}
+
 func TestReadCSVAndWriteLinuxGroupedInventory(t *testing.T) {
 	dir := t.TempDir()
 	csvPath := filepath.Join(dir, "targets.csv")

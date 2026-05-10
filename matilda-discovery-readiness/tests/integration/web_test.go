@@ -27,7 +27,7 @@ func TestWebStatusAndDashboardRoutes(t *testing.T) {
 	if dashboard.Code != http.StatusOK {
 		t.Fatalf("dashboard status = %d", dashboard.Code)
 	}
-	for _, want := range []string{"Matilda Discovery Readiness Toolkit", "Workflow Actions", "Actions", "Guidance", "Activity Log", "Target Readiness", "Validated IPs", "Report Files", "Inventory file", "Validation details", "Preflight", "Setup", "Validate", "Rollback sudoers"} {
+	for _, want := range []string{"Matilda Discovery Readiness Toolkit", "Workflow Actions", "Actions", "Guidance", "Activity Log", "Target Readiness", "Validated IPs", "Report Files", "Recent Runs", "Inventory file", "Validation details", "Preflight", "Setup", "Validate", "Rollback sudoers"} {
 		if !strings.Contains(dashboard.Body.String(), want) {
 			t.Fatalf("dashboard missing %q:\n%s", want, dashboard.Body.String())
 		}
@@ -37,7 +37,7 @@ func TestWebStatusAndDashboardRoutes(t *testing.T) {
 			t.Fatalf("dashboard should not render redundant summary %q:\n%s", redundant, dashboard.Body.String())
 		}
 	}
-	for _, want := range []string{"action-copy", "action-confirm", "action-row readonly", "action-row mutating", "responsive-table readiness-table", "responsive-table files-table", `data-label="Discovery IP"`, `data-label="File"`, "detail-grid", "detail-panel", "Confirm target change", "/api/actions/start", "EventSource", "cancel-job"} {
+	for _, want := range []string{"action-copy", "action-confirm", "action-row readonly", "action-row mutating", "responsive-table readiness-table", "responsive-table files-table", "responsive-table runs-table", `data-label="Discovery IP"`, `data-label="File"`, `id="run-history"`, "detail-grid", "detail-panel", "Confirm target change", "/api/actions/start", "EventSource", "cancel-job"} {
 		if !strings.Contains(dashboard.Body.String(), want) {
 			t.Fatalf("dashboard action palette missing %q:\n%s", want, dashboard.Body.String())
 		}
@@ -146,6 +146,15 @@ func TestWebStreamingActionAPI(t *testing.T) {
 	}
 	if completed.Status != "completed" || !strings.Contains(completed.Output, "Inventory valid") {
 		t.Fatalf("unexpected completed job: %+v", completed)
+	}
+	snapResp := httptest.NewRecorder()
+	handler.ServeHTTP(snapResp, httptest.NewRequest(http.MethodGet, "/api/status", nil))
+	var snap app.Snapshot
+	if err := json.Unmarshal(snapResp.Body.Bytes(), &snap); err != nil {
+		t.Fatalf("status JSON failed: %v", err)
+	}
+	if len(snap.Runs) == 0 || snap.Runs[0].Action != "inventory-validate" {
+		t.Fatalf("browser job should create a run record: %+v", snap.Runs)
 	}
 }
 
