@@ -149,6 +149,31 @@ func TestCLIDoctorDoesNotRequireGoAfterBinaryStarts(t *testing.T) {
 	}
 }
 
+func TestCLIDoctorReportsMissingAnsibleClearly(t *testing.T) {
+	root := withTempProject(t, validLinuxGroupedInventory(), "")
+	writeFile(t, filepath.Join(root, "examples", "env.example"), "TARGET_ADMIN_USER=opc\n")
+	writeFile(t, filepath.Join(root, "examples", "inventory.example.yml"), validLinuxGroupedInventory())
+	if err := os.MkdirAll(filepath.Join(root, "reports"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", t.TempDir())
+
+	var out bytes.Buffer
+	err := cli.Execute([]string{"doctor"}, strings.NewReader(""), &out, &bytes.Buffer{})
+	if err == nil {
+		t.Fatalf("doctor should fail when Ansible is missing:\n%s", out.String())
+	}
+	for _, want := range []string{
+		"FAIL  ansible-playbook",
+		"ansible-playbook is not installed or not on PATH",
+		"install Ansible and rerun ./matilda-prep doctor",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("doctor output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
 func TestCLIDoctorFailsWhenGoExistsButIsBroken(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses Unix shell scripts to stub local commands")

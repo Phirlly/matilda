@@ -22,7 +22,7 @@ to generate:
 - `reports/readiness.md`
 - `reports/readiness.html`
 
-Generated reports include target-specific remediation for SSH, sudo, denied command, Probe reachability, missing service account, locked service account, and missing validation commands.
+Generated reports include target-specific remediation for SSH reachability, SSH key authentication, sudo password or policy issues, denied-command checks, Probe reachability, missing service account, locked service account, and missing validation commands.
 
 Use only targets marked `Ready=YES` in Matilda Network Discovery.
 
