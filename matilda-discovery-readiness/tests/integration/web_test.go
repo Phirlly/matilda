@@ -27,17 +27,17 @@ func TestWebStatusAndDashboardRoutes(t *testing.T) {
 	if dashboard.Code != http.StatusOK {
 		t.Fatalf("dashboard status = %d", dashboard.Code)
 	}
-	for _, want := range []string{"Matilda Discovery Readiness Toolkit", "Workflow Actions", "Actions", "Guidance", "Activity Log", "Target Readiness", "Validated IPs", "Report Files", "Preflight", "Setup", "Validate", "Rollback sudoers"} {
+	for _, want := range []string{"Matilda Discovery Readiness Toolkit", "Workflow Actions", "Actions", "Guidance", "Activity Log", "Target Readiness", "Validated IPs", "Report Files", "Inventory file", "Validation details", "Preflight", "Setup", "Validate", "Rollback sudoers"} {
 		if !strings.Contains(dashboard.Body.String(), want) {
 			t.Fatalf("dashboard missing %q:\n%s", want, dashboard.Body.String())
 		}
 	}
-	for _, redundant := range []string{`<div class="terminal-label">Status</div>`, `<div class="terminal-label">Workflow</div>`, `2/2 ready`} {
+	for _, redundant := range []string{`<div class="terminal-label">Status</div>`, `<div class="terminal-label">Workflow</div>`, `2/2 ready`, `<section><h2>Inventory</h2><pre>`, `<section><h2>Validation Summary</h2><pre>`, "confirm-spacer"} {
 		if strings.Contains(dashboard.Body.String(), redundant) {
 			t.Fatalf("dashboard should not render redundant summary %q:\n%s", redundant, dashboard.Body.String())
 		}
 	}
-	for _, want := range []string{"action-copy", "action-confirm", "Confirm target change", "/api/actions/start", "EventSource", "cancel-job"} {
+	for _, want := range []string{"action-copy", "action-confirm", "action-row readonly", "action-row mutating", "detail-grid", "detail-panel", "Confirm target change", "/api/actions/start", "EventSource", "cancel-job"} {
 		if !strings.Contains(dashboard.Body.String(), want) {
 			t.Fatalf("dashboard action palette missing %q:\n%s", want, dashboard.Body.String())
 		}
@@ -247,6 +247,49 @@ func TestWebStreamingRejectsConcurrentAction(t *testing.T) {
 	handler.ServeHTTP(events, httptest.NewRequest(http.MethodGet, "/api/actions/"+first.ID+"/events", nil))
 	if events.Code != http.StatusOK {
 		t.Fatalf("first events status = %d\n%s", events.Code, events.Body.String())
+	}
+}
+
+func TestWebStreamingActionCanBeCancelled(t *testing.T) {
+	root := withTempProject(t, validLinuxGroupedInventory(), validationSummary())
+	binDir := t.TempDir()
+	fakeAnsible := filepath.Join(binDir, "ansible-playbook")
+	if err := os.WriteFile(fakeAnsible, []byte("#!/bin/sh\necho fake ansible-playbook started\nsleep 5\necho fake ansible-playbook completed\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	keyPath := filepath.Join(root, "keys", "test-key")
+	writeFile(t, keyPath, "test key\n")
+	writeFile(t, filepath.Join(root, ".env"), strings.Join([]string{
+		"TARGET_ADMIN_USER=opc",
+		"TARGET_ADMIN_PRIVATE_KEY_FILE=" + keyPath,
+		"MATILDA_PROBE_ANSIBLE_HOST=10.0.0.5",
+		"MATILDA_PROBE_USER=opc",
+		"MATILDA_PROBE_ADMIN_PRIVATE_KEY_FILE=" + keyPath,
+		"MATILDA_PUBLIC_KEY_FILE=" + keyPath,
+		"MATILDA_PROBE_PRIVATE_KEY_ON_PROBE=/home/opc/.ssh/matilda",
+	}, "\n")+"\n")
+
+	rt := app.New(root, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	handler := web.Handler(rt)
+	job := startBrowserJob(t, handler, "preflight", false)
+
+	cancel := httptest.NewRecorder()
+	handler.ServeHTTP(cancel, httptest.NewRequest(http.MethodPost, "/api/actions/"+job.ID+"/cancel", nil))
+	if cancel.Code != http.StatusOK {
+		t.Fatalf("cancel status = %d\n%s", cancel.Code, cancel.Body.String())
+	}
+
+	events := httptest.NewRecorder()
+	handler.ServeHTTP(events, httptest.NewRequest(http.MethodGet, "/api/actions/"+job.ID+"/events", nil))
+	if events.Code != http.StatusOK {
+		t.Fatalf("events status = %d\n%s", events.Code, events.Body.String())
+	}
+	for _, want := range []string{"Cancellation requested", "event: cancelled"} {
+		if !strings.Contains(events.Body.String(), want) {
+			t.Fatalf("cancel stream missing %q:\n%s", want, events.Body.String())
+		}
 	}
 }
 

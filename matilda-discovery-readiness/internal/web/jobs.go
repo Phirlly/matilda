@@ -179,7 +179,7 @@ func (m *jobManager) run(ctx context.Context, job *browserJob, confirmed bool) {
 	if !result.OK {
 		status = jobFailed
 	}
-	if result.Error == app.ErrCancelled.Error() {
+	if result.Error == app.ErrCancelled.Error() || result.Error == context.Canceled.Error() {
 		status = jobCancelled
 	}
 	m.finish(job.id, status, result.Error)

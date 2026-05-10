@@ -295,6 +295,7 @@ func pageTemplate() *template.Template {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="icon" href="data:,">
   <title>{{.Title}}</title>
   <style>
     :root{color-scheme:light;--ink:#15191d;--muted:#66717c;--line:#d9dfE6;--bg:#f5f6f4;--panel:#fff;--panel2:#f8faf8;--terminal:#111820;--terminal2:#18222b;--termline:#26323d;--ok:#177245;--bad:#aa3434;--warn:#9a6700;--action:#215f8f;--remote:#6854a3}
@@ -322,30 +323,42 @@ func pageTemplate() *template.Template {
     .workspace{padding:15px;min-width:0}
     .terminal-label{font-size:13px;font-weight:750;color:#f1f6fa;margin-bottom:8px}
     .next{background:#f0f6f4;border-left:4px solid var(--ok);border-radius:5px;color:var(--ink);padding:11px 12px;margin-bottom:14px}
-    section,.panel{background:var(--panel);border:1px solid var(--line);border-radius:6px;min-width:0;box-shadow:0 1px 2px rgba(20,27,36,.04)}
+    section,.panel,.detail-panel{background:var(--panel);border:1px solid var(--line);border-radius:6px;min-width:0;box-shadow:0 1px 2px rgba(20,27,36,.04)}
     section{overflow-x:auto;max-width:100%}
     section h2,.panel h2{font-size:15px;margin:0;padding:12px 14px;border-bottom:1px solid var(--line);letter-spacing:0}
     .body{padding:15px}
-    .actions{display:grid;gap:10px}
-    .action-row{display:grid;grid-template-columns:minmax(190px,260px) minmax(220px,1fr) 136px;grid-template-areas:"copy confirm button";gap:12px;align-items:center;margin:0;padding:10px;border:1px solid var(--termline);border-radius:6px;background:#141d25;min-height:58px}
+    .actions{display:grid;gap:8px}
+    .action-row{display:grid;grid-template-columns:minmax(180px,1fr) 126px;grid-template-areas:"copy button";gap:10px;align-items:center;margin:0;padding:9px;border:1px solid var(--termline);border-radius:6px;background:#141d25;min-height:52px}
+    .action-row.mutating{grid-template-columns:minmax(180px,1fr) minmax(168px,auto) 126px;grid-template-areas:"copy confirm button"}
     .action-copy{grid-area:copy;min-width:0}
     .action-copy strong{display:block;color:#f2f7fb;font-size:14px;line-height:1.25;margin-bottom:3px}
     .action-copy span{display:block;font-size:13px;color:#aebac4;line-height:1.3}
-    .action-confirm{grid-area:confirm;display:flex;align-items:center;justify-content:flex-end;min-height:34px}
+    .action-confirm{grid-area:confirm;display:none;align-items:center;justify-content:flex-end;min-height:32px}
+    .action-row.mutating .action-confirm{display:flex}
     .action-row button{grid-area:button;width:100%}
-    .confirm,.confirm-spacer{font-size:12px;color:#d7c6bd;white-space:nowrap}
+    .confirm{font-size:12px;color:#d7c6bd;white-space:nowrap}
     .confirm input{vertical-align:-2px;margin-right:6px}
-    .action-confirm.empty{visibility:hidden}
     .log{margin-bottom:18px}
     .log pre{max-height:300px;border-top:0;border-radius:0 0 6px 6px;background:#101820;color:#dce7ef}
     .grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:18px;margin-top:18px}
+    .detail-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:18px;margin-top:18px}
+    .detail-panel{overflow:hidden}
+    .detail-panel summary{display:flex;align-items:center;justify-content:space-between;gap:12px;min-width:0;padding:12px 14px;cursor:pointer;font-weight:750;list-style:none}
+    .detail-panel summary::-webkit-details-marker{display:none}
+    .detail-panel summary::after{content:"+";display:inline-flex;align-items:center;justify-content:center;flex:0 0 22px;width:22px;height:22px;border:1px solid var(--line);border-radius:999px;color:var(--muted);font-weight:800}
+    .detail-panel[open] summary{background:var(--panel2);border-bottom:1px solid var(--line)}
+    .detail-panel[open] summary::after{content:"-"}
+    .detail-panel summary span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .detail-panel summary small{color:var(--muted);font-size:12px;font-weight:650;white-space:nowrap}
+    .detail-panel pre{border-top:0;border-radius:0;max-height:340px}
     pre{white-space:pre-wrap;margin:0;padding:14px;overflow:auto;max-height:430px;background:#fbfcfd;border-top:1px solid var(--line);border-radius:0 0 6px 6px;font-size:13px;line-height:1.45}
     table{border-collapse:collapse;width:100%;font-size:13px}
     th,td{border-top:1px solid var(--line);padding:9px 10px;text-align:left;vertical-align:top}
     th{background:var(--panel2);font-size:12px;color:var(--muted);text-transform:uppercase}
     .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
     .pill{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:3px 8px;background:var(--panel2);font-weight:650;margin:0 6px 6px 0}
-    @media (max-width:980px){header{padding:18px}main{padding:18px}.grid,.metrics{grid-template-columns:1fr}.action-row{grid-template-columns:minmax(0,1fr);grid-template-areas:"copy" "confirm" "button"}.action-confirm{justify-content:flex-start}.action-confirm.empty{display:none;min-height:0}.confirm-spacer{display:none}.action-row button{width:100%}}
+    @media (max-width:980px){header{padding:18px}main{padding:18px}.grid,.detail-grid,.metrics{grid-template-columns:1fr}.action-row,.action-row.mutating{grid-template-columns:minmax(0,1fr);grid-template-areas:"copy" "confirm" "button"}.action-row.readonly{grid-template-areas:"copy" "button"}.action-confirm{justify-content:flex-start}.action-row.readonly .action-confirm{display:none}.action-row button{width:100%}}
+    @media (max-width:520px){.detail-panel summary{align-items:flex-start;flex-direction:column}.detail-panel summary::after{position:absolute;top:12px;right:14px}.detail-panel summary{position:relative;padding-right:48px}.detail-panel summary small{white-space:normal}}
   </style>
 </head>
 <body>
@@ -379,10 +392,10 @@ func pageTemplate() *template.Template {
             {{range .ActionGroups}}
               <h3>{{.Name}}</h3>
               {{range .Actions}}
-                <form method="post" action="/action" class="action-row">
+                <form method="post" action="/action" class="action-row {{if .Mutating}}mutating{{else}}readonly{{end}}">
                   <input type="hidden" name="action" value="{{.ID}}">
                   <div class="action-copy"><strong>{{.Label}}</strong><span>{{.Description}}</span></div>
-                  <div class="action-confirm {{if .Mutating}}needs-confirm{{else}}empty{{end}}">{{if .Mutating}}<label class="confirm"><input type="checkbox" name="confirmed" value="yes">Confirm target change</label>{{else}}<span class="confirm-spacer"></span>{{end}}</div>
+                  <div class="action-confirm">{{if .Mutating}}<label class="confirm"><input type="checkbox" name="confirmed" value="yes">Confirm target change</label>{{end}}</div>
                   <button class="{{actionClass .}}" data-default-label="Run">Run</button>
                 </form>
               {{end}}
@@ -438,9 +451,15 @@ func pageTemplate() *template.Template {
         </table>
       </section>
     </div>
-    <div class="grid">
-      <section><h2>Inventory</h2><pre>{{.Inventory}}</pre></section>
-      <section><h2>Validation Summary</h2><pre>{{.SummaryText}}</pre></section>
+    <div class="detail-grid">
+      <details class="detail-panel">
+        <summary><span>Inventory file</span><small>inventory.yml</small></summary>
+        <pre>{{.Inventory}}</pre>
+      </details>
+      <details class="detail-panel">
+        <summary><span>Validation details</span><small>validation-summary.txt</small></summary>
+        <pre>{{.SummaryText}}</pre>
+      </details>
     </div>
   </main>
 
