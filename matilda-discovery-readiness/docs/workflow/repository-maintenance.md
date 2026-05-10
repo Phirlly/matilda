@@ -22,7 +22,7 @@ This repository is maintained as the Matilda Discovery Readiness Toolkit.
 - Safe examples under `examples/`.
 - Schemas under `schemas/`.
 - Templates under `templates/`.
-- User and reference documentation under `docs/user/` and `docs/reference/`.
+- User, reference, and workflow documentation under `docs/user/`, `docs/reference/`, and `docs/workflow/`.
 - `reports/.gitkeep` only, so the reports directory exists without generated reports.
 
 ## Keep Untracked
@@ -51,24 +51,28 @@ These files are local runtime material and must not be committed:
 
 ## Branch Workflow
 
-This repository uses the protected-main workflow defined in [Branching and Release Workflow](branching-and-release-workflow.md).
+This repository uses the protected-main workflow defined in [Branching Workflow](BRANCHING.md).
 
 - `main` is the production/release branch and must remain deployable.
 - Do not make direct code or documentation updates on `main`.
 - `dev` is the integration branch for completed work from short-lived branches.
 - Create short-lived work branches from `dev`.
-- Merge completed work into `dev` first.
-- Merge `dev` into `main` only after build/test checks pass.
+- Read related implementation, tests, docs, examples, schemas, and templates before editing.
+- Write a short plan before implementation.
+- Review the diff, tests, docs, and any release notes before opening or accepting a PR.
+- Merge completed work into `dev` by pull request only after local validation and CI pass.
+- Promote `dev` into `main` by a separate pull request only after validation and CI pass.
 - Create release tags from `main` only after review and validation.
 - Prefer a new tag over moving a published tag unless the tag move is explicitly approved. For RCs, use the next RC tag.
 
 ## Validation
 
-Run these checks before opening a PR:
+Use the local validation gate in [Branching Workflow](BRANCHING.md) for the full checklist. For normal repo changes, run:
 
 ```bash
 go test ./...
 go vet ./...
+go build -o /tmp/matilda-prep-check ./cmd/matilda-prep
 git diff --check
 bash -n matilda-prep
 ```
