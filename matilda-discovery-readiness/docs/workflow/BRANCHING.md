@@ -146,7 +146,8 @@ Keep repository settings aligned with this workflow:
 
 Pull requests into `dev` and `main` must pass CI before merge. CI runs Go tests,
 Go vet, whitespace checks, launcher syntax checks, and Linux Ansible syntax
-checks. CI also fails if local-only runtime artifacts are accidentally tracked.
+checks. CI also fails if local-only runtime artifacts are accidentally tracked,
+or if a pull request into `main` comes from any source branch other than `dev`.
 
 CI is required, but it is not a substitute for local review. The branch author
 still owns the plan, diff review, test selection, documentation review, and final

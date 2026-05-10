@@ -27,6 +27,14 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Check main pull request source branch
+        if: github.event_name == 'pull_request' && github.base_ref == 'main' && github.head_ref != 'dev'
+        run: |
+          echo "Pull requests into main must come from dev."
+          echo "Current source branch: ${{ github.head_ref }}"
+          exit 1
+        working-directory: .
+
       - name: Check local-only files remain untracked
         run: |
           forbidden="$(
