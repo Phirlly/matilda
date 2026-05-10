@@ -48,6 +48,13 @@ type Snapshot struct {
 	NextStep        string            `json:"next_step"`
 }
 
+func (s Snapshot) ReadinessTotal() int {
+	if s.ReportSummary.Total > 0 {
+		return s.ReportSummary.Total
+	}
+	return s.TargetCount
+}
+
 type ActionResult struct {
 	Action string `json:"action"`
 	OK     bool   `json:"ok"`

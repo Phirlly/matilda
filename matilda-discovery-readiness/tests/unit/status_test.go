@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"matilda-discovery-readiness/internal/app"
+	"matilda-discovery-readiness/internal/reports"
 )
 
 func TestRuntimeSnapshotSummarizesInventoryAndReports(t *testing.T) {
@@ -36,6 +37,18 @@ func TestRuntimeSnapshotSummarizesInventoryAndReports(t *testing.T) {
 	}
 	if !strings.Contains(snap.NextStep, "validated discovery IPs") {
 		t.Fatalf("unexpected next step: %s", snap.NextStep)
+	}
+}
+
+func TestSnapshotReadinessTotalFallsBackToInventoryCount(t *testing.T) {
+	snap := app.Snapshot{TargetCount: 2}
+	if got := snap.ReadinessTotal(); got != 2 {
+		t.Fatalf("readiness total without reports = %d, want 2", got)
+	}
+
+	snap.ReportSummary = reports.Summary{Total: 1}
+	if got := snap.ReadinessTotal(); got != 1 {
+		t.Fatalf("readiness total with reports = %d, want 1", got)
 	}
 }
 
