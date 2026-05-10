@@ -31,14 +31,6 @@
     group: "{{ matilda_service_user }}"
     mode: "0700"
 
-- name: Ensure Ansible remote tmp directory exists for matilda-svc
-  ansible.builtin.file:
-    path: "{{ matilda_service_home }}/.ansible/tmp"
-    state: directory
-    owner: "{{ matilda_service_user }}"
-    group: "{{ matilda_service_user }}"
-    mode: "0700"
-
 - name: Read Matilda public key from runtime-provided path
   ansible.builtin.set_fact:
     matilda_public_key: "{{ lookup('file', matilda_public_key_file) }}"
