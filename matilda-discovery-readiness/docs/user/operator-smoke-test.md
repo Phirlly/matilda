@@ -22,7 +22,9 @@ Use a Linux or macOS operator machine. Windows operator machines are not validat
 
 From a source checkout, install Go and Ansible on the operator machine. The `./matilda-prep` launcher builds the local Go binary into `.bin/` automatically before running it.
 
-From a packaged release that already includes a runnable binary for your operating system and CPU architecture, Go is not required.
+From a packaged release tarball that already includes a runnable binary for your operating system and CPU architecture, Go is not required. Extract the tarball, enter the extracted `matilda-discovery-readiness` directory, and run `./matilda-prep` from that directory.
+
+Standalone binary assets are not one-file installs. Use them from a source checkout or extracted package root so the toolkit can find its Ansible, template, schema, and documentation files.
 
 ```bash
 git clone <repo-url>

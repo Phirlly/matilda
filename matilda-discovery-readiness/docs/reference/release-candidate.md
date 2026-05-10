@@ -80,7 +80,9 @@ MatildaProbeVM:
 - Reports are local generated artifacts and are ignored by git.
 - `.matilda/` run history is local state and is ignored by git.
 - Non-Linux v1 inventory targets are structurally valid, but Linux remote actions skip them.
-- Prebuilt release binaries are operating-system and CPU-architecture specific. A source clone can be used on validated operator platforms with Go installed.
+- Packaged release tarballs include the project files and a prebuilt `matilda-prep` binary for one operating system and CPU architecture.
+- Standalone binary assets are not one-file installs. They must be run from a source checkout or extracted package root so the toolkit can find its Ansible, template, schema, and documentation files.
+- A source clone can be used on validated operator platforms with Go installed.
 
 ## Branch And Tag Workflow
 
@@ -110,3 +112,52 @@ ANSIBLE_CONFIG=ansible/ansible.cfg ANSIBLE_LOCAL_TEMP=/private/tmp/matilda-ansib
 ```
 
 Then run the [operator smoke test](../user/operator-smoke-test.md) against a fresh clone from origin.
+
+## Release Asset Packaging
+
+Package release tarballs from a clean staging directory built from `git archive`.
+Do not tar the working tree directly from macOS, because Finder and copyfile
+metadata can add AppleDouble files or extended attributes that show up during
+Linux extraction.
+
+For each target operating system and architecture:
+
+1. Build the matching `matilda-prep` binary.
+2. Create a clean stage from the tagged checkout with `git archive`.
+3. Copy the binary to the staged project root as `matilda-prep`.
+4. Strip macOS metadata from the stage when packaging on macOS.
+5. Create the tarball with `COPYFILE_DISABLE=1`.
+6. Verify the tarball by extracting it in a Linux container and running
+   `./matilda-prep help`, `./matilda-prep inventory validate`, and
+   `./matilda-prep status` from the extracted project root.
+
+Example macOS packaging pattern for a Linux amd64 tarball:
+
+```bash
+version=v0.1.0-rcN
+stage=/private/tmp/matilda-package-${version}-linux-amd64
+rm -rf "$stage"
+mkdir -p "$stage"
+
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o /private/tmp/matilda-prep-linux-amd64 ./cmd/matilda-prep
+git archive --format=tar --prefix=matilda-discovery-readiness/ HEAD | tar -xf - -C "$stage"
+cp /private/tmp/matilda-prep-linux-amd64 "$stage/matilda-discovery-readiness/matilda-prep"
+chmod +x "$stage/matilda-discovery-readiness/matilda-prep"
+xattr -cr "$stage/matilda-discovery-readiness" 2>/dev/null || true
+COPYFILE_DISABLE=1 tar -czf "dist/matilda-discovery-readiness-${version}-linux-amd64.tar.gz" -C "$stage" matilda-discovery-readiness
+```
+
+Before publishing, verify no macOS metadata is present:
+
+```bash
+if tar -tzf "dist/matilda-discovery-readiness-${version}-linux-amd64.tar.gz" | grep -F '._'; then
+  echo "macOS metadata found in tarball"
+  exit 1
+fi
+```
+
+Then verify in Podman or another Linux runtime:
+
+```bash
+podman run --rm --platform linux/amd64 -v "$PWD:/work:Z" -w /work alpine:latest sh -c 'tar -xzf dist/matilda-discovery-readiness-v0.1.0-rcN-linux-amd64.tar.gz -C /tmp && cd /tmp/matilda-discovery-readiness && ./matilda-prep help'
+```

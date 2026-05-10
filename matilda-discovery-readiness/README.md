@@ -81,7 +81,9 @@ git clone <repo-url>
 cd matilda-discovery-readiness
 ```
 
-When running from a source clone, `./matilda-prep` builds the local Go binary into `.bin/` automatically and then runs it. Packaged release assets can include a prebuilt binary for a specific operating system and CPU architecture, but the source-clone path is the most portable way to run this release candidate.
+When running from a source clone, `./matilda-prep` builds the local Go binary into `.bin/` automatically and then runs it. The source-clone path is the most portable way to run this release candidate.
+
+Packaged release tarballs include the project files and a prebuilt `matilda-prep` binary for a specific operating system and CPU architecture. Extract the tarball, enter the extracted `matilda-discovery-readiness` directory, and run `./matilda-prep` from there. Standalone binary assets are not one-file installs; use them from a source checkout or extracted package root so the toolkit can find its Ansible, template, schema, and documentation files.
 
 Create local configuration files:
 
