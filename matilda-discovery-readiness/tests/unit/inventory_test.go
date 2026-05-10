@@ -1,8 +1,10 @@
 package unit
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -96,6 +98,44 @@ targets:
 	}
 	if result.Format != "v1" {
 		t.Fatalf("expected v1 format, got %q", result.Format)
+	}
+}
+
+func TestInventoryV1SchemaMatchesImplementedFields(t *testing.T) {
+	_, currentFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not locate test file")
+	}
+	schemaPath := filepath.Join(filepath.Dir(currentFile), "..", "..", "schemas", "inventory.v1.schema.json")
+	content, err := os.ReadFile(schemaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var schema map[string]any
+	if err := json.Unmarshal(content, &schema); err != nil {
+		t.Fatalf("inventory v1 schema is not valid JSON: %v", err)
+	}
+	targetSchema := schema["properties"].(map[string]any)["targets"].(map[string]any)["additionalProperties"].(map[string]any)
+	required := stringSet(targetSchema["required"].([]any))
+	for _, want := range []string{"platform", "privilege_method"} {
+		if !required[want] {
+			t.Fatalf("inventory v1 target schema should require %s globally", want)
+		}
+	}
+	for _, notGlobal := range []string{"access_path", "ansible_host", "discovery_ip"} {
+		if required[notGlobal] {
+			t.Fatalf("inventory v1 target schema should not require %s globally because non-Linux scaffold targets may omit it", notGlobal)
+		}
+	}
+	properties := targetSchema["properties"].(map[string]any)
+	for _, want := range []string{"public_ip", "private_ip"} {
+		if _, ok := properties[want]; !ok {
+			t.Fatalf("inventory v1 schema missing implemented optional field %s", want)
+		}
+	}
+	if len(targetSchema["allOf"].([]any)) == 0 {
+		t.Fatalf("inventory v1 schema should include platform-specific requirements")
 	}
 }
 
@@ -284,4 +324,14 @@ func writeTempFile(t *testing.T, name string, content string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func stringSet(values []any) map[string]bool {
+	result := map[string]bool{}
+	for _, value := range values {
+		if text, ok := value.(string); ok {
+			result[text] = true
+		}
+	}
+	return result
 }

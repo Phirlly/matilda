@@ -10,7 +10,7 @@
       "type": "object",
       "additionalProperties": {
         "type": "object",
-        "required": ["platform", "access_path", "discovery_ip", "privilege_method"],
+        "required": ["platform", "privilege_method"],
         "properties": {
           "platform": {
             "type": "string",
@@ -28,6 +28,8 @@
           },
           "ansible_host": { "type": "string" },
           "discovery_ip": { "type": "string" },
+          "public_ip": { "type": "string" },
+          "private_ip": { "type": "string" },
           "admin_user": { "type": "string" },
           "admin_private_key_file": { "type": "string" },
           "privilege_method": {
@@ -38,7 +40,71 @@
             "type": "string",
             "enum": ["remote", "generate_script", "generate_instructions", "validate_credentials"]
           }
-        }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": { "platform": { "const": "linux" } },
+              "required": ["platform"]
+            },
+            "then": {
+              "required": ["access_path", "ansible_host", "discovery_ip"],
+              "properties": {
+                "access_path": { "enum": ["direct", "via_probe"] },
+                "privilege_method": { "const": "sudo" }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": { "platform": { "const": "unix" } },
+              "required": ["platform"]
+            },
+            "then": {
+              "required": ["access_path", "ansible_host", "discovery_ip"],
+              "properties": {
+                "access_path": { "enum": ["direct", "via_probe", "customer_managed"] }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": { "platform": { "const": "windows" } },
+              "required": ["platform"]
+            },
+            "then": {
+              "required": ["access_path", "ansible_host"],
+              "properties": {
+                "privilege_method": { "const": "winrm" }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": { "platform": { "const": "cloud" } },
+              "required": ["platform"]
+            },
+            "then": {
+              "required": ["cloud_provider"],
+              "properties": {
+                "access_path": { "enum": ["api", "customer_managed"] },
+                "privilege_method": { "const": "cloud_api" }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": { "platform": { "const": "kubernetes" } },
+              "required": ["platform"]
+            },
+            "then": {
+              "properties": {
+                "access_path": { "enum": ["api", "customer_managed"] },
+                "privilege_method": { "const": "k8s_api" }
+              }
+            }
+          }
+        ]
       }
     }
   }
