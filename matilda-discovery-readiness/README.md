@@ -126,18 +126,17 @@ Most users only need these local files:
 
 ```text
 .env
-inventory.yml
+targets.csv
 ```
 
 Use the examples as a starting point:
 
 ```text
 examples/env.example
-examples/inventory.example.yml
 examples/targets.example.csv
 ```
 
-`./matilda-prep init` can create `.env` and `inventory.yml` safely. It asks before replacing existing files and can create timestamped backups.
+`./matilda-prep init` can create `.env` and `targets.csv` safely. It asks before replacing existing files and can create timestamped backups.
 
 Generated local output is written under:
 
@@ -150,7 +149,7 @@ These local files can contain environment-specific information and should not be
 
 ## Inventory Basics
 
-`inventory.yml` uses `version: 1` and one target entry per system.
+`targets.csv` is the user-facing inventory file. Do not hand-edit `inventory.yml`; the toolkit generates normalized runtime inventory under `.matilda/` when needed.
 
 Each Linux target has two important addresses:
 
@@ -159,9 +158,9 @@ ansible_host  = address Ansible uses to configure the target
 discovery_ip  = address MatildaProbeVM uses to discover and validate the target
 ```
 
-Use `access_path: direct` when Ansible can connect directly from the operator machine.
+Set `access_path` to `direct` when Ansible can connect directly from the operator machine.
 
-Use `access_path: via_probe` when Ansible must connect through MatildaProbeVM.
+Set `access_path` to `via_probe` when Ansible must connect through MatildaProbeVM.
 
 Optional inventory helpers:
 

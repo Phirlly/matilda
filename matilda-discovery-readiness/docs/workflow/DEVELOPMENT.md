@@ -114,7 +114,8 @@ Confirm local-only files are not staged, including:
 - `PLAN.md`
 - `AGENTS.md`
 - `.env`
-- `inventory.yml`
+- `targets.csv`
+- legacy root `inventory.yml` if present
 - `.matilda/`
 - `.bin/`
 - `.ansible/`

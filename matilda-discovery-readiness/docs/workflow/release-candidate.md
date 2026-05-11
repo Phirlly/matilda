@@ -6,7 +6,7 @@ This release manager reference defines the release scope for Matilda Discovery R
 
 - Linux target readiness for targets reached directly from the operator machine.
 - Linux target readiness for targets reached through MatildaProbeVM.
-- `version: 1` `inventory.yml` for user-facing inventory.
+- CSV-first `targets.csv` for user-facing inventory.
 - Local terminal console and local browser UI.
 - Local run history under `.matilda/`.
 - Readiness reports under `reports/`.
@@ -56,7 +56,7 @@ Operator machine:
 - Ansible.
 - SSH access to the target admin account.
 - SSH access to MatildaProbeVM when private targets or Probe validation are used.
-- Local `.env` and `inventory.yml`.
+- Local `.env` and `targets.csv`.
 
 Windows operator machines are not validated in this release. For WSL source checkouts, configure Go, Ansible, and SSH. For WSL release packages, use the Linux package and configure Ansible and SSH.
 
@@ -127,7 +127,7 @@ For each target operating system and architecture:
 5. Create the tarball with `COPYFILE_DISABLE=1`.
 6. Verify the tarball by extracting it in a Linux container and running
    `./matilda-prep help` from the extracted project root.
-7. For `inventory validate` and `status`, copy a real operator `inventory.yml`
+7. For `inventory validate` and `status`, copy a real operator `targets.csv`
    into the extracted project root first. Packaged tarballs intentionally do not
    include local inventory or `.env` files.
 
@@ -174,5 +174,5 @@ fi
 Then verify in Podman or another Linux runtime:
 
 ```bash
-podman run --rm --platform linux/amd64 -v "$PWD:/work:Z" -w /work alpine:latest sh -c 'tar -xzf dist/matilda-discovery-readiness-vX.Y.Z-linux-amd64.tar.gz -C /tmp && cd /tmp/matilda-discovery-readiness && cp /work/inventory.yml inventory.yml && ./matilda-prep help && ./matilda-prep inventory validate && ./matilda-prep status'
+podman run --rm --platform linux/amd64 -v "$PWD:/work:Z" -w /work alpine:latest sh -c 'tar -xzf dist/matilda-discovery-readiness-vX.Y.Z-linux-amd64.tar.gz -C /tmp && cd /tmp/matilda-discovery-readiness && cp /work/targets.csv targets.csv && ./matilda-prep help && ./matilda-prep inventory validate && ./matilda-prep status'
 ```

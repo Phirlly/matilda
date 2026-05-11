@@ -44,7 +44,7 @@ If you already have working local files from another checkout, copy them into th
 
 ```bash
 cp /path/to/.env .env
-cp /path/to/inventory.yml inventory.yml
+cp /path/to/targets.csv targets.csv
 ```
 
 Use the guided initializer:
@@ -57,7 +57,7 @@ Or copy the examples and edit them:
 
 ```bash
 cp examples/env.example .env
-cp examples/inventory.example.yml inventory.yml
+cp examples/targets.example.csv targets.csv
 ```
 
 Before continuing, replace every placeholder value. Keep private key files on the operator machine or MatildaProbeVM only. Do not copy private keys to targets.
@@ -126,9 +126,9 @@ Run one mode at a time. Restore disposable targets with `./matilda-prep setup` a
 ## 6. Common Fixes
 
 - Missing `.env`: run `./matilda-prep init` or copy `examples/env.example` to `.env`.
-- Missing `inventory.yml`: run `./matilda-prep init` or copy `examples/inventory.example.yml` to `inventory.yml`.
+- Missing `targets.csv`: run `./matilda-prep init` or copy `examples/targets.example.csv` to `targets.csv`.
 - Missing toolkit files: use a source checkout or extracted release package root. Standalone binary assets still need the repository files beside them.
-- Placeholder inventory values: edit `ansible_host`, `discovery_ip`, and related target fields.
+- Placeholder inventory values: edit `ansible_host`, `discovery_ip`, and related target CSV fields.
 - Missing key files: fix the path in `.env` and rerun `./matilda-prep doctor`.
 - Missing Ansible: install Ansible on the operator machine and rerun `./matilda-prep doctor`.
 - Probe cannot reach target TCP/22: check route tables, security lists, NSGs, and target firewalls.

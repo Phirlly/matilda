@@ -50,14 +50,14 @@ func (r *Runtime) Init() error {
 		if err := r.createEnvGuidedWithReader(reader); err != nil {
 			return err
 		}
-		if err := r.createInventoryGuidedWithReader(reader); err != nil {
+		if err := r.createTargetsCSVWithReader(reader); err != nil {
 			return err
 		}
 	case "2":
 		if err := copyWithSafetyWithReader(r, reader, filepath.Join(r.Root, "examples", "env.example"), filepath.Join(r.Root, ".env")); err != nil {
 			return err
 		}
-		if err := copyWithSafetyWithReader(r, reader, filepath.Join(r.Root, "examples", "inventory.example.yml"), filepath.Join(r.Root, "inventory.yml")); err != nil {
+		if err := r.createTargetsCSVWithReader(reader); err != nil {
 			return err
 		}
 	default:
@@ -73,7 +73,7 @@ func (r *Runtime) Init() error {
 func (r *Runtime) Doctor() error {
 	heading(r.Out, "DOCTOR", "local checks; no target changes")
 	checks := []runner.Check{
-		runner.FileCheck("inventory.yml", filepath.Join(r.Root, "inventory.yml")),
+		runner.FileCheck("targets.csv", r.targetsCSVPath()),
 		runner.FileCheck("ansible config", filepath.Join(r.Root, "ansible", "ansible.cfg")),
 		runner.FileCheck("linux preflight playbook", filepath.Join(r.Root, "ansible", "playbooks", "linux", "preflight.yml")),
 		runner.FileCheck("linux setup playbook", filepath.Join(r.Root, "ansible", "playbooks", "linux", "setup.yml")),
@@ -84,7 +84,7 @@ func (r *Runtime) Doctor() error {
 		runner.FileCheck("inventory v1 schema", filepath.Join(r.Root, "schemas", "inventory.v1.schema.json")),
 		runner.DirCheck("reports", filepath.Join(r.Root, "reports")),
 		runner.FileCheck("env example", filepath.Join(r.Root, "examples", "env.example")),
-		runner.FileCheck("inventory example", filepath.Join(r.Root, "examples", "inventory.example.yml")),
+		runner.FileCheck("target CSV example", filepath.Join(r.Root, "examples", "targets.example.csv")),
 	}
 
 	failed := false
@@ -189,34 +189,57 @@ func (r *Runtime) validateInventory(showHeading bool) error {
 		heading(r.Out, "INVENTORY VALIDATE", "read-only inventory checks")
 	}
 	section(r.Out, "Inventory")
-	path := filepath.Join(r.Root, "inventory.yml")
-	result, err := inventory.ValidateFile(path)
+	result, targets, err := inventory.ValidateCSVFile(r.targetsCSVPath())
 	printChecks(r.Out, result.Checks)
 	if err != nil {
 		return err
 	}
+	generatedPath, err := r.writeGeneratedInventory(targets)
+	if err != nil {
+		return err
+	}
 	successLine(r.Out, fmt.Sprintf("Inventory valid: %d target(s) detected.", result.TargetCount))
+	nextLine(r.Out, "Generated normalized inventory: "+displayPath(r.Root, generatedPath))
 	return nil
 }
 
 func (r *Runtime) InventoryImport(csvPath string) error {
-	heading(r.Out, "INVENTORY IMPORT", "CSV to inventory.yml")
+	heading(r.Out, "INVENTORY IMPORT", "CSV to targets.csv")
 	targets, err := inventory.ReadCSV(csvPath)
 	if err != nil {
 		return err
 	}
-	outPath := filepath.Join(r.Root, "inventory.yml")
+	outPath := r.targetsCSVPath()
+	if samePath(csvPath, outPath) {
+		generatedPath, err := r.writeGeneratedInventory(targets)
+		if err != nil {
+			return err
+		}
+		successLine(r.Out, fmt.Sprintf("Validated %s with %d target(s).", outPath, len(targets)))
+		nextLine(r.Out, "Generated normalized inventory: "+displayPath(r.Root, generatedPath))
+		nextLine(r.Out, "./matilda-prep inventory validate")
+		return nil
+	}
 	if err := safety.PrepareDestination(r.In, r.Out, outPath); err != nil {
 		if errors.Is(err, safety.ErrSkip) {
-			successLine(r.Out, "Kept existing inventory.yml.")
+			successLine(r.Out, "Kept existing targets.csv.")
 			return nil
 		}
 		return err
 	}
-	if err := inventory.WriteV1Inventory(outPath, targets); err != nil {
+	content, err := os.ReadFile(csvPath)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(outPath, content, 0600); err != nil {
+		return err
+	}
+	generatedPath, err := r.writeGeneratedInventory(targets)
+	if err != nil {
 		return err
 	}
 	successLine(r.Out, fmt.Sprintf("Created %s with %d target(s).", outPath, len(targets)))
+	nextLine(r.Out, "Generated normalized inventory: "+displayPath(r.Root, generatedPath))
 	nextLine(r.Out, "./matilda-prep inventory validate")
 	return nil
 }
@@ -431,7 +454,11 @@ func (r *Runtime) runAnsible(playbook string, inventoryPath string, extra []stri
 }
 
 func (r *Runtime) prepareLinuxRunnerInventory() (string, error) {
-	plan, err := inventory.PlanLinuxRunner(filepath.Join(r.Root, "inventory.yml"))
+	normalizedPath, err := r.ensureGeneratedInventory()
+	if err != nil {
+		return "", err
+	}
+	plan, err := inventory.PlanLinuxRunner(normalizedPath)
 	if err != nil {
 		return "", err
 	}
@@ -526,7 +553,11 @@ func (r *Runtime) collectRuntimeExtraVarsFor(keys []string) ([]string, error) {
 
 func (r *Runtime) connectionKeys() []string {
 	keys := []string{"TARGET_ADMIN_USER", "TARGET_ADMIN_PRIVATE_KEY_FILE"}
-	needsProbe, err := inventory.RequiresProbe(filepath.Join(r.Root, "inventory.yml"))
+	normalizedPath, genErr := r.ensureGeneratedInventory()
+	if genErr != nil {
+		return keys
+	}
+	needsProbe, err := inventory.RequiresProbe(normalizedPath)
 	if err == nil && needsProbe {
 		keys = append(keys, "MATILDA_PROBE_ANSIBLE_HOST", "MATILDA_PROBE_USER", "MATILDA_PROBE_ADMIN_PRIVATE_KEY_FILE")
 	}
@@ -564,53 +595,35 @@ func (r *Runtime) createEnvGuidedWithReader(reader *bufio.Reader) error {
 	return os.WriteFile(dest, []byte(b.String()), 0600)
 }
 
-func (r *Runtime) createInventoryGuided() error {
-	return r.createInventoryGuidedWithReader(bufio.NewReader(r.In))
+func (r *Runtime) createTargetsCSVWithReader(reader *bufio.Reader) error {
+	return copyWithSafetyWithReader(r, reader, filepath.Join(r.Root, "examples", "targets.example.csv"), r.targetsCSVPath())
 }
 
-func (r *Runtime) createInventoryGuidedWithReader(reader *bufio.Reader) error {
-	dest := filepath.Join(r.Root, "inventory.yml")
-	if err := safety.PrepareDestination(reader, r.Out, dest); err != nil {
-		if errors.Is(err, safety.ErrSkip) {
-			successLine(r.Out, "Kept existing inventory.yml.")
-			return nil
-		}
-		return err
-	}
+func (r *Runtime) targetsCSVPath() string {
+	return filepath.Join(r.Root, "targets.csv")
+}
 
-	countRaw := promptWithReader(reader, r.Out, "How many Linux targets do you want to add?", "")
-	var count int
-	if _, err := fmt.Sscanf(countRaw, "%d", &count); err != nil || count < 1 {
-		return errors.New("target count must be a positive number")
-	}
+func (r *Runtime) generatedInventoryPath() string {
+	return filepath.Join(r.Root, ".matilda", "generated", "inventory.yml")
+}
 
-	var targets []inventory.Target
-	for i := 1; i <= count; i++ {
-		fmt.Fprintln(r.Out)
-		section(r.Out, fmt.Sprintf("Target %d Of %d", i, count))
-		name := promptWithReader(reader, r.Out, "Inventory hostname", "")
-		access := strings.ToLower(promptWithReader(reader, r.Out, "Access path: direct or via_probe", "direct"))
-		if access != "direct" && access != "via_probe" {
-			return fmt.Errorf("unsupported access path %q", access)
-		}
-		ansibleHost := promptWithReader(reader, r.Out, "Ansible host/IP", "")
-		privateIP := promptWithReader(reader, r.Out, "Private IP", ansibleHost)
-		discoveryIP := promptWithReader(reader, r.Out, "Discovery IP used by MatildaProbeVM", privateIP)
-		targets = append(targets, inventory.Target{
-			Hostname:        name,
-			Platform:        "linux",
-			OSFamily:        "linux",
-			AccessPath:      access,
-			AnsibleHost:     ansibleHost,
-			DiscoveryIP:     discoveryIP,
-			PublicIP:        publicIPForAccess(access, ansibleHost),
-			PrivateIP:       privateIP,
-			PrivilegeMethod: "sudo",
-			ConfigureMode:   "remote",
-		})
+func (r *Runtime) ensureGeneratedInventory() (string, error) {
+	_, targets, err := inventory.ValidateCSVFile(r.targetsCSVPath())
+	if err != nil {
+		return "", err
 	}
+	return r.writeGeneratedInventory(targets)
+}
 
-	return inventory.WriteV1Inventory(dest, targets)
+func (r *Runtime) writeGeneratedInventory(targets []inventory.Target) (string, error) {
+	path := r.generatedInventoryPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return "", err
+	}
+	if err := inventory.WriteV1Inventory(path, targets); err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 func copyWithSafety(r *Runtime, source string, dest string) error {
@@ -636,18 +649,17 @@ func copyWithSafetyWithReader(r *Runtime, reader io.Reader, source string, dest 
 	return nil
 }
 
-func publicIPForAccess(access string, ansibleHost string) string {
-	if access == "direct" {
-		return ansibleHost
-	}
-	return ""
-}
-
 func writeArtifact(path string, content []byte, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
 	return os.WriteFile(path, content, mode)
+}
+
+func samePath(a string, b string) bool {
+	absA, errA := filepath.Abs(a)
+	absB, errB := filepath.Abs(b)
+	return errA == nil && errB == nil && absA == absB
 }
 
 func (r *Runtime) displayPaths(paths []string) []string {

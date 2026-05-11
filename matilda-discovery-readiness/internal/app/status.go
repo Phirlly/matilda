@@ -63,9 +63,9 @@ type ActionResult struct {
 }
 
 func (r *Runtime) Snapshot() Snapshot {
-	inventoryPath := filepath.Join(r.Root, "inventory.yml")
+	inventoryPath := r.targetsCSVPath()
 	reportDir := filepath.Join(r.Root, "reports")
-	result, invErr := inventory.ValidateFile(inventoryPath)
+	result, _, invErr := inventory.ValidateCSVFile(inventoryPath)
 	store := state.New(r.Root)
 
 	snap := Snapshot{
@@ -132,7 +132,7 @@ func (r *Runtime) RecordWorkflowResult(result workflow.Result) error {
 	store := state.New(r.Root)
 	_, err := store.Update(state.Update{
 		Workspace: r.Root,
-		Inventory: displayPath(r.Root, filepath.Join(r.Root, "inventory.yml")),
+		Inventory: displayPath(r.Root, r.targetsCSVPath()),
 		Result:    result,
 		Readiness: state.ReadinessState{
 			Total:    snap.ReportSummary.Total,
@@ -326,9 +326,9 @@ func (s Snapshot) JSON() ([]byte, error) {
 func nextStep(s Snapshot) string {
 	if !s.InventoryOK {
 		if inventoryMissing(s.InventoryError) {
-			return "Run ./matilda-prep init to create inventory.yml, or copy examples/inventory.example.yml and edit target values."
+			return "Run ./matilda-prep init to create targets.csv, or copy examples/targets.example.csv and edit target values."
 		}
-		return "Fix inventory.yml, then run inventory validate."
+		return "Fix targets.csv, then run inventory validate."
 	}
 	if s.ReportSummary.NotReady > 0 {
 		return "Review remediation, rerun setup or platform fixes, then validate again."

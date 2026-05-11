@@ -101,7 +101,7 @@ The browser dashboard keeps the readiness workflow visible without duplicating t
 - Mutating action rows show the `Confirm target change` checkbox before they can start.
 - Activity Log stays directly below the action palette so streaming output is close to the command that started it.
 - Target Readiness, Validated IPs, and Report Files remain first-class dashboard sections.
-- Raw `inventory.yml` and `validation-summary.txt` content lives in collapsed detail panels named `Inventory file` and `Validation details`.
+- Raw `targets.csv` and `validation-summary.txt` content lives in collapsed detail panels named `Target CSV` and `Validation details`.
 - On mobile, Target Readiness and Report Files use labeled stacked rows instead of forcing page-level horizontal scrolling.
 
 ## Tests

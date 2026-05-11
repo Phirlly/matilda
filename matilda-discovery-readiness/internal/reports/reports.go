@@ -271,7 +271,7 @@ func normalizeRemediation(row Row) string {
 	case "SSH_CONNECTION_REFUSED":
 		return withObserved("SSH reached the host but TCP/22 was refused. Start or enable sshd on the target, check the target firewall, then rerun preflight and validate.", raw)
 	case "SSH_HOST_UNRESOLVED":
-		return withObserved("SSH could not resolve the configured host. Fix inventory.yml ansible_host or DNS for the target or Probe path, then rerun inventory validate and preflight.", raw)
+		return withObserved("SSH could not resolve the configured host. Fix targets.csv ansible_host or DNS for the target or Probe path, then rerun inventory validate and preflight.", raw)
 	case "SERVICE_ACCOUNT_LOCKED":
 		return withObserved("The Matilda service account is locked or has a non-login shell. Rerun setup or unlock the account and restore an interactive shell.", raw)
 	case "SERVICE_ACCOUNT_MISSING":
@@ -356,7 +356,7 @@ func sshReachabilityMessage(row Row) string {
 	if strings.EqualFold(row.ProbeSSH, "FAIL") {
 		return "MatildaProbeVM cannot reach target TCP/22. Check routing, security lists or NSGs, and the target firewall from the Probe to the discovery IP."
 	}
-	return "SSH cannot reach target TCP/22. Check inventory.yml, routing, security lists or NSGs, and the target firewall, then rerun preflight."
+	return "SSH cannot reach target TCP/22. Check targets.csv, routing, security lists or NSGs, and the target firewall, then rerun preflight."
 }
 
 func withObserved(message string, raw string) string {
