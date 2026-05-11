@@ -34,6 +34,7 @@ These are for release managers validating and packaging releases:
 These are for maintainers changing the toolkit, not for first-time operators:
 
 - [Branching workflow](workflow/BRANCHING.md)
+- [Development workflow](workflow/DEVELOPMENT.md)
 - [Repository maintenance](workflow/repository-maintenance.md)
 - [Terminal console architecture](reference/terminal-console-architecture.md)
 - [Browser live streaming design](reference/browser-live-streaming.md)

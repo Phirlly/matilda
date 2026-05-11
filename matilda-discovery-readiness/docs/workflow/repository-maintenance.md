@@ -52,48 +52,12 @@ These files are local runtime material and must not be committed:
 ## Branch Workflow
 
 This repository uses the protected-main workflow defined in [Branching Workflow](BRANCHING.md).
+All implementation work follows [Development Workflow](DEVELOPMENT.md).
 
-- `main` is the production/release branch and must remain deployable.
-- Do not make direct code or documentation updates on `main`.
-- `dev` is the integration branch for completed work from short-lived branches.
-- Do not use `dev` as a personal working branch.
-- Create short-lived work branches from `dev`.
-- Read related implementation, tests, docs, examples, schemas, and templates before editing.
-- Write a short plan before implementation.
-- Review the diff, tests, docs, and any release notes before opening or accepting a PR.
-- Merge completed work into `dev` by pull request only after local validation and CI pass.
-- Promote `dev` into `main` by a separate pull request only after validation and CI pass.
-- Do not sync `main` back into `dev` after every promotion; sync only for a real file difference, conflict, or branch-protection blocker.
-- Create release tags from `main` only after review and validation.
-- Prefer a new tag over moving a published tag unless the tag move is explicitly approved. For RCs, use the next RC tag.
+Use those workflow docs as the source of truth for branch roles, planning,
+validation, pull requests, promotion, and release tags. This maintenance file
+only defines repository ownership boundaries.
 
 ## Validation
 
-Use the local validation gate in [Branching Workflow](BRANCHING.md) for the full checklist. For normal repo changes, run:
-
-```bash
-go test ./...
-go vet ./...
-go build -o /tmp/matilda-prep-check ./cmd/matilda-prep
-git diff --check
-bash -n matilda-prep
-```
-
-Run command smoke checks after UX or routing changes:
-
-```bash
-./matilda-prep help
-./matilda-prep status
-./matilda-prep inventory validate
-./matilda-prep generate windows
-./matilda-prep generate unix
-```
-
-Run Ansible syntax checks after Ansible-adjacent changes:
-
-```bash
-ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook --syntax-check ansible/playbooks/linux/preflight.yml
-ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook --syntax-check ansible/playbooks/linux/setup.yml
-ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook --syntax-check ansible/playbooks/linux/validate.yml
-ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook --syntax-check ansible/playbooks/linux/rollback.yml
-```
+Use the local validation gate in [Development Workflow](DEVELOPMENT.md).
