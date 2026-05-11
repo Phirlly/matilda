@@ -4,6 +4,9 @@
   gather_facts: false
   become: true
 
+  vars_files:
+    - "{{ playbook_dir }}/../../roles/matilda_linux_target/defaults/main.yml"
+
   tasks:
     - name: Require an explicit rollback mode
       ansible.builtin.assert:

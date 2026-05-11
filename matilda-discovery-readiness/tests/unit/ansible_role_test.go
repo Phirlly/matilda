@@ -23,3 +23,19 @@ func TestLinuxRoleDefaultsDefineReadinessVariables(t *testing.T) {
 		}
 	}
 }
+
+func TestRollbackPlaybookLoadsLinuxRoleDefaults(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "..", "ansible", "playbooks", "linux", "rollback.yml"))
+	if err != nil {
+		t.Fatalf("expected rollback playbook: %v", err)
+	}
+	text := string(content)
+	for _, want := range []string{
+		"vars_files:",
+		"roles/matilda_linux_target/defaults/main.yml",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("rollback playbook should load Linux role defaults; missing %q:\n%s", want, text)
+		}
+	}
+}
