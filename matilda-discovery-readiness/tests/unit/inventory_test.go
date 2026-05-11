@@ -11,65 +11,6 @@ import (
 	"matilda-discovery-readiness/internal/inventory"
 )
 
-func TestValidateLinuxGroupedInventory(t *testing.T) {
-	path := writeTempFile(t, "inventory.yml", `all:
-  children:
-    public_targets:
-      hosts:
-        app01:
-          ansible_host: 203.0.113.10
-          private_ip: 10.0.0.10
-          discovery_ip: 10.0.0.10
-    private_targets:
-      hosts: {}
-`)
-
-	result, err := inventory.ValidateFile(path)
-	if err != nil {
-		t.Fatalf("expected valid inventory: %v", err)
-	}
-	if result.TargetCount != 1 {
-		t.Fatalf("expected 1 target, got %d", result.TargetCount)
-	}
-	if result.Format != "linux-groups" {
-		t.Fatalf("expected Linux grouped format, got %q", result.Format)
-	}
-}
-
-func TestValidateRejectsLinuxGroupedInventoryMissingDiscoveryIP(t *testing.T) {
-	path := writeTempFile(t, "inventory.yml", `all:
-  children:
-    public_targets:
-      hosts:
-        app01:
-          ansible_host: 203.0.113.10
-          discovery_ip: 10.0.0.10
-        app02:
-          ansible_host: 203.0.113.20
-`)
-
-	_, err := inventory.ValidateFile(path)
-	if err == nil || !strings.Contains(err.Error(), "discovery_ip") {
-		t.Fatalf("expected discovery_ip validation error, got %v", err)
-	}
-}
-
-func TestValidateRejectsPlaceholderInventoryValues(t *testing.T) {
-	path := writeTempFile(t, "inventory.yml", `all:
-  children:
-    public_targets:
-      hosts:
-        app01:
-          ansible_host: <target-public-ip>
-          discovery_ip: <target-private-ip>
-`)
-
-	_, err := inventory.ValidateFile(path)
-	if err == nil || !strings.Contains(err.Error(), "target validation") {
-		t.Fatalf("expected placeholder validation error, got %v", err)
-	}
-}
-
 func TestValidateNormalizedV1Inventory(t *testing.T) {
 	path := writeTempFile(t, "inventory.yml", `version: 1
 
@@ -98,6 +39,71 @@ targets:
 	}
 	if result.Format != "v1" {
 		t.Fatalf("expected v1 format, got %q", result.Format)
+	}
+}
+
+func TestValidateRejectsLegacyLinuxGroupedInventory(t *testing.T) {
+	path := writeTempFile(t, "inventory.yml", `all:
+  children:
+    public_targets:
+      hosts:
+        app01:
+          ansible_host: 203.0.113.10
+          discovery_ip: 10.0.0.10
+`)
+
+	_, err := inventory.ValidateFile(path)
+	if err == nil || !strings.Contains(err.Error(), "version: 1") {
+		t.Fatalf("expected v1-only validation error, got %v", err)
+	}
+}
+
+func TestValidateRejectsMalformedV1YAML(t *testing.T) {
+	path := writeTempFile(t, "inventory.yml", `version: 1
+targets:
+  app01:
+    platform: [linux
+`)
+
+	_, err := inventory.ValidateFile(path)
+	if err == nil || !strings.Contains(err.Error(), "parse inventory.yml") {
+		t.Fatalf("expected YAML parse error, got %v", err)
+	}
+}
+
+func TestValidateRejectsUnknownV1Fields(t *testing.T) {
+	path := writeTempFile(t, "inventory.yml", `version: 1
+
+targets:
+  app01:
+    platform: linux
+    access_path: direct
+    ansible_hots: 203.0.113.10
+    discovery_ip: 10.0.0.10
+    privilege_method: sudo
+`)
+
+	_, err := inventory.ValidateFile(path)
+	if err == nil || !strings.Contains(err.Error(), "ansible_hots") {
+		t.Fatalf("expected unknown field error, got %v", err)
+	}
+}
+
+func TestValidateRejectsPlaceholderInventoryValues(t *testing.T) {
+	path := writeTempFile(t, "inventory.yml", `version: 1
+
+targets:
+  app01:
+    platform: linux
+    access_path: direct
+    ansible_host: <target-public-ip>
+    discovery_ip: <target-private-ip>
+    privilege_method: sudo
+`)
+
+	_, err := inventory.ValidateFile(path)
+	if err == nil || !strings.Contains(err.Error(), "target validation") {
+		t.Fatalf("expected placeholder validation error, got %v", err)
 	}
 }
 
@@ -231,7 +237,7 @@ targets:
 	}
 }
 
-func TestReadCSVAndWriteLinuxGroupedInventory(t *testing.T) {
+func TestReadCSVAndWriteV1Inventory(t *testing.T) {
 	dir := t.TempDir()
 	csvPath := filepath.Join(dir, "targets.csv")
 	content := "hostname,platform,os_family,ansible_host,discovery_ip,access_path,privilege_method,private_ip,public_ip,cloud_provider\napp01,linux,oracle_linux,203.0.113.10,10.0.0.10,direct,sudo,10.0.0.10,203.0.113.10,oci\napp02,linux,oracle_linux,10.0.1.20,10.0.1.20,via_probe,sudo,10.0.1.20,,oci\n"
@@ -248,18 +254,28 @@ func TestReadCSVAndWriteLinuxGroupedInventory(t *testing.T) {
 	}
 
 	outPath := filepath.Join(dir, "inventory.yml")
-	if err := inventory.WriteLinuxGroupedInventory(outPath, targets); err != nil {
-		t.Fatalf("WriteLinuxGroupedInventory failed: %v", err)
+	if err := inventory.WriteV1Inventory(outPath, targets); err != nil {
+		t.Fatalf("WriteV1Inventory failed: %v", err)
+	}
+	result, err := inventory.ValidateFile(outPath)
+	if err != nil {
+		t.Fatalf("generated v1 inventory should validate: %v", err)
+	}
+	if result.Format != "v1" || result.TargetCount != 2 {
+		t.Fatalf("unexpected generated inventory result: %+v", result)
 	}
 	got, err := os.ReadFile(outPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(got)
-	for _, want := range []string{"public_targets:", "private_targets:", "app01:", "app02:", "discovery_ip: 10.0.1.20"} {
+	for _, want := range []string{"version: 1", "targets:", "app01:", "app02:", "access_path: via_probe"} {
 		if !strings.Contains(text, want) {
-			t.Fatalf("Linux grouped inventory missing %q:\n%s", want, text)
+			t.Fatalf("v1 inventory missing %q:\n%s", want, text)
 		}
+	}
+	if strings.Contains(text, "public_targets:") || strings.Contains(text, "private_targets:") {
+		t.Fatalf("user-facing inventory should not expose Ansible runner groups:\n%s", text)
 	}
 }
 
@@ -278,41 +294,6 @@ func TestReadCSVRejectsMissingRequiredValues(t *testing.T) {
 	_, err := inventory.ReadCSV(path)
 	if err == nil || !strings.Contains(err.Error(), "ansible_host") {
 		t.Fatalf("expected ansible_host value error, got %v", err)
-	}
-}
-
-func TestMigrateLinuxGroupedToV1(t *testing.T) {
-	dir := t.TempDir()
-	input := filepath.Join(dir, "inventory.yml")
-	output := filepath.Join(dir, "inventory.v1.yml")
-	content := `all:
-  children:
-    public_targets:
-      hosts:
-        app01:
-          ansible_host: 203.0.113.10
-          discovery_ip: 10.0.0.10
-    private_targets:
-      hosts:
-        app02:
-          ansible_host: 10.0.1.20
-          discovery_ip: 10.0.1.20
-`
-	if err := os.WriteFile(input, []byte(content), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := inventory.MigrateLinuxGroupedToV1(input, output); err != nil {
-		t.Fatalf("migrate failed: %v", err)
-	}
-	got, err := os.ReadFile(output)
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(got)
-	for _, want := range []string{"version: 1", "user: <probe-admin-user>", "discovery_private_key_on_probe: <discovery-private-key-path-on-probe>", "app01:", "access_path: direct", "app02:", "access_path: via_probe"} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("migrated output missing %q:\n%s", want, text)
-		}
 	}
 }
 

@@ -150,6 +150,8 @@ These local files can contain environment-specific information and should not be
 
 ## Inventory Basics
 
+`inventory.yml` uses `version: 1` and one target entry per system.
+
 Each Linux target has two important addresses:
 
 ```text
@@ -157,15 +159,14 @@ ansible_host  = address Ansible uses to configure the target
 discovery_ip  = address MatildaProbeVM uses to discover and validate the target
 ```
 
-Use `public_targets` when Ansible can connect directly from the operator machine.
+Use `access_path: direct` when Ansible can connect directly from the operator machine.
 
-Use `private_targets` when Ansible must connect through MatildaProbeVM.
+Use `access_path: via_probe` when Ansible must connect through MatildaProbeVM.
 
 Optional inventory helpers:
 
 ```bash
 ./matilda-prep inventory import examples/targets.example.csv
-./matilda-prep inventory migrate
 ```
 
 For full inventory guidance, see [docs/user/inventory.md](docs/user/inventory.md).

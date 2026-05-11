@@ -85,8 +85,6 @@ func inventoryCommand(rt *app.Runtime, args []string) error {
 			return fmt.Errorf("%w: inventory import requires a CSV path", errUsage)
 		}
 		return rt.RunTrackedAction("inventory-import", func() error { return rt.InventoryImport(args[1]) })
-	case "migrate":
-		return rt.RunTrackedAction("inventory-migrate", rt.InventoryMigrate)
 	default:
 		console.PrintInventoryHelp(rt.Err)
 		return fmt.Errorf("%w: unknown inventory command %q", errUsage, args[0])

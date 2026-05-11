@@ -1,12 +1,15 @@
 package inventory
 
 import (
+	"bytes"
 	"encoding/csv"
 	"errors"
 	"fmt"
 	"os"
 	"sort"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 
 	"matilda-discovery-readiness/internal/runner"
 )
@@ -37,6 +40,28 @@ type LinuxRunnerPlan struct {
 	SkippedTargets []Target
 }
 
+type inventoryV1 struct {
+	Version  int                 `yaml:"version"`
+	Profiles map[string]any      `yaml:"profiles,omitempty"`
+	Targets  map[string]targetV1 `yaml:"targets"`
+}
+
+type targetV1 struct {
+	Platform            string `yaml:"platform,omitempty"`
+	OSFamily            string `yaml:"os_family,omitempty"`
+	OSVersion           string `yaml:"os_version,omitempty"`
+	CloudProvider       string `yaml:"cloud_provider,omitempty"`
+	AccessPath          string `yaml:"access_path,omitempty"`
+	AnsibleHost         string `yaml:"ansible_host,omitempty"`
+	DiscoveryIP         string `yaml:"discovery_ip,omitempty"`
+	PublicIP            string `yaml:"public_ip,omitempty"`
+	PrivateIP           string `yaml:"private_ip,omitempty"`
+	AdminUser           string `yaml:"admin_user,omitempty"`
+	AdminPrivateKeyFile string `yaml:"admin_private_key_file,omitempty"`
+	PrivilegeMethod     string `yaml:"privilege_method,omitempty"`
+	ConfigureMode       string `yaml:"configure_mode,omitempty"`
+}
+
 func ValidateFile(path string) (ValidationResult, error) {
 	var result ValidationResult
 	content, err := os.ReadFile(path)
@@ -44,62 +69,36 @@ func ValidateFile(path string) (ValidationResult, error) {
 		result.Checks = append(result.Checks, runner.Result{Name: "inventory.yml", Status: runner.StatusFail, Detail: "missing: " + path})
 		return result, err
 	}
-	text := string(content)
 	result.Checks = append(result.Checks, runner.Result{Name: "inventory.yml", Status: runner.StatusPass, Detail: path})
 
-	if strings.Contains(text, "public_targets:") || strings.Contains(text, "private_targets:") {
-		targets := parseLinuxGroupedTargets(text)
-		result.TargetCount = len(targets)
-		result.Format = "linux-groups"
-		result.Checks = append(result.Checks, runner.Result{Name: "inventory format", Status: runner.StatusPass, Detail: "current Linux-compatible"})
-		checks, validateErr := validateTargets(targets, true)
-		result.Checks = append(result.Checks, checks...)
-		return result, validateErr
+	targets, err := parseInventoryV1Content(content)
+	if err != nil {
+		result.Checks = append(result.Checks, runner.Result{Name: "inventory format", Status: runner.StatusFail, Detail: err.Error()})
+		return result, err
 	}
 
-	if strings.Contains(text, "version: 1") && strings.Contains(text, "targets:") {
-		targets := parseV1Targets(text)
-		result.TargetCount = len(targets)
-		result.Format = "v1"
-		result.Checks = append(result.Checks, runner.Result{Name: "inventory format", Status: runner.StatusPass, Detail: "normalized v1"})
-		checks, validateErr := validateTargets(targets, false)
-		result.Checks = append(result.Checks, checks...)
-		return result, validateErr
-	}
-
-	result.Checks = append(result.Checks, runner.Result{Name: "inventory format", Status: runner.StatusFail, Detail: "expected current Linux groups or normalized version: 1"})
-	return result, errors.New("unsupported inventory format")
+	result.TargetCount = len(targets)
+	result.Format = "v1"
+	result.Checks = append(result.Checks, runner.Result{Name: "inventory format", Status: runner.StatusPass, Detail: "normalized version: 1"})
+	checks, validateErr := validateTargets(targets, false)
+	result.Checks = append(result.Checks, checks...)
+	return result, validateErr
 }
 
 func DetectFormat(path string) (string, error) {
-	content, err := os.ReadFile(path)
-	if err != nil {
+	if _, err := readInventoryV1(path); err != nil {
 		return "", err
 	}
-	text := string(content)
-	if strings.Contains(text, "public_targets:") || strings.Contains(text, "private_targets:") {
-		return "linux-groups", nil
-	}
-	if strings.Contains(text, "version: 1") && strings.Contains(text, "targets:") {
-		return "v1", nil
-	}
-	return "", errors.New("unsupported inventory format")
+	return "v1", nil
 }
 
 func RequiresProbe(path string) (bool, error) {
-	content, err := os.ReadFile(path)
+	targets, err := readInventoryV1(path)
 	if err != nil {
 		return false, err
 	}
-	text := string(content)
-	var targets []Target
-	if strings.Contains(text, "version: 1") && strings.Contains(text, "targets:") {
-		targets = parseV1Targets(text)
-	} else {
-		targets = parseLinuxGroupedTargets(text)
-	}
 	for _, target := range targets {
-		if target.AccessPath == "via_probe" && (target.Platform == "" || target.Platform == "linux") {
+		if target.AccessPath == "via_probe" && target.Platform == "linux" {
 			return true, nil
 		}
 	}
@@ -107,41 +106,30 @@ func RequiresProbe(path string) (bool, error) {
 }
 
 func PlanLinuxRunner(path string) (LinuxRunnerPlan, error) {
-	content, err := os.ReadFile(path)
+	targets, err := readInventoryV1(path)
 	if err != nil {
 		return LinuxRunnerPlan{}, err
 	}
-	text := string(content)
-	if strings.Contains(text, "public_targets:") || strings.Contains(text, "private_targets:") {
-		targets := parseLinuxGroupedTargets(text)
-		if len(targets) == 0 {
-			return LinuxRunnerPlan{}, errors.New("inventory contains no Linux targets")
+
+	var linuxTargets []Target
+	var skipped []Target
+	var problems []string
+	for _, target := range targets {
+		platform := strings.ToLower(target.Platform)
+		if platform != "linux" {
+			skipped = append(skipped, target)
+			continue
 		}
-		return LinuxRunnerPlan{Format: "linux-groups", Targets: targets}, nil
+		validateAccessTarget(&problems, target.Hostname, target, "sudo")
+		linuxTargets = append(linuxTargets, target)
 	}
-	if strings.Contains(text, "version: 1") && strings.Contains(text, "targets:") {
-		targets := parseV1Targets(text)
-		var linuxTargets []Target
-		var skipped []Target
-		var problems []string
-		for _, target := range targets {
-			platform := strings.ToLower(target.Platform)
-			if platform != "linux" {
-				skipped = append(skipped, target)
-				continue
-			}
-			validateAccessTarget(&problems, target.Hostname, target, "sudo")
-			linuxTargets = append(linuxTargets, target)
-		}
-		if len(problems) > 0 {
-			return LinuxRunnerPlan{}, fmt.Errorf("inventory v1 Linux runner planning failed: %s", strings.Join(problems, "; "))
-		}
-		if len(linuxTargets) == 0 {
-			return LinuxRunnerPlan{}, errors.New("inventory v1 contains no Linux targets for the current Linux workflow; non-Linux targets are valid inventory data but are skipped by Linux remote actions")
-		}
-		return LinuxRunnerPlan{Format: "v1", Targets: linuxTargets, SkippedTargets: skipped}, nil
+	if len(problems) > 0 {
+		return LinuxRunnerPlan{}, fmt.Errorf("inventory v1 Linux runner planning failed: %s", strings.Join(problems, "; "))
 	}
-	return LinuxRunnerPlan{}, errors.New("unsupported inventory format")
+	if len(linuxTargets) == 0 {
+		return LinuxRunnerPlan{}, errors.New("inventory v1 contains no Linux targets for the current Linux workflow; non-Linux targets are valid inventory data but are skipped by Linux remote actions")
+	}
+	return LinuxRunnerPlan{Format: "v1", Targets: linuxTargets, SkippedTargets: skipped}, nil
 }
 
 func ReadCSV(path string) ([]Target, error) {
@@ -188,7 +176,7 @@ func ReadCSV(path string) ([]Target, error) {
 			PublicIP:        get(row, headers, "public_ip"),
 			PrivateIP:       get(row, headers, "private_ip"),
 			PrivilegeMethod: strings.ToLower(get(row, headers, "privilege_method")),
-			ConfigureMode:   get(row, headers, "configure_mode"),
+			ConfigureMode:   strings.ToLower(get(row, headers, "configure_mode")),
 		}
 		if target.Hostname == "" {
 			return nil, fmt.Errorf("row %d missing hostname", rowIndex+2)
@@ -228,6 +216,33 @@ func ReadCSV(path string) ([]Target, error) {
 	return targets, nil
 }
 
+func WriteV1Inventory(path string, targets []Target) error {
+	if len(targets) == 0 {
+		return errors.New("inventory must include at least one target")
+	}
+
+	doc := inventoryV1{
+		Version: 1,
+		Targets: map[string]targetV1{},
+	}
+	for _, target := range targets {
+		hostname := strings.TrimSpace(target.Hostname)
+		if hostname == "" {
+			return errors.New("inventory target hostname is required")
+		}
+		if _, exists := doc.Targets[hostname]; exists {
+			return fmt.Errorf("duplicate inventory hostname %q", hostname)
+		}
+		doc.Targets[hostname] = targetToV1(target)
+	}
+
+	content, err := yaml.Marshal(doc)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, content, 0600)
+}
+
 func WriteLinuxGroupedInventory(path string, targets []Target) error {
 	var publicTargets []Target
 	var privateTargets []Target
@@ -254,37 +269,83 @@ func WriteLinuxGroupedInventory(path string, targets []Target) error {
 	return os.WriteFile(path, []byte(b.String()), 0600)
 }
 
-func MigrateLinuxGroupedToV1(input string, output string) error {
-	content, err := os.ReadFile(input)
+func readInventoryV1(path string) ([]Target, error) {
+	content, err := os.ReadFile(path)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	targets := parseLinuxGroupedTargets(string(content))
-	if len(targets) == 0 {
-		return errors.New("no Linux grouped targets detected")
+	return parseInventoryV1Content(content)
+}
+
+func parseInventoryV1Content(content []byte) ([]Target, error) {
+	if looksLikeLegacyLinuxGroupedInventory(string(content)) {
+		return nil, errors.New("inventory.yml must use version: 1; public_targets/private_targets are internal runner output only")
 	}
 
-	var b strings.Builder
-	b.WriteString("version: 1\n\n")
-	b.WriteString("profiles:\n")
-	b.WriteString("  default:\n")
-	b.WriteString("    probe:\n")
-	b.WriteString("      host: <probe-host-or-ip>\n")
-	b.WriteString("      user: <probe-admin-user>\n")
-	b.WriteString("      admin_private_key_file: <path-to-probe-admin-key>\n")
-	b.WriteString("      discovery_private_key_on_probe: <discovery-private-key-path-on-probe>\n\n")
-	b.WriteString("targets:\n")
-	for _, target := range targets {
-		fmt.Fprintf(&b, "  %s:\n", target.Hostname)
-		b.WriteString("    platform: linux\n")
-		b.WriteString("    os_family: linux\n")
-		fmt.Fprintf(&b, "    access_path: %s\n", target.AccessPath)
-		fmt.Fprintf(&b, "    ansible_host: %s\n", target.AnsibleHost)
-		fmt.Fprintf(&b, "    discovery_ip: %s\n", target.DiscoveryIP)
-		b.WriteString("    privilege_method: sudo\n")
-		b.WriteString("    configure_mode: remote\n\n")
+	var doc inventoryV1
+	decoder := yaml.NewDecoder(bytes.NewReader(content))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&doc); err != nil {
+		return nil, fmt.Errorf("parse inventory.yml as version: 1 YAML: %w", err)
 	}
-	return os.WriteFile(output, []byte(b.String()), 0600)
+	if doc.Version != 1 {
+		return nil, errors.New("inventory.yml must use version: 1")
+	}
+	if len(doc.Targets) == 0 {
+		return nil, errors.New("inventory.yml version: 1 must include at least one target")
+	}
+
+	names := make([]string, 0, len(doc.Targets))
+	for name := range doc.Targets {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	targets := make([]Target, 0, len(names))
+	for _, name := range names {
+		targets = append(targets, v1ToTarget(name, doc.Targets[name]))
+	}
+	return targets, nil
+}
+
+func looksLikeLegacyLinuxGroupedInventory(text string) bool {
+	hasGroup := strings.Contains(text, "public_targets:") || strings.Contains(text, "private_targets:")
+	return hasGroup && (!strings.Contains(text, "version:") || strings.Contains(text, "children:"))
+}
+
+func targetToV1(target Target) targetV1 {
+	return targetV1{
+		Platform:        normalizeLower(target.Platform),
+		OSFamily:        normalizeLower(target.OSFamily),
+		CloudProvider:   normalizeLower(target.CloudProvider),
+		AccessPath:      normalizeLower(target.AccessPath),
+		AnsibleHost:     strings.TrimSpace(target.AnsibleHost),
+		DiscoveryIP:     strings.TrimSpace(target.DiscoveryIP),
+		PublicIP:        strings.TrimSpace(target.PublicIP),
+		PrivateIP:       strings.TrimSpace(target.PrivateIP),
+		PrivilegeMethod: normalizeLower(target.PrivilegeMethod),
+		ConfigureMode:   normalizeLower(target.ConfigureMode),
+	}
+}
+
+func v1ToTarget(hostname string, target targetV1) Target {
+	return Target{
+		Hostname:        strings.TrimSpace(hostname),
+		Platform:        normalizeLower(target.Platform),
+		OSFamily:        normalizeLower(target.OSFamily),
+		CloudProvider:   normalizeLower(target.CloudProvider),
+		AccessPath:      normalizeLower(target.AccessPath),
+		AnsibleHost:     strings.TrimSpace(target.AnsibleHost),
+		DiscoveryIP:     strings.TrimSpace(target.DiscoveryIP),
+		PublicIP:        strings.TrimSpace(target.PublicIP),
+		PrivateIP:       strings.TrimSpace(target.PrivateIP),
+		PrivilegeMethod: normalizeLower(target.PrivilegeMethod),
+		ConfigureMode:   normalizeLower(target.ConfigureMode),
+	}
+}
+
+func normalizeLower(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
 }
 
 func writeLinuxGroup(b *strings.Builder, group string, targets []Target) {
@@ -307,130 +368,6 @@ func writeLinuxGroup(b *strings.Builder, group string, targets []Target) {
 		}
 		fmt.Fprintf(b, "          discovery_ip: %s\n", target.DiscoveryIP)
 	}
-}
-
-func parseLinuxGroupedTargets(text string) []Target {
-	var targets []Target
-	currentGroup := ""
-	var current *Target
-
-	flush := func() {
-		if current != nil && current.Hostname != "" {
-			if current.AccessPath == "" {
-				if currentGroup == "private_targets" {
-					current.AccessPath = "via_probe"
-				} else {
-					current.AccessPath = "direct"
-				}
-			}
-			targets = append(targets, *current)
-		}
-		current = nil
-	}
-
-	for _, raw := range strings.Split(text, "\n") {
-		line := strings.TrimSpace(raw)
-		if line == "public_targets:" || line == "private_targets:" {
-			flush()
-			currentGroup = strings.TrimSuffix(line, ":")
-			continue
-		}
-		if strings.HasSuffix(line, ":") && !strings.Contains(line, " ") {
-			name := strings.TrimSuffix(line, ":")
-			if name != "all" && name != "children" && name != "hosts" {
-				flush()
-				current = &Target{Hostname: name, Platform: "linux", PrivilegeMethod: "sudo"}
-			}
-			continue
-		}
-		if current == nil || !strings.Contains(line, ":") {
-			continue
-		}
-		parts := strings.SplitN(line, ":", 2)
-		key := strings.TrimSpace(parts[0])
-		value := strings.TrimSpace(parts[1])
-		value = cleanScalar(value)
-		switch key {
-		case "ansible_host":
-			current.AnsibleHost = value
-		case "discovery_ip":
-			current.DiscoveryIP = value
-		case "private_ip":
-			current.PrivateIP = value
-		case "public_ip":
-			current.PublicIP = value
-		}
-	}
-	flush()
-	return targets
-}
-
-func parseV1Targets(text string) []Target {
-	var targets []Target
-	var current *Target
-	inTargets := false
-
-	flush := func() {
-		if current != nil && current.Hostname != "" {
-			targets = append(targets, *current)
-		}
-		current = nil
-	}
-
-	for _, raw := range strings.Split(text, "\n") {
-		trimmed := strings.TrimSpace(raw)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-		if trimmed == "targets:" {
-			inTargets = true
-			flush()
-			continue
-		}
-		if !inTargets {
-			continue
-		}
-		if !strings.HasPrefix(raw, " ") && strings.HasSuffix(trimmed, ":") {
-			break
-		}
-		if strings.HasPrefix(raw, "  ") && !strings.HasPrefix(raw, "    ") && strings.HasSuffix(trimmed, ":") {
-			flush()
-			current = &Target{Hostname: strings.TrimSuffix(trimmed, ":")}
-			continue
-		}
-		if current == nil || !strings.HasPrefix(raw, "    ") || !strings.Contains(trimmed, ":") {
-			continue
-		}
-		parts := strings.SplitN(trimmed, ":", 2)
-		key := strings.TrimSpace(parts[0])
-		value := cleanScalar(strings.TrimSpace(parts[1]))
-		switch key {
-		case "platform":
-			current.Platform = strings.ToLower(value)
-		case "os_family":
-			current.OSFamily = strings.ToLower(value)
-		case "cloud_provider":
-			current.CloudProvider = strings.ToLower(value)
-		case "access_path":
-			current.AccessPath = strings.ToLower(value)
-		case "ansible_host":
-			current.AnsibleHost = value
-		case "discovery_ip":
-			current.DiscoveryIP = value
-		case "private_ip":
-			current.PrivateIP = value
-		case "public_ip":
-			current.PublicIP = value
-		case "admin_user":
-			// Kept for normalized inventory compatibility; runtime credentials are still local .env values.
-		case "privilege_method":
-			current.PrivilegeMethod = strings.ToLower(value)
-		case "configure_mode":
-			current.ConfigureMode = strings.ToLower(value)
-		}
-	}
-	flush()
-	return targets
 }
 
 func validateTargets(targets []Target, linuxGrouped bool) ([]runner.Result, error) {
@@ -464,14 +401,24 @@ func validateTargets(targets []Target, linuxGrouped bool) ([]runner.Result, erro
 		case "linux":
 			validateAccessTarget(&problems, host, target, "sudo")
 		case "unix":
-			validateAccessTarget(&problems, host, target, "")
+			validateTargetAccessPath(&problems, host, target, "", map[string]bool{
+				"direct":           true,
+				"via_probe":        true,
+				"customer_managed": true,
+			})
 		case "windows":
 			requireValue(&problems, host, "ansible_host", target.AnsibleHost)
 			requirePrivilege(&problems, host, target.PrivilegeMethod, "winrm")
 		case "cloud":
 			requireValue(&problems, host, "cloud_provider", target.CloudProvider)
+			if target.AccessPath != "" && target.AccessPath != "api" && target.AccessPath != "customer_managed" {
+				problems = append(problems, fmt.Sprintf("%s access_path must be api or customer_managed", host))
+			}
 			requirePrivilege(&problems, host, target.PrivilegeMethod, "cloud_api")
 		case "kubernetes":
+			if target.AccessPath != "" && target.AccessPath != "api" && target.AccessPath != "customer_managed" {
+				problems = append(problems, fmt.Sprintf("%s access_path must be api or customer_managed", host))
+			}
 			requirePrivilege(&problems, host, target.PrivilegeMethod, "k8s_api")
 		}
 	}
@@ -492,11 +439,23 @@ func validateTargets(targets []Target, linuxGrouped bool) ([]runner.Result, erro
 }
 
 func validateAccessTarget(problems *[]string, host string, target Target, requiredPrivilege string) {
+	validateTargetAccessPath(problems, host, target, requiredPrivilege, map[string]bool{
+		"direct":    true,
+		"via_probe": true,
+	})
+}
+
+func validateTargetAccessPath(problems *[]string, host string, target Target, requiredPrivilege string, allowedAccess map[string]bool) {
 	requireValue(problems, host, "access_path", target.AccessPath)
 	requireValue(problems, host, "ansible_host", target.AnsibleHost)
 	requireValue(problems, host, "discovery_ip", target.DiscoveryIP)
-	if target.AccessPath != "" && target.AccessPath != "direct" && target.AccessPath != "via_probe" {
-		*problems = append(*problems, fmt.Sprintf("%s access_path must be direct or via_probe", host))
+	if target.AccessPath != "" && !allowedAccess[target.AccessPath] {
+		var allowed []string
+		for value := range allowedAccess {
+			allowed = append(allowed, value)
+		}
+		sort.Strings(allowed)
+		*problems = append(*problems, fmt.Sprintf("%s access_path must be %s", host, strings.Join(allowed, " or ")))
 	}
 	if requiredPrivilege != "" {
 		requirePrivilege(problems, host, target.PrivilegeMethod, requiredPrivilege)
@@ -547,19 +506,6 @@ func hasOnlyLinux(platforms map[string]bool) bool {
 func isPlaceholder(value string) bool {
 	value = strings.TrimSpace(value)
 	return strings.HasPrefix(value, "<") && strings.HasSuffix(value, ">")
-}
-
-func cleanScalar(value string) string {
-	value = strings.TrimSpace(value)
-	if index := strings.Index(value, " #"); index >= 0 {
-		value = strings.TrimSpace(value[:index])
-	}
-	if len(value) >= 2 {
-		if (value[0] == '\'' && value[len(value)-1] == '\'') || (value[0] == '"' && value[len(value)-1] == '"') {
-			value = value[1 : len(value)-1]
-		}
-	}
-	return strings.TrimSpace(value)
 }
 
 func get(row []string, headers map[string]int, key string) string {

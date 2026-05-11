@@ -46,6 +46,9 @@ func TestCLIHelpIncludesUserEntryPoints(t *testing.T) {
 	if strings.Contains(strings.ToLower(out.String()), legacyAlias) {
 		t.Fatalf("help output should not expose legacy terminal aliases:\n%s", out.String())
 	}
+	if strings.Contains(out.String(), "inventory migrate") {
+		t.Fatalf("help output should not expose migration for a v1-default inventory:\n%s", out.String())
+	}
 }
 
 func TestCLILegacyTerminalAliasRemoved(t *testing.T) {
@@ -61,7 +64,7 @@ func TestCLILegacyTerminalAliasRemoved(t *testing.T) {
 }
 
 func TestCLIInventoryValidateUsesProjectInventory(t *testing.T) {
-	withTempProject(t, validLinuxGroupedInventory(), "")
+	withTempProject(t, validV1Inventory(), "")
 
 	var out bytes.Buffer
 	err := cli.Execute([]string{"inventory", "validate"}, strings.NewReader(""), &out, &bytes.Buffer{})
@@ -110,14 +113,88 @@ func TestCLIInventoryValidateUsesProjectInventory(t *testing.T) {
 	}
 }
 
+func TestCLIInventoryImportWritesV1Inventory(t *testing.T) {
+	root := withTempProject(t, "", "")
+	csvPath := filepath.Join(root, "targets.csv")
+	writeFile(t, csvPath, "hostname,platform,os_family,ansible_host,discovery_ip,access_path,privilege_method,private_ip,public_ip,cloud_provider\napp01,linux,oracle_linux,203.0.113.10,10.0.0.10,direct,sudo,10.0.0.10,203.0.113.10,oci\n")
+
+	var out bytes.Buffer
+	err := cli.Execute([]string{"inventory", "import", csvPath}, strings.NewReader(""), &out, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("inventory import failed: %v\n%s", err, out.String())
+	}
+	content, err := os.ReadFile(filepath.Join(root, "inventory.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(content)
+	for _, want := range []string{"version: 1", "targets:", "app01:", "platform: linux"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("imported inventory missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "public_targets:") || strings.Contains(text, "private_targets:") {
+		t.Fatalf("imported inventory should not expose Ansible runner groups:\n%s", text)
+	}
+}
+
+func TestCLIInventoryMigrateCommandRemoved(t *testing.T) {
+	withTempProject(t, validV1Inventory(), "")
+
+	err := cli.Execute([]string{"inventory", "migrate"}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), `unknown inventory command "migrate"`) {
+		t.Fatalf("expected migrate command to be removed, got %v", err)
+	}
+}
+
+func TestCLIInitGuidedWritesV1Inventory(t *testing.T) {
+	root := withTempProject(t, "", "")
+	input := strings.Join([]string{
+		"1",
+		"opc",
+		"/private/tmp/target-admin.key",
+		"203.0.113.100",
+		"opc",
+		"/private/tmp/probe-admin.key",
+		"/private/tmp/matilda.pub",
+		"/home/opc/.ssh/MatildaProbeKey.pem",
+		"1",
+		"app01",
+		"direct",
+		"203.0.113.10",
+		"10.0.0.10",
+		"10.0.0.10",
+		"",
+	}, "\n")
+
+	var out bytes.Buffer
+	err := cli.Execute([]string{"init"}, strings.NewReader(input), &out, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("init failed: %v\n%s", err, out.String())
+	}
+	content, err := os.ReadFile(filepath.Join(root, "inventory.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(content)
+	for _, want := range []string{"version: 1", "targets:", "app01:", "access_path: direct", "privilege_method: sudo"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("guided inventory missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "public_targets:") || strings.Contains(text, "private_targets:") {
+		t.Fatalf("guided inventory should not expose Ansible runner groups:\n%s", text)
+	}
+}
+
 func TestCLIDoctorDoesNotRequireGoAfterBinaryStarts(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses Unix shell scripts to stub local commands")
 	}
 
-	root := withTempProject(t, validLinuxGroupedInventory(), "")
+	root := withTempProject(t, validV1Inventory(), "")
 	writeFile(t, filepath.Join(root, "examples", "env.example"), "TARGET_ADMIN_USER=opc\n")
-	writeFile(t, filepath.Join(root, "examples", "inventory.example.yml"), validLinuxGroupedInventory())
+	writeFile(t, filepath.Join(root, "examples", "inventory.example.yml"), validV1Inventory())
 	if err := os.MkdirAll(filepath.Join(root, "reports"), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -150,9 +227,9 @@ func TestCLIDoctorDoesNotRequireGoAfterBinaryStarts(t *testing.T) {
 }
 
 func TestCLIDoctorReportsMissingAnsibleClearly(t *testing.T) {
-	root := withTempProject(t, validLinuxGroupedInventory(), "")
+	root := withTempProject(t, validV1Inventory(), "")
 	writeFile(t, filepath.Join(root, "examples", "env.example"), "TARGET_ADMIN_USER=opc\n")
-	writeFile(t, filepath.Join(root, "examples", "inventory.example.yml"), validLinuxGroupedInventory())
+	writeFile(t, filepath.Join(root, "examples", "inventory.example.yml"), validV1Inventory())
 	if err := os.MkdirAll(filepath.Join(root, "reports"), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -179,9 +256,9 @@ func TestCLIDoctorReportsMissingToolkitAssetsClearly(t *testing.T) {
 		t.Skip("test uses Unix shell scripts to stub local commands")
 	}
 
-	root := withTempProject(t, validLinuxGroupedInventory(), "")
+	root := withTempProject(t, validV1Inventory(), "")
 	writeFile(t, filepath.Join(root, "examples", "env.example"), "TARGET_ADMIN_USER=opc\n")
-	writeFile(t, filepath.Join(root, "examples", "inventory.example.yml"), validLinuxGroupedInventory())
+	writeFile(t, filepath.Join(root, "examples", "inventory.example.yml"), validV1Inventory())
 	if err := os.MkdirAll(filepath.Join(root, "reports"), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -219,9 +296,9 @@ func TestCLIDoctorFailsWhenGoExistsButIsBroken(t *testing.T) {
 		t.Skip("test uses Unix shell scripts to stub local commands")
 	}
 
-	root := withTempProject(t, validLinuxGroupedInventory(), "")
+	root := withTempProject(t, validV1Inventory(), "")
 	writeFile(t, filepath.Join(root, "examples", "env.example"), "TARGET_ADMIN_USER=opc\n")
-	writeFile(t, filepath.Join(root, "examples", "inventory.example.yml"), validLinuxGroupedInventory())
+	writeFile(t, filepath.Join(root, "examples", "inventory.example.yml"), validV1Inventory())
 	if err := os.MkdirAll(filepath.Join(root, "reports"), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -278,11 +355,14 @@ func TestCLIHelpScreensUseConsoleSections(t *testing.T) {
 				t.Fatalf("%v output should not use legacy %q:\n%s", args, legacy, out.String())
 			}
 		}
+		if args[0] == "inventory" && strings.Contains(out.String(), "inventory migrate") {
+			t.Fatalf("inventory help should not expose migration for v1-default inventory:\n%s", out.String())
+		}
 	}
 }
 
 func TestCLIReportWritesExpectedFormats(t *testing.T) {
-	root := withTempProject(t, validLinuxGroupedInventory(), validationSummary())
+	root := withTempProject(t, validV1Inventory(), validationSummary())
 
 	var out bytes.Buffer
 	err := cli.Execute([]string{"report"}, strings.NewReader(""), &out, &bytes.Buffer{})
@@ -315,7 +395,7 @@ func TestCLILiveWorkflowPlansV1InventoryForLinuxRunner(t *testing.T) {
 }
 
 func TestCLIGenerateWindowsPackage(t *testing.T) {
-	root := withTempProject(t, validLinuxGroupedInventory(), "")
+	root := withTempProject(t, validV1Inventory(), "")
 	templatePath := filepath.Join(root, "templates", "powershell", "windows-readiness.ps1.tmpl")
 	if err := os.MkdirAll(filepath.Dir(templatePath), 0755); err != nil {
 		t.Fatal(err)
@@ -342,7 +422,7 @@ func TestCLIGenerateWindowsPackage(t *testing.T) {
 }
 
 func TestCLIGenerateUnixAdminInstructions(t *testing.T) {
-	root := withTempProject(t, validLinuxGroupedInventory(), "")
+	root := withTempProject(t, validV1Inventory(), "")
 
 	var out bytes.Buffer
 	err := cli.Execute([]string{"generate", "unix"}, strings.NewReader(""), &out, &bytes.Buffer{})
@@ -360,7 +440,7 @@ func TestCLIGenerateUnixAdminInstructions(t *testing.T) {
 }
 
 func TestCLIRollbackRequiresExplicitMode(t *testing.T) {
-	withTempProject(t, validLinuxGroupedInventory(), "")
+	withTempProject(t, validV1Inventory(), "")
 
 	err := cli.Execute([]string{"rollback"}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "requires one mode") {
@@ -421,20 +501,6 @@ func rootFromCwd(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return wd
-}
-
-func validLinuxGroupedInventory() string {
-	return `all:
-  children:
-    public_targets:
-      hosts:
-        app01:
-          ansible_host: 203.0.113.10
-          private_ip: 10.0.0.10
-          discovery_ip: 10.0.0.10
-    private_targets:
-      hosts: {}
-`
 }
 
 func validV1Inventory() string {

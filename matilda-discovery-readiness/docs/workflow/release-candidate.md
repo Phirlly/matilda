@@ -6,7 +6,7 @@ This release manager reference defines the release scope for Matilda Discovery R
 
 - Linux target readiness for targets reached directly from the operator machine.
 - Linux target readiness for targets reached through MatildaProbeVM.
-- Default `inventory.yml` and normalized v1 inventory for Linux execution.
+- `version: 1` `inventory.yml` for user-facing inventory.
 - Local terminal console and local browser UI.
 - Local run history under `.matilda/`.
 - Readiness reports under `reports/`.
@@ -101,10 +101,10 @@ GOCACHE=/private/tmp/matilda-gocache go vet ./...
 GOCACHE=/private/tmp/matilda-gocache go build -o /private/tmp/matilda-prep-check ./cmd/matilda-prep
 git diff --check
 bash -n matilda-prep
-ANSIBLE_CONFIG=ansible/ansible.cfg ANSIBLE_LOCAL_TEMP=/private/tmp/matilda-ansible-local ansible-playbook --syntax-check ansible/playbooks/linux/preflight.yml
-ANSIBLE_CONFIG=ansible/ansible.cfg ANSIBLE_LOCAL_TEMP=/private/tmp/matilda-ansible-local ansible-playbook --syntax-check ansible/playbooks/linux/setup.yml
-ANSIBLE_CONFIG=ansible/ansible.cfg ANSIBLE_LOCAL_TEMP=/private/tmp/matilda-ansible-local ansible-playbook --syntax-check ansible/playbooks/linux/validate.yml
-ANSIBLE_CONFIG=ansible/ansible.cfg ANSIBLE_LOCAL_TEMP=/private/tmp/matilda-ansible-local ansible-playbook --syntax-check ansible/playbooks/linux/rollback.yml
+ANSIBLE_CONFIG=ansible/ansible.cfg ANSIBLE_LOCAL_TEMP=/private/tmp/matilda-ansible-local ansible-playbook -i tests/fixtures/ansible-runner-inventory.yml --syntax-check ansible/playbooks/linux/preflight.yml
+ANSIBLE_CONFIG=ansible/ansible.cfg ANSIBLE_LOCAL_TEMP=/private/tmp/matilda-ansible-local ansible-playbook -i tests/fixtures/ansible-runner-inventory.yml --syntax-check ansible/playbooks/linux/setup.yml
+ANSIBLE_CONFIG=ansible/ansible.cfg ANSIBLE_LOCAL_TEMP=/private/tmp/matilda-ansible-local ansible-playbook -i tests/fixtures/ansible-runner-inventory.yml --syntax-check ansible/playbooks/linux/validate.yml
+ANSIBLE_CONFIG=ansible/ansible.cfg ANSIBLE_LOCAL_TEMP=/private/tmp/matilda-ansible-local ansible-playbook -i tests/fixtures/ansible-runner-inventory.yml --syntax-check ansible/playbooks/linux/rollback.yml
 ```
 
 Then run the [operator smoke test](../user/operator-smoke-test.md) against a fresh clone from origin.

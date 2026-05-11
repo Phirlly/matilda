@@ -115,7 +115,6 @@ Confirm local-only files are not staged, including:
 - `AGENTS.md`
 - `.env`
 - `inventory.yml`
-- `inventory.v1.yml`
 - `.matilda/`
 - `.bin/`
 - `.ansible/`
@@ -148,10 +147,10 @@ For Ansible, inventory runner, setup, validation, rollback, or report changes,
 also run:
 
 ```bash
-ANSIBLE_CONFIG=ansible/ansible.cfg ANSIBLE_LOCAL_TEMP=/private/tmp/matilda-ansible-local ansible-playbook --syntax-check ansible/playbooks/linux/preflight.yml
-ANSIBLE_CONFIG=ansible/ansible.cfg ANSIBLE_LOCAL_TEMP=/private/tmp/matilda-ansible-local ansible-playbook --syntax-check ansible/playbooks/linux/setup.yml
-ANSIBLE_CONFIG=ansible/ansible.cfg ANSIBLE_LOCAL_TEMP=/private/tmp/matilda-ansible-local ansible-playbook --syntax-check ansible/playbooks/linux/validate.yml
-ANSIBLE_CONFIG=ansible/ansible.cfg ANSIBLE_LOCAL_TEMP=/private/tmp/matilda-ansible-local ansible-playbook --syntax-check ansible/playbooks/linux/rollback.yml
+ANSIBLE_CONFIG=ansible/ansible.cfg ANSIBLE_LOCAL_TEMP=/private/tmp/matilda-ansible-local ansible-playbook -i tests/fixtures/ansible-runner-inventory.yml --syntax-check ansible/playbooks/linux/preflight.yml
+ANSIBLE_CONFIG=ansible/ansible.cfg ANSIBLE_LOCAL_TEMP=/private/tmp/matilda-ansible-local ansible-playbook -i tests/fixtures/ansible-runner-inventory.yml --syntax-check ansible/playbooks/linux/setup.yml
+ANSIBLE_CONFIG=ansible/ansible.cfg ANSIBLE_LOCAL_TEMP=/private/tmp/matilda-ansible-local ansible-playbook -i tests/fixtures/ansible-runner-inventory.yml --syntax-check ansible/playbooks/linux/validate.yml
+ANSIBLE_CONFIG=ansible/ansible.cfg ANSIBLE_LOCAL_TEMP=/private/tmp/matilda-ansible-local ansible-playbook -i tests/fixtures/ansible-runner-inventory.yml --syntax-check ansible/playbooks/linux/rollback.yml
 ```
 
 For browser UI changes, verify the UI in a browser at relevant desktop and

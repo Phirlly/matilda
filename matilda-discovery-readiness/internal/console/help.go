@@ -30,8 +30,7 @@ func PrintHelp(out io.Writer) {
 		{Command: "./matilda-prep init", Detail: "create local .env and inventory.yml safely"},
 		{Command: "./matilda-prep doctor", Detail: "check local prerequisites and project health"},
 		{Command: "./matilda-prep inventory validate", Detail: "validate inventory before Ansible runs"},
-		{Command: "./matilda-prep inventory import CSV", Detail: "import Linux targets from CSV"},
-		{Command: "./matilda-prep inventory migrate", Detail: "create normalized inventory.v1.yml"},
+		{Command: "./matilda-prep inventory import CSV", Detail: "create version: 1 inventory.yml from Linux target CSV"},
 	})
 	fmt.Fprintln(out)
 	printHelpSection(out, s, "Linux Readiness", []helpRow{
@@ -79,8 +78,7 @@ func PrintInventoryHelp(out io.Writer) {
 
 	printHelpSection(out, s, "Commands", []helpRow{
 		{Command: "./matilda-prep inventory validate", Detail: "check inventory shape and required target fields"},
-		{Command: "./matilda-prep inventory import targets.csv", Detail: "create inventory.yml from CSV"},
-		{Command: "./matilda-prep inventory migrate", Detail: "create normalized inventory.v1.yml for Linux runner use"},
+		{Command: "./matilda-prep inventory import targets.csv", Detail: "create version: 1 inventory.yml from CSV"},
 	})
 	fmt.Fprintln(out)
 	printHelpSection(out, s, "Required CSV Columns", []helpRow{

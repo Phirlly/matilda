@@ -31,7 +31,6 @@ These files are local runtime material and must not be committed:
 
 - `.env`
 - `inventory.yml`
-- `inventory.v1.yml`
 - `.matilda/`
 - `.bin/`
 - `.gocache/`
