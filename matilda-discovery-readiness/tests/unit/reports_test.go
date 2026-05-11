@@ -165,3 +165,89 @@ func TestGenerateReportsNormalizesGenericValidationFailures(t *testing.T) {
 		}
 	}
 }
+
+func TestGenerateReportsRejectsMalformedSummaryHeader(t *testing.T) {
+	dir := t.TempDir()
+	summary := strings.Join([]string{
+		"Host,Ready",
+		"app01,NO",
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(dir, "validation-summary.txt"), []byte(summary), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := reports.Rows(dir)
+	if err == nil {
+		t.Fatal("expected malformed header error")
+	}
+	for _, want := range []string{"validation summary header", "DiscoveryIP"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("malformed header error missing %q: %v", want, err)
+		}
+	}
+}
+
+func TestGenerateReportsIgnoresBlankRowsAndExplainsPartialRows(t *testing.T) {
+	dir := t.TempDir()
+	summary := strings.Join([]string{
+		"Host,DiscoveryIP,Command,FallbackUsed,LocalSudo,DeniedCommand,ProbeSSH,Ready,Remediation,FailureCode",
+		"app01,10.0.0.10,ifconfig,NO,OK,OK,OK,YES,None,",
+		",,,,,,,,,",
+		"app02,10.0.0.20,ifconfig,NO,OK,OK,FAIL,,,",
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(dir, "validation-summary.txt"), []byte(summary), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := reports.Rows(dir)
+	if err != nil {
+		t.Fatalf("Rows failed: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("expected blank row to be ignored, got %d rows: %+v", len(rows), rows)
+	}
+	if rows[1].Host != "app02" || rows[1].Ready != "NO" {
+		t.Fatalf("partial row should be preserved as not ready: %+v", rows[1])
+	}
+	for _, want := range []string{"validation-summary.txt row is incomplete", "Ready"} {
+		if !strings.Contains(rows[1].Remediation, want) {
+			t.Fatalf("partial row remediation missing %q: %s", want, rows[1].Remediation)
+		}
+	}
+}
+
+func TestGenerateReportsNormalizesAdditionalSSHKeyAndSudoFailures(t *testing.T) {
+	dir := t.TempDir()
+	summary := strings.Join([]string{
+		"Host,DiscoveryIP,Command,FallbackUsed,LocalSudo,DeniedCommand,ProbeSSH,Ready,Remediation,FailureCode",
+		"app01,10.0.0.10,ifconfig,NO,OK,OK,FAIL,NO,Host key verification failed.,VALIDATION_FAILED",
+		"app02,10.0.0.20,ifconfig,NO,OK,OK,FAIL,NO,Warning: Identity file /missing/matilda.pem not accessible: No such file or directory.,VALIDATION_FAILED",
+		"app03,10.0.0.30,ifconfig,NO,FAIL,NOT_RUN,NOT_RUN,NO,Missing sudo password,VALIDATION_FAILED",
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(dir, "validation-summary.txt"), []byte(summary), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := reports.Rows(dir)
+	if err != nil {
+		t.Fatalf("Rows failed: %v", err)
+	}
+	for _, want := range []string{
+		"SSH host key verification failed",
+		"SSH identity file is missing or inaccessible",
+		"Passwordless sudo is not available",
+	} {
+		found := false
+		for _, row := range rows {
+			if strings.Contains(row.Remediation, want) {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("rows missing normalized remediation %q: %+v", want, rows)
+		}
+	}
+}
