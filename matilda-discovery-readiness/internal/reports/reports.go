@@ -30,6 +30,20 @@ type Summary struct {
 	NotReady int
 }
 
+var validationSummaryColumns = []string{
+	"Host",
+	"DiscoveryIP",
+	"Command",
+	"FallbackUsed",
+	"LocalSudo",
+	"DeniedCommand",
+	"ProbeSSH",
+	"Ready",
+	"Remediation",
+}
+
+const failureCodeColumn = "FailureCode"
+
 func Rows(reportDir string) ([]Row, error) {
 	return readSummary(filepath.Join(reportDir, "validation-summary.txt"))
 }
@@ -100,31 +114,127 @@ func readSummary(path string) ([]Row, error) {
 	if err != nil {
 		return nil, err
 	}
+	if len(records) == 0 {
+		return nil, errors.New("validation summary has no header; run validate first")
+	}
+	indexes, err := validationSummaryIndexes(records[0])
+	if err != nil {
+		return nil, err
+	}
 	if len(records) < 2 {
 		return nil, errors.New("validation summary has no target rows")
 	}
 
 	var rows []Row
 	for _, record := range records[1:] {
-		for len(record) < 10 {
-			record = append(record, "")
+		if emptyRecord(record) {
+			continue
 		}
 		row := Row{
-			Host:          strings.TrimSpace(record[0]),
-			DiscoveryIP:   strings.TrimSpace(record[1]),
-			Command:       strings.TrimSpace(record[2]),
-			FallbackUsed:  strings.TrimSpace(record[3]),
-			LocalSudo:     strings.TrimSpace(record[4]),
-			DeniedCommand: strings.TrimSpace(record[5]),
-			ProbeSSH:      strings.TrimSpace(record[6]),
-			Ready:         strings.TrimSpace(record[7]),
-			Remediation:   compact(record[8]),
-			FailureCode:   strings.TrimSpace(record[9]),
+			Host:          summaryField(record, indexes, "Host"),
+			DiscoveryIP:   summaryField(record, indexes, "DiscoveryIP"),
+			Command:       summaryField(record, indexes, "Command"),
+			FallbackUsed:  summaryField(record, indexes, "FallbackUsed"),
+			LocalSudo:     summaryField(record, indexes, "LocalSudo"),
+			DeniedCommand: summaryField(record, indexes, "DeniedCommand"),
+			ProbeSSH:      summaryField(record, indexes, "ProbeSSH"),
+			Ready:         summaryField(record, indexes, "Ready"),
+			Remediation:   compact(summaryField(record, indexes, "Remediation")),
+			FailureCode:   summaryField(record, indexes, failureCodeColumn),
+		}
+		if missing := missingSummaryFields(row); len(missing) > 0 {
+			if row.Ready == "" {
+				row.Ready = "NO"
+			}
+			row.FailureCode = "VALIDATION_SUMMARY_INCOMPLETE"
+			row.Remediation = incompleteSummaryRowRemediation(missing, row.Remediation)
 		}
 		row.Remediation = normalizeRemediation(row)
 		rows = append(rows, row)
 	}
+	if len(rows) == 0 {
+		return nil, errors.New("validation summary has no target rows")
+	}
 	return rows, nil
+}
+
+func validationSummaryIndexes(header []string) (map[string]int, error) {
+	indexes := make(map[string]int, len(header))
+	var duplicates []string
+	for index, name := range header {
+		name = strings.TrimPrefix(strings.TrimSpace(name), "\ufeff")
+		if name == "" {
+			continue
+		}
+		if _, exists := indexes[name]; exists {
+			duplicates = append(duplicates, name)
+			continue
+		}
+		indexes[name] = index
+	}
+
+	var missing []string
+	for _, name := range validationSummaryColumns {
+		if _, ok := indexes[name]; !ok {
+			missing = append(missing, name)
+		}
+	}
+	if len(duplicates) > 0 || len(missing) > 0 {
+		var parts []string
+		if len(missing) > 0 {
+			parts = append(parts, "missing "+strings.Join(missing, ", "))
+		}
+		if len(duplicates) > 0 {
+			parts = append(parts, "duplicate "+strings.Join(duplicates, ", "))
+		}
+		expected := append([]string{}, validationSummaryColumns...)
+		expected = append(expected, failureCodeColumn+" optional")
+		return nil, fmt.Errorf("validation summary header is malformed: %s; expected columns: %s", strings.Join(parts, "; "), strings.Join(expected, ", "))
+	}
+	return indexes, nil
+}
+
+func summaryField(record []string, indexes map[string]int, name string) string {
+	index, ok := indexes[name]
+	if !ok || index < 0 || index >= len(record) {
+		return ""
+	}
+	return strings.TrimSpace(record[index])
+}
+
+func emptyRecord(record []string) bool {
+	for _, field := range record {
+		if strings.TrimSpace(field) != "" {
+			return false
+		}
+	}
+	return true
+}
+
+func missingSummaryFields(row Row) []string {
+	var missing []string
+	if row.Host == "" {
+		missing = append(missing, "Host")
+	}
+	if row.DiscoveryIP == "" {
+		missing = append(missing, "DiscoveryIP")
+	}
+	if row.Ready == "" {
+		missing = append(missing, "Ready")
+	}
+	if !strings.EqualFold(row.Ready, "YES") && row.Remediation == "" {
+		missing = append(missing, "Remediation")
+	}
+	return missing
+}
+
+func incompleteSummaryRowRemediation(missing []string, raw string) string {
+	message := "validation-summary.txt row is incomplete: missing " + strings.Join(missing, ", ") + ". Rerun validate and review the Ansible output before using this target."
+	raw = compact(raw)
+	if raw == "" || strings.EqualFold(raw, "None") {
+		return message
+	}
+	return message + " Observed failure: " + raw
 }
 
 func normalizeRemediation(row Row) string {
@@ -150,6 +260,10 @@ func normalizeRemediation(row Row) string {
 		return withObserved("The Matilda service account is not allowed to run the discovery command with sudo. Rerun setup or review the Matilda sudoers drop-in so documented discovery commands are allowed.", raw)
 	case "SUDO_TTY_REQUIRED":
 		return withObserved("Sudo requires a TTY for the Matilda service account. Remove requiretty for matilda-svc or restore the Matilda sudoers drop-in, then rerun validate.", raw)
+	case "SSH_HOST_KEY_FAILED":
+		return withObserved("SSH host key verification failed. Confirm the host key is expected, remove stale known_hosts entries for the target or Probe path, then rerun preflight and validate.", raw)
+	case "SSH_IDENTITY_FILE_MISSING":
+		return withObserved("SSH identity file is missing or inaccessible. Fix the private key file path in .env or inventory, confirm local file permissions, then rerun doctor, preflight, and validate.", raw)
 	case "SSH_PUBLICKEY_DENIED":
 		return withObserved(sshPublicKeyMessage(row), raw)
 	case "SSH_UNREACHABLE":
@@ -170,6 +284,11 @@ func normalizeRemediation(row Row) string {
 		return withObserved("A local operator prerequisite is missing. Run ./matilda-prep doctor, install the missing command, then rerun the workflow.", raw)
 	case "PROBE_VALIDATION_FAILED":
 		return withObserved("Probe-to-target validation failed. From MatildaProbeVM, confirm target TCP/22 reachability, the Probe private key path, SSH as matilda-svc, and sudo -n for the discovery command.", raw)
+	case "VALIDATION_SUMMARY_INCOMPLETE":
+		if raw != "" {
+			return raw
+		}
+		return "validation-summary.txt row is incomplete. Rerun validate and review the Ansible output before using this target."
 	}
 
 	if raw == "" {
@@ -181,7 +300,8 @@ func normalizeRemediation(row Row) string {
 func inferFailureCode(row Row, raw string) string {
 	text := strings.ToLower(raw)
 	switch {
-	case strings.Contains(text, "a password is required"):
+	case strings.Contains(text, "a password is required") ||
+		strings.Contains(text, "missing sudo password"):
 		return "SUDO_PASSWORD_REQUIRED"
 	case strings.Contains(text, "not in the sudoers file") ||
 		strings.Contains(text, "is not allowed to execute") ||
@@ -189,6 +309,11 @@ func inferFailureCode(row Row, raw string) string {
 		return "SUDO_NOT_ALLOWED"
 	case strings.Contains(text, "must have a tty"):
 		return "SUDO_TTY_REQUIRED"
+	case strings.Contains(text, "host key verification failed"):
+		return "SSH_HOST_KEY_FAILED"
+	case strings.Contains(text, "identity file") &&
+		(strings.Contains(text, "not accessible") || strings.Contains(text, "no such file")):
+		return "SSH_IDENTITY_FILE_MISSING"
 	case strings.Contains(text, "permission denied") && strings.Contains(text, "publickey"):
 		return "SSH_PUBLICKEY_DENIED"
 	case strings.Contains(text, "connection refused"):
