@@ -181,9 +181,14 @@ Do not merge into `dev` until:
 Pull requests from `dev` into `main` are promotion pull requests. They must not
 contain new direct edits on `main`.
 
+Use a normal merge commit for `dev` into `main` promotion pull requests. Do not
+squash or rebase these promotion merges, because preserving ancestry keeps later
+promotion diffs clean.
+
 Do not merge into `main` until:
 
 - Source branch is `dev`.
 - CI passes.
 - Promotion diff is reviewed.
 - Required release or smoke validation is complete.
+- Merge method is a normal merge commit.

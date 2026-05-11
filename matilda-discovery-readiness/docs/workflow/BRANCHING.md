@@ -35,6 +35,24 @@ merged through `dev` before it can reach `main`.
 7. Promote `dev` into `main` with a separate pull request after `dev` is validated.
 8. Create release tags from `main` after release validation.
 
+## Merge Method Rules
+
+Use the merge method that matches the branch role:
+
+- Short-lived work branch into `dev`
+  - Squash merge is acceptable when the branch represents one focused change.
+  - A normal merge commit is also acceptable when preserving branch history is useful.
+
+- `dev` into `main`
+  - Use a normal merge commit.
+  - Do not squash or rebase this promotion.
+  - Preserving ancestry keeps future `dev` to `main` pull requests clean.
+
+- `main` back into `dev` sync branch
+  - Use a normal merge commit.
+  - Do not squash or rebase this sync.
+  - The sync exists to repair or preserve branch ancestry.
+
 ## Main To Dev Sync
 
 Do not sync `main` back into `dev` after every promotion.
@@ -75,6 +93,7 @@ Pull requests into `main` must not be merged until:
 - CI passes on the `dev` to `main` pull request.
 - The promotion pull request diff is reviewed.
 - Any required release or live Linux validation has been completed.
+- The promotion will use a normal merge commit, not squash or rebase.
 
 If GitHub shows `dev` behind `main`, first check whether there is a file diff.
 If there is no file diff and the pull request is not blocked, continue with the
@@ -90,6 +109,8 @@ Keep repository settings aligned with this workflow:
 - Prevent force pushes and branch deletion on `dev` and `main`.
 - Require review of the pull request diff, tests, docs, and release notes when they are in scope.
 - Resolve review conversations before merge when repository settings allow it.
+- Keep normal merge commits available for `dev` to `main` promotions and
+  main-to-dev sync pull requests.
 
 ## CI Gate
 

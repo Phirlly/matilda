@@ -88,6 +88,8 @@ MatildaProbeVM:
 
 Release work follows the protected-main workflow in [Branching Workflow](BRANCHING.md)
 and the implementation process in [Development Workflow](DEVELOPMENT.md).
+Promote `dev` to `main` with a normal merge commit so release history stays
+connected.
 For RCs, prefer the next RC tag over moving a published tag unless the tag move
 is explicitly approved.
 
