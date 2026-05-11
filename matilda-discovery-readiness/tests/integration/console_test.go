@@ -99,6 +99,12 @@ func TestStatusUsesInventoryCountBeforeReportsExist(t *testing.T) {
 	if !strings.Contains(out.String(), "Reports    Pending") {
 		t.Fatalf("status should show reports pending before validate:\n%s", out.String())
 	}
+	if !strings.Contains(out.String(), "Run preflight before setup") {
+		t.Fatalf("status should guide first-run operators to preflight before reports exist:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "Run validate to create readiness reports") {
+		t.Fatalf("status should not skip preflight in the first-run next step:\n%s", out.String())
+	}
 }
 
 func TestStartAliasOpensConsole(t *testing.T) {

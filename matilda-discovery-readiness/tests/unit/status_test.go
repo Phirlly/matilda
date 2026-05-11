@@ -112,6 +112,20 @@ func TestSnapshotNextStepGuidesMissingInventorySetup(t *testing.T) {
 	}
 }
 
+func TestSnapshotNextStepGuidesPreflightBeforeReportsExist(t *testing.T) {
+	root := t.TempDir()
+	writeUnitFile(t, filepath.Join(root, "inventory.yml"), unitLinuxGroupedInventory())
+	rt := app.New(root, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+
+	snap := rt.Snapshot()
+	if !snap.InventoryOK {
+		t.Fatalf("expected inventory OK: %s", snap.InventoryError)
+	}
+	if snap.NextStep != "Run preflight before setup." {
+		t.Fatalf("unexpected next step before reports exist: %s", snap.NextStep)
+	}
+}
+
 func writeUnitFile(t *testing.T, path string, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
