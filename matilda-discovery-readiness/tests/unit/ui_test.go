@@ -17,7 +17,7 @@ func TestTerminalRendererUsesSharedSections(t *testing.T) {
 	renderer.Header("Inventory Validate", "read-only inventory checks")
 	renderer.Section("Checks")
 	renderer.Checks([]runner.Result{
-		{Name: "inventory.yml", Status: runner.StatusPass, Detail: "ok"},
+		{Name: "targets.csv", Status: runner.StatusPass, Detail: "ok"},
 		{Name: "ansible", Status: runner.StatusFail, Detail: "missing"},
 	})
 	renderer.Next("./matilda-prep doctor")

@@ -13,7 +13,7 @@ import (
 
 func TestRuntimeSnapshotSummarizesInventoryAndReports(t *testing.T) {
 	root := t.TempDir()
-	writeUnitFile(t, filepath.Join(root, "inventory.yml"), unitV1Inventory())
+	writeUnitFile(t, filepath.Join(root, "targets.csv"), unitTargetsCSV())
 	writeUnitFile(t, filepath.Join(root, "reports", "validation-summary.txt"), unitValidationSummary())
 	writeUnitFile(t, filepath.Join(root, "reports", "validated-discovery-ips.txt"), "10.0.0.10\n")
 
@@ -23,7 +23,10 @@ func TestRuntimeSnapshotSummarizesInventoryAndReports(t *testing.T) {
 	if !snap.InventoryOK {
 		t.Fatalf("expected inventory OK: %s", snap.InventoryError)
 	}
-	if snap.InventoryFormat != "v1" || snap.TargetCount != 1 {
+	if snap.InventoryPath != filepath.Join(root, "targets.csv") {
+		t.Fatalf("unexpected inventory path: %s", snap.InventoryPath)
+	}
+	if snap.InventoryFormat != "csv" || snap.TargetCount != 1 {
 		t.Fatalf("unexpected inventory snapshot: %+v", snap)
 	}
 	if snap.ReportSummary.Total != 1 || snap.ReportSummary.Ready != 1 || snap.ReportSummary.NotReady != 0 {
@@ -107,14 +110,14 @@ func TestSnapshotNextStepGuidesMissingInventorySetup(t *testing.T) {
 	if snap.InventoryOK {
 		t.Fatalf("expected missing inventory to fail")
 	}
-	if !strings.Contains(snap.NextStep, "./matilda-prep init") || !strings.Contains(snap.NextStep, "inventory.example.yml") {
+	if !strings.Contains(snap.NextStep, "./matilda-prep init") || !strings.Contains(snap.NextStep, "targets.example.csv") {
 		t.Fatalf("unexpected next step for missing inventory: %s", snap.NextStep)
 	}
 }
 
 func TestSnapshotNextStepGuidesPreflightBeforeReportsExist(t *testing.T) {
 	root := t.TempDir()
-	writeUnitFile(t, filepath.Join(root, "inventory.yml"), unitV1Inventory())
+	writeUnitFile(t, filepath.Join(root, "targets.csv"), unitTargetsCSV())
 	rt := app.New(root, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
 
 	snap := rt.Snapshot()
@@ -136,18 +139,8 @@ func writeUnitFile(t *testing.T, path string, content string) {
 	}
 }
 
-func unitV1Inventory() string {
-	return `version: 1
-
-targets:
-  app01:
-    platform: linux
-    access_path: direct
-    ansible_host: 203.0.113.10
-    private_ip: 10.0.0.10
-    discovery_ip: 10.0.0.10
-    privilege_method: sudo
-`
+func unitTargetsCSV() string {
+	return "hostname,platform,os_family,ansible_host,discovery_ip,access_path,privilege_method,private_ip,public_ip,cloud_provider\napp01,linux,oracle_linux,203.0.113.10,10.0.0.10,direct,sudo,10.0.0.10,203.0.113.10,oci\n"
 }
 
 func unitValidationSummary() string {

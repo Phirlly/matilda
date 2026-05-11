@@ -83,7 +83,7 @@ func Handler(rt *app.Runtime) http.Handler {
 		http.ServeFile(w, req, filepath.Join(rt.Root, "reports", "readiness.html"))
 	})
 	mux.HandleFunc("/inventory", func(w http.ResponseWriter, req *http.Request) {
-		serveText(w, filepath.Join(rt.Root, "inventory.yml"))
+		serveText(w, filepath.Join(rt.Root, "targets.csv"))
 	})
 	mux.HandleFunc("/summary", func(w http.ResponseWriter, req *http.Request) {
 		serveText(w, filepath.Join(rt.Root, "reports", "validation-summary.txt"))
@@ -250,7 +250,7 @@ func render(w http.ResponseWriter, rt *app.Runtime, action *app.ActionResult) {
 		Title:        "Matilda Discovery Readiness Toolkit",
 		Snapshot:     rt.Snapshot(),
 		ActionGroups: app.WorkflowActionGroups(),
-		Inventory:    readText(filepath.Join(rt.Root, "inventory.yml")),
+		Inventory:    readText(filepath.Join(rt.Root, "targets.csv")),
 		SummaryText:  readText(filepath.Join(rt.Root, "reports", "validation-summary.txt")),
 		Action:       action,
 	}
@@ -478,7 +478,7 @@ func pageTemplate() *template.Template {
     </section>
     <div class="detail-grid">
       <details class="detail-panel">
-        <summary><span>Inventory file</span><small>inventory.yml</small></summary>
+        <summary><span>Target CSV</span><small>targets.csv</small></summary>
         <pre>{{.Inventory}}</pre>
       </details>
       <details class="detail-panel">

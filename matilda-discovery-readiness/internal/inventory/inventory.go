@@ -40,6 +40,8 @@ type LinuxRunnerPlan struct {
 	SkippedTargets []Target
 }
 
+var csvRequiredColumns = []string{"hostname", "platform", "ansible_host", "discovery_ip", "access_path", "privilege_method"}
+
 type inventoryV1 struct {
 	Version  int                 `yaml:"version"`
 	Profiles map[string]any      `yaml:"profiles,omitempty"`
@@ -90,6 +92,27 @@ func DetectFormat(path string) (string, error) {
 		return "", err
 	}
 	return "v1", nil
+}
+
+func ValidateCSVFile(path string) (ValidationResult, []Target, error) {
+	var result ValidationResult
+	targets, err := ReadCSV(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			result.Checks = append(result.Checks, runner.Result{Name: "targets.csv", Status: runner.StatusFail, Detail: "missing: " + path})
+		} else {
+			result.Checks = append(result.Checks, runner.Result{Name: "targets.csv", Status: runner.StatusFail, Detail: err.Error()})
+		}
+		return result, nil, err
+	}
+
+	result.Format = "csv"
+	result.TargetCount = len(targets)
+	result.Checks = append(result.Checks, runner.Result{Name: "targets.csv", Status: runner.StatusPass, Detail: path})
+	result.Checks = append(result.Checks, runner.Result{Name: "inventory format", Status: runner.StatusPass, Detail: "CSV target inventory"})
+	checks, validateErr := validateTargets(targets, false)
+	result.Checks = append(result.Checks, checks...)
+	return result, targets, validateErr
 }
 
 func RequiresProbe(path string) (bool, error) {
@@ -150,19 +173,36 @@ func ReadCSV(path string) ([]Target, error) {
 	}
 
 	headers := map[string]int{}
+	var duplicateHeaders []string
 	for i, header := range rows[0] {
-		headers[strings.ToLower(strings.TrimSpace(header))] = i
-	}
-	required := []string{"hostname", "platform", "ansible_host", "discovery_ip", "access_path", "privilege_method"}
-	for _, key := range required {
-		if _, ok := headers[key]; !ok {
-			return nil, fmt.Errorf("CSV missing required column: %s", key)
+		header = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(header)), "\ufeff")
+		if header == "" {
+			continue
 		}
+		if _, exists := headers[header]; exists {
+			duplicateHeaders = append(duplicateHeaders, header)
+			continue
+		}
+		headers[header] = i
+	}
+	if len(duplicateHeaders) > 0 {
+		return nil, fmt.Errorf("CSV duplicate column(s): %s", strings.Join(duplicateHeaders, ", "))
+	}
+	var missingColumns []string
+	for _, key := range csvRequiredColumns {
+		if _, ok := headers[key]; !ok {
+			missingColumns = append(missingColumns, key)
+		}
+	}
+	if len(missingColumns) > 0 {
+		return nil, fmt.Errorf("CSV missing required columns: %s", strings.Join(missingColumns, ", "))
 	}
 
 	var targets []Target
+	seenHosts := map[string]int{}
 	for rowIndex, row := range rows[1:] {
-		if len(row) == 0 || strings.TrimSpace(strings.Join(row, "")) == "" {
+		rowNumber := rowIndex + 2
+		if emptyCSVRow(row) {
 			continue
 		}
 		target := Target{
@@ -178,26 +218,30 @@ func ReadCSV(path string) ([]Target, error) {
 			PrivilegeMethod: strings.ToLower(get(row, headers, "privilege_method")),
 			ConfigureMode:   strings.ToLower(get(row, headers, "configure_mode")),
 		}
-		if target.Hostname == "" {
-			return nil, fmt.Errorf("row %d missing hostname", rowIndex+2)
+		if missing := missingRequiredCSVValues(row, headers); len(missing) > 0 {
+			return nil, fmt.Errorf("row %d missing required values: %s", rowNumber, strings.Join(missing, ", "))
 		}
+		if firstRow, exists := seenHosts[target.Hostname]; exists {
+			return nil, fmt.Errorf("row %d duplicate hostname %q; first seen on row %d", rowNumber, target.Hostname, firstRow)
+		}
+		seenHosts[target.Hostname] = rowNumber
 		if target.Platform != "linux" {
-			return nil, fmt.Errorf("row %d platform %q is not supported by current Linux inventory import", rowIndex+2, target.Platform)
+			return nil, fmt.Errorf("row %d platform %q is not supported by current Linux inventory import", rowNumber, target.Platform)
 		}
 		if target.AnsibleHost == "" || isPlaceholder(target.AnsibleHost) {
-			return nil, fmt.Errorf("row %d ansible_host must be a real target address", rowIndex+2)
+			return nil, fmt.Errorf("row %d ansible_host must be a real target address", rowNumber)
 		}
 		if target.DiscoveryIP == "" || isPlaceholder(target.DiscoveryIP) {
-			return nil, fmt.Errorf("row %d discovery_ip must be the address MatildaProbeVM will use", rowIndex+2)
+			return nil, fmt.Errorf("row %d discovery_ip must be the address MatildaProbeVM will use", rowNumber)
 		}
 		if target.AccessPath != "direct" && target.AccessPath != "via_probe" {
-			return nil, fmt.Errorf("row %d access_path must be direct or via_probe", rowIndex+2)
+			return nil, fmt.Errorf("row %d access_path must be direct or via_probe", rowNumber)
 		}
 		if target.PrivilegeMethod == "" {
-			return nil, fmt.Errorf("row %d privilege_method is required; current Linux automation supports sudo", rowIndex+2)
+			return nil, fmt.Errorf("row %d privilege_method is required; current Linux automation supports sudo", rowNumber)
 		}
 		if target.PrivilegeMethod != "sudo" {
-			return nil, fmt.Errorf("row %d privilege_method %q is not automated yet", rowIndex+2, target.PrivilegeMethod)
+			return nil, fmt.Errorf("row %d privilege_method %q is not automated yet", rowNumber, target.PrivilegeMethod)
 		}
 		if target.PrivateIP == "" {
 			target.PrivateIP = target.DiscoveryIP
@@ -514,4 +558,23 @@ func get(row []string, headers map[string]int, key string) string {
 		return ""
 	}
 	return strings.TrimSpace(row[index])
+}
+
+func emptyCSVRow(row []string) bool {
+	for _, field := range row {
+		if strings.TrimSpace(field) != "" {
+			return false
+		}
+	}
+	return true
+}
+
+func missingRequiredCSVValues(row []string, headers map[string]int) []string {
+	var missing []string
+	for _, key := range csvRequiredColumns {
+		if get(row, headers, key) == "" {
+			missing = append(missing, key)
+		}
+	}
+	return missing
 }

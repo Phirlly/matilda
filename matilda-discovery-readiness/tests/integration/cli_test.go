@@ -64,7 +64,7 @@ func TestCLILegacyTerminalAliasRemoved(t *testing.T) {
 }
 
 func TestCLIInventoryValidateUsesProjectInventory(t *testing.T) {
-	withTempProject(t, validV1Inventory(), "")
+	withTempProject(t, validTargetsCSV(), "")
 
 	var out bytes.Buffer
 	err := cli.Execute([]string{"inventory", "validate"}, strings.NewReader(""), &out, &bytes.Buffer{})
@@ -95,7 +95,7 @@ func TestCLIInventoryValidateUsesProjectInventory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected state file to be written: %v", err)
 	}
-	for _, want := range []string{`"last_action": "inventory-validate"`, `"last_status": "completed"`, `"inventory": "inventory.yml"`} {
+	for _, want := range []string{`"last_action": "inventory-validate"`, `"last_status": "completed"`, `"inventory": "targets.csv"`} {
 		if !strings.Contains(string(stateContent), want) {
 			t.Fatalf("state file missing %q:\n%s", want, string(stateContent))
 		}
@@ -113,9 +113,9 @@ func TestCLIInventoryValidateUsesProjectInventory(t *testing.T) {
 	}
 }
 
-func TestCLIInventoryImportWritesV1Inventory(t *testing.T) {
+func TestCLIInventoryImportWritesTargetsCSVAndGeneratedInventory(t *testing.T) {
 	root := withTempProject(t, "", "")
-	csvPath := filepath.Join(root, "targets.csv")
+	csvPath := filepath.Join(root, "import-source.csv")
 	writeFile(t, csvPath, "hostname,platform,os_family,ansible_host,discovery_ip,access_path,privilege_method,private_ip,public_ip,cloud_provider\napp01,linux,oracle_linux,203.0.113.10,10.0.0.10,direct,sudo,10.0.0.10,203.0.113.10,oci\n")
 
 	var out bytes.Buffer
@@ -123,23 +123,34 @@ func TestCLIInventoryImportWritesV1Inventory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inventory import failed: %v\n%s", err, out.String())
 	}
-	content, err := os.ReadFile(filepath.Join(root, "inventory.yml"))
+	targetCSV, err := os.ReadFile(filepath.Join(root, "targets.csv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(targetCSV), "app01,linux,oracle_linux") {
+		t.Fatalf("import should create user-facing targets.csv:\n%s", string(targetCSV))
+	}
+	if _, err := os.Stat(filepath.Join(root, "inventory.yml")); !os.IsNotExist(err) {
+		t.Fatalf("import should not write root inventory.yml, got err=%v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(root, ".matilda", "generated", "inventory.yml"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(content)
 	for _, want := range []string{"version: 1", "targets:", "app01:", "platform: linux"} {
 		if !strings.Contains(text, want) {
-			t.Fatalf("imported inventory missing %q:\n%s", want, text)
+			t.Fatalf("generated inventory missing %q:\n%s", want, text)
 		}
 	}
 	if strings.Contains(text, "public_targets:") || strings.Contains(text, "private_targets:") {
-		t.Fatalf("imported inventory should not expose Ansible runner groups:\n%s", text)
+		t.Fatalf("generated inventory should not expose Ansible runner groups:\n%s", text)
 	}
 }
 
 func TestCLIInventoryMigrateCommandRemoved(t *testing.T) {
-	withTempProject(t, validV1Inventory(), "")
+	withTempProject(t, validTargetsCSV(), "")
 
 	err := cli.Execute([]string{"inventory", "migrate"}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), `unknown inventory command "migrate"`) {
@@ -147,7 +158,7 @@ func TestCLIInventoryMigrateCommandRemoved(t *testing.T) {
 	}
 }
 
-func TestCLIInitGuidedWritesV1Inventory(t *testing.T) {
+func TestCLIInitGuidedWritesTargetsCSV(t *testing.T) {
 	root := withTempProject(t, "", "")
 	input := strings.Join([]string{
 		"1",
@@ -158,12 +169,6 @@ func TestCLIInitGuidedWritesV1Inventory(t *testing.T) {
 		"/private/tmp/probe-admin.key",
 		"/private/tmp/matilda.pub",
 		"/home/opc/.ssh/MatildaProbeKey.pem",
-		"1",
-		"app01",
-		"direct",
-		"203.0.113.10",
-		"10.0.0.10",
-		"10.0.0.10",
 		"",
 	}, "\n")
 
@@ -172,18 +177,18 @@ func TestCLIInitGuidedWritesV1Inventory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("init failed: %v\n%s", err, out.String())
 	}
-	content, err := os.ReadFile(filepath.Join(root, "inventory.yml"))
+	content, err := os.ReadFile(filepath.Join(root, "targets.csv"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(content)
-	for _, want := range []string{"version: 1", "targets:", "app01:", "access_path: direct", "privilege_method: sudo"} {
+	for _, want := range []string{"hostname,platform", "app01,linux", "access_path", "privilege_method"} {
 		if !strings.Contains(text, want) {
-			t.Fatalf("guided inventory missing %q:\n%s", want, text)
+			t.Fatalf("guided targets CSV missing %q:\n%s", want, text)
 		}
 	}
-	if strings.Contains(text, "public_targets:") || strings.Contains(text, "private_targets:") {
-		t.Fatalf("guided inventory should not expose Ansible runner groups:\n%s", text)
+	if _, err := os.Stat(filepath.Join(root, "inventory.yml")); !os.IsNotExist(err) {
+		t.Fatalf("guided init should not write root inventory.yml, got err=%v", err)
 	}
 }
 
@@ -192,9 +197,9 @@ func TestCLIDoctorDoesNotRequireGoAfterBinaryStarts(t *testing.T) {
 		t.Skip("test uses Unix shell scripts to stub local commands")
 	}
 
-	root := withTempProject(t, validV1Inventory(), "")
+	root := withTempProject(t, validTargetsCSV(), "")
 	writeFile(t, filepath.Join(root, "examples", "env.example"), "TARGET_ADMIN_USER=opc\n")
-	writeFile(t, filepath.Join(root, "examples", "inventory.example.yml"), validV1Inventory())
+	writeFile(t, filepath.Join(root, "examples", "targets.example.csv"), validTargetsCSV())
 	if err := os.MkdirAll(filepath.Join(root, "reports"), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -227,9 +232,9 @@ func TestCLIDoctorDoesNotRequireGoAfterBinaryStarts(t *testing.T) {
 }
 
 func TestCLIDoctorReportsMissingAnsibleClearly(t *testing.T) {
-	root := withTempProject(t, validV1Inventory(), "")
+	root := withTempProject(t, validTargetsCSV(), "")
 	writeFile(t, filepath.Join(root, "examples", "env.example"), "TARGET_ADMIN_USER=opc\n")
-	writeFile(t, filepath.Join(root, "examples", "inventory.example.yml"), validV1Inventory())
+	writeFile(t, filepath.Join(root, "examples", "targets.example.csv"), validTargetsCSV())
 	if err := os.MkdirAll(filepath.Join(root, "reports"), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -256,9 +261,9 @@ func TestCLIDoctorReportsMissingToolkitAssetsClearly(t *testing.T) {
 		t.Skip("test uses Unix shell scripts to stub local commands")
 	}
 
-	root := withTempProject(t, validV1Inventory(), "")
+	root := withTempProject(t, validTargetsCSV(), "")
 	writeFile(t, filepath.Join(root, "examples", "env.example"), "TARGET_ADMIN_USER=opc\n")
-	writeFile(t, filepath.Join(root, "examples", "inventory.example.yml"), validV1Inventory())
+	writeFile(t, filepath.Join(root, "examples", "targets.example.csv"), validTargetsCSV())
 	if err := os.MkdirAll(filepath.Join(root, "reports"), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -296,9 +301,9 @@ func TestCLIDoctorFailsWhenGoExistsButIsBroken(t *testing.T) {
 		t.Skip("test uses Unix shell scripts to stub local commands")
 	}
 
-	root := withTempProject(t, validV1Inventory(), "")
+	root := withTempProject(t, validTargetsCSV(), "")
 	writeFile(t, filepath.Join(root, "examples", "env.example"), "TARGET_ADMIN_USER=opc\n")
-	writeFile(t, filepath.Join(root, "examples", "inventory.example.yml"), validV1Inventory())
+	writeFile(t, filepath.Join(root, "examples", "targets.example.csv"), validTargetsCSV())
 	if err := os.MkdirAll(filepath.Join(root, "reports"), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -362,7 +367,7 @@ func TestCLIHelpScreensUseConsoleSections(t *testing.T) {
 }
 
 func TestCLIReportWritesExpectedFormats(t *testing.T) {
-	root := withTempProject(t, validV1Inventory(), validationSummary())
+	root := withTempProject(t, validTargetsCSV(), validationSummary())
 
 	var out bytes.Buffer
 	err := cli.Execute([]string{"report"}, strings.NewReader(""), &out, &bytes.Buffer{})
@@ -376,13 +381,13 @@ func TestCLIReportWritesExpectedFormats(t *testing.T) {
 	}
 }
 
-func TestCLILiveWorkflowPlansV1InventoryForLinuxRunner(t *testing.T) {
-	root := withTempProject(t, validV1Inventory(), "")
+func TestCLILiveWorkflowPlansCSVInventoryForLinuxRunner(t *testing.T) {
+	root := withTempProject(t, validTargetsCSV(), "")
 
 	var out bytes.Buffer
 	err := cli.Execute([]string{"preflight"}, strings.NewReader(""), &out, &bytes.Buffer{})
 	if err == nil || strings.Contains(err.Error(), "Linux direct/via-Probe groups") {
-		t.Fatalf("expected v1 runner planning to pass the old guard, got %v\n%s", err, out.String())
+		t.Fatalf("expected CSV-generated runner planning to pass the old guard, got %v\n%s", err, out.String())
 	}
 	generated := filepath.Join(root, ".matilda", "runner", "inventory.linux.yml")
 	content, readErr := os.ReadFile(generated)
@@ -395,7 +400,7 @@ func TestCLILiveWorkflowPlansV1InventoryForLinuxRunner(t *testing.T) {
 }
 
 func TestCLIGenerateWindowsPackage(t *testing.T) {
-	root := withTempProject(t, validV1Inventory(), "")
+	root := withTempProject(t, validTargetsCSV(), "")
 	templatePath := filepath.Join(root, "templates", "powershell", "windows-readiness.ps1.tmpl")
 	if err := os.MkdirAll(filepath.Dir(templatePath), 0755); err != nil {
 		t.Fatal(err)
@@ -422,7 +427,7 @@ func TestCLIGenerateWindowsPackage(t *testing.T) {
 }
 
 func TestCLIGenerateUnixAdminInstructions(t *testing.T) {
-	root := withTempProject(t, validV1Inventory(), "")
+	root := withTempProject(t, validTargetsCSV(), "")
 
 	var out bytes.Buffer
 	err := cli.Execute([]string{"generate", "unix"}, strings.NewReader(""), &out, &bytes.Buffer{})
@@ -440,7 +445,7 @@ func TestCLIGenerateUnixAdminInstructions(t *testing.T) {
 }
 
 func TestCLIRollbackRequiresExplicitMode(t *testing.T) {
-	withTempProject(t, validV1Inventory(), "")
+	withTempProject(t, validTargetsCSV(), "")
 
 	err := cli.Execute([]string{"rollback"}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "requires one mode") {
@@ -448,11 +453,11 @@ func TestCLIRollbackRequiresExplicitMode(t *testing.T) {
 	}
 }
 
-func withTempProject(t *testing.T, inventory string, summary string) string {
+func withTempProject(t *testing.T, targetCSV string, summary string) string {
 	t.Helper()
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "README.md"), "# test project\n")
-	writeFile(t, filepath.Join(root, "ansible", "ansible.cfg"), "[defaults]\ninventory = ../inventory.yml\nroles_path = roles\n")
+	writeFile(t, filepath.Join(root, "ansible", "ansible.cfg"), "[defaults]\ninventory = ../.matilda/runner/inventory.linux.yml\nroles_path = roles\n")
 	for _, path := range []string{
 		filepath.Join(root, "ansible", "playbooks", "linux", "preflight.yml"),
 		filepath.Join(root, "ansible", "playbooks", "linux", "setup.yml"),
@@ -464,8 +469,9 @@ func withTempProject(t *testing.T, inventory string, summary string) string {
 	} {
 		writeFile(t, path, "# test asset\n")
 	}
-	if inventory != "" {
-		writeFile(t, filepath.Join(root, "inventory.yml"), inventory)
+	writeFile(t, filepath.Join(root, "examples", "targets.example.csv"), validTargetsCSV())
+	if targetCSV != "" {
+		writeFile(t, filepath.Join(root, "targets.csv"), targetCSV)
 	}
 	if summary != "" {
 		writeFile(t, filepath.Join(root, "reports", "validation-summary.txt"), summary)
@@ -503,17 +509,8 @@ func rootFromCwd(t *testing.T) string {
 	return wd
 }
 
-func validV1Inventory() string {
-	return `version: 1
-
-targets:
-  app01:
-    platform: linux
-    access_path: direct
-    ansible_host: 203.0.113.10
-    discovery_ip: 10.0.0.10
-    privilege_method: sudo
-`
+func validTargetsCSV() string {
+	return "hostname,platform,os_family,ansible_host,discovery_ip,access_path,privilege_method,private_ip,public_ip,cloud_provider\napp01,linux,oracle_linux,203.0.113.10,10.0.0.10,direct,sudo,10.0.0.10,203.0.113.10,oci\n"
 }
 
 func validationSummary() string {
