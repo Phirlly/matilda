@@ -1,0 +1,11 @@
+all:
+  children:
+    public_targets:
+      hosts:
+        syntax-check-placeholder:
+          ansible_host: 127.0.0.1
+          ansible_connection: local
+          discovery_ip: 127.0.0.1
+
+    private_targets:
+      hosts: {}

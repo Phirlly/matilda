@@ -16,7 +16,7 @@ import (
 )
 
 func TestWebStatusAndDashboardRoutes(t *testing.T) {
-	root := withTempProject(t, validLinuxGroupedInventory(), validationSummary())
+	root := withTempProject(t, validV1Inventory(), validationSummary())
 	writeFile(t, filepath.Join(root, "reports", "validated-discovery-ips.txt"), "10.0.0.10\n")
 	writeFile(t, filepath.Join(root, "reports", "readiness.md"), "# Ready\n")
 	rt := app.New(root, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
@@ -64,7 +64,7 @@ func TestWebStatusAndDashboardRoutes(t *testing.T) {
 }
 
 func TestWebMutatingActionRequiresConfirmation(t *testing.T) {
-	root := withTempProject(t, validLinuxGroupedInventory(), validationSummary())
+	root := withTempProject(t, validV1Inventory(), validationSummary())
 	rt := app.New(root, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
 	handler := web.Handler(rt)
 
@@ -84,7 +84,7 @@ func TestWebMutatingActionRequiresConfirmation(t *testing.T) {
 }
 
 func TestWebLocalActionRunsInventoryValidate(t *testing.T) {
-	root := withTempProject(t, validLinuxGroupedInventory(), validationSummary())
+	root := withTempProject(t, validV1Inventory(), validationSummary())
 	rt := app.New(root, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
 	handler := web.Handler(rt)
 
@@ -115,7 +115,7 @@ type webJobResponse struct {
 }
 
 func TestWebStreamingActionAPI(t *testing.T) {
-	root := withTempProject(t, validLinuxGroupedInventory(), validationSummary())
+	root := withTempProject(t, validV1Inventory(), validationSummary())
 	rt := app.New(root, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
 	handler := web.Handler(rt)
 
@@ -159,7 +159,7 @@ func TestWebStreamingActionAPI(t *testing.T) {
 }
 
 func TestWebStreamingActionAPIAcceptsBrowserFormData(t *testing.T) {
-	root := withTempProject(t, validLinuxGroupedInventory(), validationSummary())
+	root := withTempProject(t, validV1Inventory(), validationSummary())
 	rt := app.New(root, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
 	handler := web.Handler(rt)
 
@@ -192,7 +192,7 @@ func TestWebStreamingActionAPIAcceptsBrowserFormData(t *testing.T) {
 }
 
 func TestWebStreamingMutatingActionRequiresConfirmation(t *testing.T) {
-	root := withTempProject(t, validLinuxGroupedInventory(), validationSummary())
+	root := withTempProject(t, validV1Inventory(), validationSummary())
 	rt := app.New(root, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
 	handler := web.Handler(rt)
 
@@ -210,7 +210,7 @@ func TestWebStreamingMutatingActionRequiresConfirmation(t *testing.T) {
 }
 
 func TestWebStreamingUnknownActionFails(t *testing.T) {
-	root := withTempProject(t, validLinuxGroupedInventory(), validationSummary())
+	root := withTempProject(t, validV1Inventory(), validationSummary())
 	rt := app.New(root, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
 	handler := web.Handler(rt)
 
@@ -228,7 +228,7 @@ func TestWebStreamingUnknownActionFails(t *testing.T) {
 }
 
 func TestWebStreamingRejectsConcurrentAction(t *testing.T) {
-	root := withTempProject(t, validLinuxGroupedInventory(), validationSummary())
+	root := withTempProject(t, validV1Inventory(), validationSummary())
 	binDir := t.TempDir()
 	fakeGo := filepath.Join(binDir, "go")
 	if err := os.WriteFile(fakeGo, []byte("#!/bin/sh\nsleep 1\necho go version go1.25.0 test\n"), 0755); err != nil {
@@ -260,7 +260,7 @@ func TestWebStreamingRejectsConcurrentAction(t *testing.T) {
 }
 
 func TestWebStreamingActionCanBeCancelled(t *testing.T) {
-	root := withTempProject(t, validLinuxGroupedInventory(), validationSummary())
+	root := withTempProject(t, validV1Inventory(), validationSummary())
 	binDir := t.TempDir()
 	fakeAnsible := filepath.Join(binDir, "ansible-playbook")
 	if err := os.WriteFile(fakeAnsible, []byte("#!/bin/sh\necho fake ansible-playbook started\nsleep 5\necho fake ansible-playbook completed\n"), 0755); err != nil {

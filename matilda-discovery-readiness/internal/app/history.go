@@ -98,8 +98,6 @@ func runSummary(result workflow.Result, snap Snapshot) string {
 		return "inventory checked"
 	case "inventory-import":
 		return "inventory imported"
-	case "inventory-migrate":
-		return "inventory migrated"
 	case "preflight":
 		return "preflight completed"
 	case "setup":
@@ -124,8 +122,6 @@ func actionCommand(action string) string {
 		return "./matilda-prep inventory validate"
 	case "inventory-import":
 		return "./matilda-prep inventory import CSV"
-	case "inventory-migrate":
-		return "./matilda-prep inventory migrate"
 	case "preflight":
 		return "./matilda-prep preflight"
 	case "setup":

@@ -42,21 +42,22 @@ func (r *Runtime) WithContext(ctx context.Context) *Runtime {
 
 func (r *Runtime) Init() error {
 	heading(r.Out, "INIT", "local file setup only; no target changes")
-	mode := promptDefault(r.In, r.Out, "Choose init mode: 1) guided wizard  2) copy examples only", "1")
+	reader := bufio.NewReader(r.In)
+	mode := promptWithReader(reader, r.Out, "Choose init mode: 1) guided wizard  2) copy examples only", "1")
 
 	switch strings.TrimSpace(mode) {
 	case "1":
-		if err := r.createEnvGuided(); err != nil {
+		if err := r.createEnvGuidedWithReader(reader); err != nil {
 			return err
 		}
-		if err := r.createInventoryGuided(); err != nil {
+		if err := r.createInventoryGuidedWithReader(reader); err != nil {
 			return err
 		}
 	case "2":
-		if err := copyWithSafety(r, filepath.Join(r.Root, "examples", "env.example"), filepath.Join(r.Root, ".env")); err != nil {
+		if err := copyWithSafetyWithReader(r, reader, filepath.Join(r.Root, "examples", "env.example"), filepath.Join(r.Root, ".env")); err != nil {
 			return err
 		}
-		if err := copyWithSafety(r, filepath.Join(r.Root, "examples", "inventory.example.yml"), filepath.Join(r.Root, "inventory.yml")); err != nil {
+		if err := copyWithSafetyWithReader(r, reader, filepath.Join(r.Root, "examples", "inventory.example.yml"), filepath.Join(r.Root, "inventory.yml")); err != nil {
 			return err
 		}
 	default:
@@ -199,7 +200,7 @@ func (r *Runtime) validateInventory(showHeading bool) error {
 }
 
 func (r *Runtime) InventoryImport(csvPath string) error {
-	heading(r.Out, "INVENTORY IMPORT", "CSV to current Linux-compatible inventory.yml")
+	heading(r.Out, "INVENTORY IMPORT", "CSV to inventory.yml")
 	targets, err := inventory.ReadCSV(csvPath)
 	if err != nil {
 		return err
@@ -212,29 +213,11 @@ func (r *Runtime) InventoryImport(csvPath string) error {
 		}
 		return err
 	}
-	if err := inventory.WriteLinuxGroupedInventory(outPath, targets); err != nil {
+	if err := inventory.WriteV1Inventory(outPath, targets); err != nil {
 		return err
 	}
 	successLine(r.Out, fmt.Sprintf("Created %s with %d target(s).", outPath, len(targets)))
 	nextLine(r.Out, "./matilda-prep inventory validate")
-	return nil
-}
-
-func (r *Runtime) InventoryMigrate() error {
-	heading(r.Out, "INVENTORY MIGRATE", "current inventory.yml to normalized inventory.v1.yml")
-	input := filepath.Join(r.Root, "inventory.yml")
-	output := filepath.Join(r.Root, "inventory.v1.yml")
-	if err := safety.PrepareDestination(r.In, r.Out, output); err != nil {
-		if errors.Is(err, safety.ErrSkip) {
-			successLine(r.Out, "Kept existing inventory.v1.yml.")
-			return nil
-		}
-		return err
-	}
-	if err := inventory.MigrateLinuxGroupedToV1(input, output); err != nil {
-		return err
-	}
-	successLine(r.Out, "Created inventory.v1.yml.")
 	return nil
 }
 
@@ -452,9 +435,6 @@ func (r *Runtime) prepareLinuxRunnerInventory() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if plan.Format == "linux-groups" {
-		return "", nil
-	}
 	generatedDir := filepath.Join(r.Root, ".matilda", "runner")
 	if err := os.MkdirAll(generatedDir, 0700); err != nil {
 		return "", err
@@ -554,8 +534,12 @@ func (r *Runtime) connectionKeys() []string {
 }
 
 func (r *Runtime) createEnvGuided() error {
+	return r.createEnvGuidedWithReader(bufio.NewReader(r.In))
+}
+
+func (r *Runtime) createEnvGuidedWithReader(reader *bufio.Reader) error {
 	dest := filepath.Join(r.Root, ".env")
-	if err := safety.PrepareDestination(r.In, r.Out, dest); err != nil {
+	if err := safety.PrepareDestination(reader, r.Out, dest); err != nil {
 		if errors.Is(err, safety.ErrSkip) {
 			successLine(r.Out, "Kept existing .env.")
 			return nil
@@ -564,7 +548,6 @@ func (r *Runtime) createEnvGuided() error {
 	}
 
 	values := map[string]string{}
-	reader := bufio.NewReader(r.In)
 	for _, key := range config.RequiredKeys {
 		values[key] = promptWithReader(reader, r.Out, config.LabelFor(key), config.DefaultFor(key, values))
 	}
@@ -582,8 +565,12 @@ func (r *Runtime) createEnvGuided() error {
 }
 
 func (r *Runtime) createInventoryGuided() error {
+	return r.createInventoryGuidedWithReader(bufio.NewReader(r.In))
+}
+
+func (r *Runtime) createInventoryGuidedWithReader(reader *bufio.Reader) error {
 	dest := filepath.Join(r.Root, "inventory.yml")
-	if err := safety.PrepareDestination(r.In, r.Out, dest); err != nil {
+	if err := safety.PrepareDestination(reader, r.Out, dest); err != nil {
 		if errors.Is(err, safety.ErrSkip) {
 			successLine(r.Out, "Kept existing inventory.yml.")
 			return nil
@@ -591,7 +578,6 @@ func (r *Runtime) createInventoryGuided() error {
 		return err
 	}
 
-	reader := bufio.NewReader(r.In)
 	countRaw := promptWithReader(reader, r.Out, "How many Linux targets do you want to add?", "")
 	var count int
 	if _, err := fmt.Sscanf(countRaw, "%d", &count); err != nil || count < 1 {
@@ -617,16 +603,22 @@ func (r *Runtime) createInventoryGuided() error {
 			AccessPath:      access,
 			AnsibleHost:     ansibleHost,
 			DiscoveryIP:     discoveryIP,
+			PublicIP:        publicIPForAccess(access, ansibleHost),
 			PrivateIP:       privateIP,
 			PrivilegeMethod: "sudo",
+			ConfigureMode:   "remote",
 		})
 	}
 
-	return inventory.WriteLinuxGroupedInventory(dest, targets)
+	return inventory.WriteV1Inventory(dest, targets)
 }
 
 func copyWithSafety(r *Runtime, source string, dest string) error {
-	if err := safety.PrepareDestination(r.In, r.Out, dest); err != nil {
+	return copyWithSafetyWithReader(r, r.In, source, dest)
+}
+
+func copyWithSafetyWithReader(r *Runtime, reader io.Reader, source string, dest string) error {
+	if err := safety.PrepareDestination(reader, r.Out, dest); err != nil {
 		if errors.Is(err, safety.ErrSkip) {
 			successLine(r.Out, fmt.Sprintf("Kept existing %s.", filepath.Base(dest)))
 			return nil
@@ -642,6 +634,13 @@ func copyWithSafety(r *Runtime, source string, dest string) error {
 	}
 	successLine(r.Out, fmt.Sprintf("Created %s.", dest))
 	return nil
+}
+
+func publicIPForAccess(access string, ansibleHost string) string {
+	if access == "direct" {
+		return ansibleHost
+	}
+	return ""
 }
 
 func writeArtifact(path string, content []byte, mode os.FileMode) error {
