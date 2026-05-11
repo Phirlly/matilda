@@ -97,7 +97,7 @@ jobs:
           ANSIBLE_CONFIG: ansible/ansible.cfg
           ANSIBLE_LOCAL_TEMP: /tmp/matilda-ansible-local
         run: |
-          ansible-playbook --syntax-check ansible/playbooks/linux/preflight.yml
-          ansible-playbook --syntax-check ansible/playbooks/linux/setup.yml
-          ansible-playbook --syntax-check ansible/playbooks/linux/validate.yml
-          ansible-playbook --syntax-check ansible/playbooks/linux/rollback.yml
+          ansible-playbook -i tests/fixtures/ansible-runner-inventory.yml --syntax-check ansible/playbooks/linux/preflight.yml
+          ansible-playbook -i tests/fixtures/ansible-runner-inventory.yml --syntax-check ansible/playbooks/linux/setup.yml
+          ansible-playbook -i tests/fixtures/ansible-runner-inventory.yml --syntax-check ansible/playbooks/linux/validate.yml
+          ansible-playbook -i tests/fixtures/ansible-runner-inventory.yml --syntax-check ansible/playbooks/linux/rollback.yml
