@@ -330,14 +330,17 @@ func nextStep(s Snapshot) string {
 		}
 		return "Fix inventory.yml, then run inventory validate."
 	}
-	if s.ReportError != "" {
-		return "Run validate to create readiness reports."
-	}
 	if s.ReportSummary.NotReady > 0 {
 		return "Review remediation, rerun setup or platform fixes, then validate again."
 	}
 	if s.ReportSummary.Ready > 0 && s.ReportSummary.Ready == s.ReportSummary.Total {
 		return "Use validated discovery IPs in Matilda Network Discovery."
+	}
+	if reportMissing(s.ReportError) {
+		return "Run preflight before setup."
+	}
+	if s.ReportError != "" {
+		return "Run validate again to refresh readiness reports."
 	}
 	return "Run preflight before setup."
 }
@@ -345,6 +348,11 @@ func nextStep(s Snapshot) string {
 func inventoryMissing(errText string) bool {
 	errText = strings.ToLower(errText)
 	return strings.Contains(errText, "no such file") || strings.Contains(errText, "missing:")
+}
+
+func reportMissing(errText string) bool {
+	errText = strings.ToLower(strings.TrimSpace(errText))
+	return errText == "" || strings.Contains(errText, "validation summary not found")
 }
 
 func fileStatus(name string, path string) FileStatus {
