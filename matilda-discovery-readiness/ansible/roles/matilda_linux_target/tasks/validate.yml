@@ -175,8 +175,12 @@
         validation_failure_code: >-
           {%- set detail = validation_failure_detail | lower -%}
           {%- set task = ansible_failed_task.name | default('') | lower -%}
-          {%- if 'a password is required' in detail -%}
+          {%- if 'a password is required' in detail or 'missing sudo password' in detail -%}
           SUDO_PASSWORD_REQUIRED
+          {%- elif 'host key verification failed' in detail -%}
+          SSH_HOST_KEY_FAILED
+          {%- elif 'identity file' in detail and ('not accessible' in detail or 'no such file' in detail) -%}
+          SSH_IDENTITY_FILE_MISSING
           {%- elif 'permission denied' in detail and 'publickey' in detail -%}
           SSH_PUBLICKEY_DENIED
           {%- elif 'this account is currently not available' in detail -%}
