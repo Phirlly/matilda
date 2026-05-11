@@ -1,16 +1,25 @@
-all:
-  children:
-    public_targets:
-      hosts:
-        example-public-target:
-          ansible_host: <target-public-ip>
-          public_ip: <target-public-ip>
-          private_ip: <target-private-ip>
-          discovery_ip: <target-private-or-public-ip-used-by-probe>
+version: 1
 
-    private_targets:
-      hosts:
-        example-private-target:
-          ansible_host: <target-private-ip>
-          private_ip: <target-private-ip>
-          discovery_ip: <target-private-ip>
+targets:
+  example-direct-linux:
+    platform: linux
+    os_family: oracle_linux
+    cloud_provider: oci
+    access_path: direct
+    ansible_host: <target-public-ip>
+    discovery_ip: <target-private-or-public-ip-used-by-probe>
+    public_ip: <target-public-ip>
+    private_ip: <target-private-ip>
+    privilege_method: sudo
+    configure_mode: remote
+
+  example-probe-linux:
+    platform: linux
+    os_family: oracle_linux
+    cloud_provider: oci
+    access_path: via_probe
+    ansible_host: <target-private-ip>
+    discovery_ip: <target-private-ip>
+    private_ip: <target-private-ip>
+    privilege_method: sudo
+    configure_mode: remote

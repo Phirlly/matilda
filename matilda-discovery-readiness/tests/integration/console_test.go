@@ -10,7 +10,7 @@ import (
 )
 
 func TestConsoleStatusAndActions(t *testing.T) {
-	root := withTempProject(t, validLinuxGroupedInventory(), validationSummary())
+	root := withTempProject(t, validV1Inventory(), validationSummary())
 	writeFile(t, filepath.Join(root, "reports", "validated-discovery-ips.txt"), "10.0.0.10\n")
 
 	var out bytes.Buffer
@@ -32,7 +32,7 @@ func TestConsoleStatusAndActions(t *testing.T) {
 }
 
 func TestDefaultCommandOpensConsole(t *testing.T) {
-	withTempProject(t, validLinuxGroupedInventory(), validationSummary())
+	withTempProject(t, validV1Inventory(), validationSummary())
 
 	var out bytes.Buffer
 	err := cli.Execute(nil, strings.NewReader("q\n"), &out, &bytes.Buffer{})
@@ -47,7 +47,7 @@ func TestDefaultCommandOpensConsole(t *testing.T) {
 }
 
 func TestStatusPrintsSummaryAndExits(t *testing.T) {
-	withTempProject(t, validLinuxGroupedInventory(), validationSummary())
+	withTempProject(t, validV1Inventory(), validationSummary())
 
 	var out bytes.Buffer
 	err := cli.Execute([]string{"status"}, strings.NewReader(""), &out, &bytes.Buffer{})
@@ -71,7 +71,7 @@ func TestStatusShowsNormalizedRemediation(t *testing.T) {
 		"app01,10.0.0.10,ifconfig,NO,OK,OK,FAIL,NO,ssh: connect to host 10.0.0.10 port 22: Connection refused,VALIDATION_FAILED",
 		"",
 	}, "\n")
-	withTempProject(t, validLinuxGroupedInventory(), summary)
+	withTempProject(t, validV1Inventory(), summary)
 
 	var out bytes.Buffer
 	err := cli.Execute([]string{"status"}, strings.NewReader(""), &out, &bytes.Buffer{})
@@ -86,7 +86,7 @@ func TestStatusShowsNormalizedRemediation(t *testing.T) {
 }
 
 func TestStatusUsesInventoryCountBeforeReportsExist(t *testing.T) {
-	withTempProject(t, validLinuxGroupedInventory(), "")
+	withTempProject(t, validV1Inventory(), "")
 
 	var out bytes.Buffer
 	err := cli.Execute([]string{"status"}, strings.NewReader(""), &out, &bytes.Buffer{})
@@ -108,7 +108,7 @@ func TestStatusUsesInventoryCountBeforeReportsExist(t *testing.T) {
 }
 
 func TestStartAliasOpensConsole(t *testing.T) {
-	withTempProject(t, validLinuxGroupedInventory(), validationSummary())
+	withTempProject(t, validV1Inventory(), validationSummary())
 
 	var out bytes.Buffer
 	err := cli.Execute([]string{"start"}, strings.NewReader("q\n"), &out, &bytes.Buffer{})

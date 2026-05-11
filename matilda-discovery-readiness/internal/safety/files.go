@@ -22,7 +22,10 @@ func PrepareDestination(in io.Reader, out io.Writer, dest string) error {
 		return err
 	}
 
-	reader := bufio.NewReader(in)
+	reader, ok := in.(*bufio.Reader)
+	if !ok {
+		reader = bufio.NewReader(in)
+	}
 	renderer := ui.New(out)
 	renderer.Header("File Exists", dest)
 	renderer.Section("Choose Action")

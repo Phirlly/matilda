@@ -40,7 +40,7 @@ func TestConsoleModelMovesSelectionWithKeyboard(t *testing.T) {
 
 func TestConsoleResultViewScrollAndBackKeys(t *testing.T) {
 	root := t.TempDir()
-	writeUnitFile(t, filepath.Join(root, "inventory.yml"), unitLinuxGroupedInventory())
+	writeUnitFile(t, filepath.Join(root, "inventory.yml"), unitV1Inventory())
 	writeUnitFile(t, filepath.Join(root, "reports", "validation-summary.txt"), unitValidationSummary())
 	writeUnitFile(t, filepath.Join(root, "reports", "validated-discovery-ips.txt"), manyValidatedIPs(40))
 	model := modelForRoot(root)
@@ -114,7 +114,7 @@ func TestConsoleConfirmRunsMutatingAction(t *testing.T) {
 
 func TestConsoleReadOnlyActionRunsWithoutConfirmation(t *testing.T) {
 	root := t.TempDir()
-	writeUnitFile(t, filepath.Join(root, "inventory.yml"), unitLinuxGroupedInventory())
+	writeUnitFile(t, filepath.Join(root, "inventory.yml"), unitV1Inventory())
 	writeUnitFile(t, filepath.Join(root, "reports", "validation-summary.txt"), unitValidationSummary())
 	writeUnitFile(t, filepath.Join(root, "reports", "validated-discovery-ips.txt"), "10.0.0.10\n")
 	model := modelForRoot(root)
@@ -147,7 +147,7 @@ func TestConsoleReadOnlyActionRunsWithoutConfirmation(t *testing.T) {
 
 func TestConsoleStreamsOutputBeforeActionFinishes(t *testing.T) {
 	root := t.TempDir()
-	writeUnitFile(t, filepath.Join(root, "inventory.yml"), unitLinuxGroupedInventory())
+	writeUnitFile(t, filepath.Join(root, "inventory.yml"), unitV1Inventory())
 	writeUnitFile(t, filepath.Join(root, "reports", "validation-summary.txt"), unitValidationSummary())
 	writeUnitFile(t, filepath.Join(root, "reports", "validated-discovery-ips.txt"), "10.0.0.10\n")
 	model := modelForRoot(root)
@@ -176,7 +176,7 @@ func TestConsoleStreamsOutputBeforeActionFinishes(t *testing.T) {
 
 func TestConsoleRunningActionCanRequestCancellation(t *testing.T) {
 	root := t.TempDir()
-	writeUnitFile(t, filepath.Join(root, "inventory.yml"), unitLinuxGroupedInventory())
+	writeUnitFile(t, filepath.Join(root, "inventory.yml"), unitV1Inventory())
 	writeUnitFile(t, filepath.Join(root, "reports", "validation-summary.txt"), unitValidationSummary())
 	writeUnitFile(t, filepath.Join(root, "reports", "validated-discovery-ips.txt"), "10.0.0.10\n")
 	model := modelForRoot(root)
@@ -222,7 +222,7 @@ func newConsoleModel(t *testing.T) console.Model {
 func newConsoleModelWithSummary(t *testing.T, summary string) console.Model {
 	t.Helper()
 	root := t.TempDir()
-	writeUnitFile(t, filepath.Join(root, "inventory.yml"), unitLinuxGroupedInventory())
+	writeUnitFile(t, filepath.Join(root, "inventory.yml"), unitV1Inventory())
 	writeUnitFile(t, filepath.Join(root, "reports", "validation-summary.txt"), summary)
 	return modelForRoot(root)
 }

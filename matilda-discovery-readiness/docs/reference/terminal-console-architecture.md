@@ -59,7 +59,6 @@ Supported user commands:
 ./matilda-prep doctor
 ./matilda-prep inventory validate
 ./matilda-prep inventory import <csv>
-./matilda-prep inventory migrate
 ./matilda-prep preflight
 ./matilda-prep setup
 ./matilda-prep validate
