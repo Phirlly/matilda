@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -38,6 +39,14 @@ type LinuxRunnerPlan struct {
 	Format         string
 	Targets        []Target
 	SkippedTargets []Target
+}
+
+type LinuxConnectionConfig struct {
+	TargetAdminUser           string
+	TargetAdminPrivateKeyFile string
+	ProbeHost                 string
+	ProbeUser                 string
+	ProbeAdminPrivateKeyFile  string
 }
 
 var csvRequiredColumns = []string{"hostname", "platform", "ansible_host", "discovery_ip", "access_path", "privilege_method"}
@@ -288,6 +297,10 @@ func WriteV1Inventory(path string, targets []Target) error {
 }
 
 func WriteLinuxGroupedInventory(path string, targets []Target) error {
+	return WriteLinuxGroupedInventoryWithConnection(path, targets, LinuxConnectionConfig{})
+}
+
+func WriteLinuxGroupedInventoryWithConnection(path string, targets []Target, conn LinuxConnectionConfig) error {
 	var publicTargets []Target
 	var privateTargets []Target
 	for _, target := range targets {
@@ -307,9 +320,9 @@ func WriteLinuxGroupedInventory(path string, targets []Target) error {
 	var b strings.Builder
 	b.WriteString("all:\n")
 	b.WriteString("  children:\n")
-	writeLinuxGroup(&b, "public_targets", publicTargets)
+	writeLinuxGroup(&b, "public_targets", publicTargets, conn, false)
 	b.WriteString("\n")
-	writeLinuxGroup(&b, "private_targets", privateTargets)
+	writeLinuxGroup(&b, "private_targets", privateTargets, conn, true)
 	return os.WriteFile(path, []byte(b.String()), 0600)
 }
 
@@ -392,12 +405,13 @@ func normalizeLower(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
 }
 
-func writeLinuxGroup(b *strings.Builder, group string, targets []Target) {
+func writeLinuxGroup(b *strings.Builder, group string, targets []Target, conn LinuxConnectionConfig, private bool) {
 	fmt.Fprintf(b, "    %s:\n", group)
 	if len(targets) == 0 {
 		b.WriteString("      hosts: {}\n")
 		return
 	}
+	writeLinuxGroupVars(b, conn, private)
 	b.WriteString("      hosts:\n")
 	for _, target := range targets {
 		fmt.Fprintf(b, "        %s:\n", target.Hostname)
@@ -412,6 +426,60 @@ func writeLinuxGroup(b *strings.Builder, group string, targets []Target) {
 		}
 		fmt.Fprintf(b, "          discovery_ip: %s\n", target.DiscoveryIP)
 	}
+}
+
+func writeLinuxGroupVars(b *strings.Builder, conn LinuxConnectionConfig, private bool) {
+	var vars []string
+	if strings.TrimSpace(conn.TargetAdminUser) != "" {
+		vars = append(vars, fmt.Sprintf("        ansible_user: %s", yamlQuote(conn.TargetAdminUser)))
+	}
+	if strings.TrimSpace(conn.TargetAdminPrivateKeyFile) != "" {
+		vars = append(vars, fmt.Sprintf("        ansible_ssh_private_key_file: %s", yamlQuote(conn.TargetAdminPrivateKeyFile)))
+	}
+	if private {
+		if proxyCommand := probeProxyCommand(conn); proxyCommand != "" {
+			vars = append(vars, fmt.Sprintf("        ansible_ssh_common_args: %s", yamlQuote(proxyCommand)))
+		}
+	}
+	if len(vars) == 0 {
+		return
+	}
+	b.WriteString("      vars:\n")
+	for _, line := range vars {
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+}
+
+func probeProxyCommand(conn LinuxConnectionConfig) string {
+	if strings.TrimSpace(conn.ProbeHost) == "" || strings.TrimSpace(conn.ProbeUser) == "" {
+		return ""
+	}
+	var command []string
+	command = append(command, "ssh")
+	if strings.TrimSpace(conn.ProbeAdminPrivateKeyFile) != "" {
+		command = append(command, "-i", shellQuote(conn.ProbeAdminPrivateKeyFile))
+	}
+	command = append(command,
+		"-o", "StrictHostKeyChecking=no",
+		"-o", "UserKnownHostsFile=/dev/null",
+		"-o", "LogLevel=ERROR",
+		"-W", "%h:%p",
+		shellQuote(strings.TrimSpace(conn.ProbeUser)+"@"+strings.TrimSpace(conn.ProbeHost)),
+	)
+	return "-o ProxyCommand=" + strconv.Quote(strings.Join(command, " "))
+}
+
+func yamlQuote(value string) string {
+	return strconv.Quote(strings.TrimSpace(value))
+}
+
+func shellQuote(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "''"
+	}
+	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }
 
 func validateTargets(targets []Target, linuxGrouped bool) ([]runner.Result, error) {

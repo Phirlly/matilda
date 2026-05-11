@@ -193,6 +193,57 @@ targets:
 	}
 }
 
+func TestWriteLinuxGroupedInventoryAddsSSHConnectionVars(t *testing.T) {
+	outPath := filepath.Join(t.TempDir(), "inventory.linux.yml")
+	targets := []inventory.Target{
+		{
+			Hostname:    "app01",
+			AccessPath:  "direct",
+			AnsibleHost: "203.0.113.10",
+			DiscoveryIP: "10.0.0.10",
+			PublicIP:    "203.0.113.10",
+			PrivateIP:   "10.0.0.10",
+		},
+		{
+			Hostname:    "app02",
+			AccessPath:  "via_probe",
+			AnsibleHost: "10.0.1.20",
+			DiscoveryIP: "10.0.1.20",
+			PrivateIP:   "10.0.1.20",
+		},
+	}
+	conn := inventory.LinuxConnectionConfig{
+		TargetAdminUser:           "opc",
+		TargetAdminPrivateKeyFile: "/Users/lly/.ssh/SandboxKey",
+		ProbeUser:                 "opc",
+		ProbeHost:                 "150.136.237.22",
+		ProbeAdminPrivateKeyFile:  "/Users/lly/.ssh/Probe Key.pem",
+	}
+
+	if err := inventory.WriteLinuxGroupedInventoryWithConnection(outPath, targets, conn); err != nil {
+		t.Fatalf("WriteLinuxGroupedInventoryWithConnection failed: %v", err)
+	}
+	got, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	for _, want := range []string{
+		`ansible_user: "opc"`,
+		`ansible_ssh_private_key_file: "/Users/lly/.ssh/SandboxKey"`,
+		`ansible_ssh_common_args:`,
+		`ProxyCommand=`,
+		`150.136.237.22`,
+		`/Users/lly/.ssh/Probe Key.pem`,
+		`app01:`,
+		`app02:`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("runner inventory missing %q:\n%s", want, text)
+		}
+	}
+}
+
 func TestPlanLinuxRunnerRejectsUnsupportedV1Privilege(t *testing.T) {
 	path := writeTempFile(t, "inventory.yml", `version: 1
 

@@ -1,0 +1,4 @@
+---
+matilda_service_user: matilda-svc
+matilda_service_home: /home/matilda-svc
+matilda_sudoers_file: /etc/sudoers.d/matilda-discovery

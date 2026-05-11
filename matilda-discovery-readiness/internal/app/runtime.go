@@ -249,11 +249,11 @@ func (r *Runtime) Preflight() error {
 	if err := r.validateInventory(false); err != nil {
 		return err
 	}
-	inventoryPath, err := r.prepareLinuxRunnerInventory()
+	values, extra, err := r.collectRuntimeValuesAndExtra(config.RequiredKeys)
 	if err != nil {
 		return err
 	}
-	extra, err := r.collectRuntimeExtraVars()
+	inventoryPath, err := r.prepareLinuxRunnerInventory(values)
 	if err != nil {
 		return err
 	}
@@ -269,11 +269,11 @@ func (r *Runtime) Setup() error {
 	if err := r.validateInventory(false); err != nil {
 		return err
 	}
-	inventoryPath, err := r.prepareLinuxRunnerInventory()
+	values, extra, err := r.collectRuntimeValuesAndExtra(config.RequiredKeys)
 	if err != nil {
 		return err
 	}
-	extra, err := r.collectRuntimeExtraVars()
+	inventoryPath, err := r.prepareLinuxRunnerInventory(values)
 	if err != nil {
 		return err
 	}
@@ -299,11 +299,11 @@ func (r *Runtime) Validate() error {
 	if err := r.validateInventory(false); err != nil {
 		return err
 	}
-	inventoryPath, err := r.prepareLinuxRunnerInventory()
+	values, extra, err := r.collectRuntimeValuesAndExtra(config.RequiredKeys)
 	if err != nil {
 		return err
 	}
-	extra, err := r.collectRuntimeExtraVars()
+	inventoryPath, err := r.prepareLinuxRunnerInventory(values)
 	if err != nil {
 		return err
 	}
@@ -406,16 +406,15 @@ func (r *Runtime) Rollback(args []string) error {
 	if err := r.validateInventory(false); err != nil {
 		return err
 	}
-	inventoryPath, err := r.prepareLinuxRunnerInventory()
-	if err != nil {
-		return err
-	}
-
 	keys := r.connectionKeys()
 	if mode == "remove_key" {
 		keys = append(keys, "MATILDA_PUBLIC_KEY_FILE")
 	}
-	extra, err := r.collectRuntimeExtraVarsFor(keys)
+	values, extra, err := r.collectRuntimeValuesAndExtra(keys)
+	if err != nil {
+		return err
+	}
+	inventoryPath, err := r.prepareLinuxRunnerInventory(values)
 	if err != nil {
 		return err
 	}
@@ -453,7 +452,7 @@ func (r *Runtime) runAnsible(playbook string, inventoryPath string, extra []stri
 	return runner.RunStreamContext(r.Context, r.Root, r.Out, r.Err, "ansible-playbook", args...)
 }
 
-func (r *Runtime) prepareLinuxRunnerInventory() (string, error) {
+func (r *Runtime) prepareLinuxRunnerInventory(values map[string]string) (string, error) {
 	normalizedPath, err := r.ensureGeneratedInventory()
 	if err != nil {
 		return "", err
@@ -467,7 +466,14 @@ func (r *Runtime) prepareLinuxRunnerInventory() (string, error) {
 		return "", err
 	}
 	generatedPath := filepath.Join(generatedDir, "inventory.linux.yml")
-	if err := inventory.WriteLinuxGroupedInventory(generatedPath, plan.Targets); err != nil {
+	conn := inventory.LinuxConnectionConfig{
+		TargetAdminUser:           values["TARGET_ADMIN_USER"],
+		TargetAdminPrivateKeyFile: values["TARGET_ADMIN_PRIVATE_KEY_FILE"],
+		ProbeHost:                 values["MATILDA_PROBE_ANSIBLE_HOST"],
+		ProbeUser:                 values["MATILDA_PROBE_USER"],
+		ProbeAdminPrivateKeyFile:  values["MATILDA_PROBE_ADMIN_PRIVATE_KEY_FILE"],
+	}
+	if err := inventory.WriteLinuxGroupedInventoryWithConnection(generatedPath, plan.Targets, conn); err != nil {
 		return "", err
 	}
 	section(r.Out, "Inventory Plan")
@@ -513,6 +519,19 @@ func (r *Runtime) collectRuntimeExtraVars() ([]string, error) {
 }
 
 func (r *Runtime) collectRuntimeExtraVarsFor(keys []string) ([]string, error) {
+	_, extra, err := r.collectRuntimeValuesAndExtra(keys)
+	return extra, err
+}
+
+func (r *Runtime) collectRuntimeValuesAndExtra(keys []string) (map[string]string, []string, error) {
+	values, err := r.collectRuntimeValuesFor(keys)
+	if err != nil {
+		return nil, nil, err
+	}
+	return values, config.ExtraVarsFor(keys, values), nil
+}
+
+func (r *Runtime) collectRuntimeValuesFor(keys []string) (map[string]string, error) {
 	envPath := filepath.Join(r.Root, ".env")
 	values, _ := config.LoadEnv(envPath)
 	reader := bufio.NewReader(r.In)
@@ -548,7 +567,7 @@ func (r *Runtime) collectRuntimeExtraVarsFor(keys []string) ([]string, error) {
 		}
 	}
 
-	return config.ExtraVarsFor(keys, values), nil
+	return values, nil
 }
 
 func (r *Runtime) connectionKeys() []string {

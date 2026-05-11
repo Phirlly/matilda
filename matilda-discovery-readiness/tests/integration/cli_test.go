@@ -383,6 +383,7 @@ func TestCLIReportWritesExpectedFormats(t *testing.T) {
 
 func TestCLILiveWorkflowPlansCSVInventoryForLinuxRunner(t *testing.T) {
 	root := withTempProject(t, validTargetsCSV(), "")
+	writeRemoteEnvFixture(t, root)
 
 	var out bytes.Buffer
 	err := cli.Execute([]string{"preflight"}, strings.NewReader(""), &out, &bytes.Buffer{})
@@ -396,6 +397,11 @@ func TestCLILiveWorkflowPlansCSVInventoryForLinuxRunner(t *testing.T) {
 	}
 	if !strings.Contains(string(content), "public_targets:") || !strings.Contains(string(content), "app01:") {
 		t.Fatalf("generated runner inventory missing Linux target:\n%s", string(content))
+	}
+	for _, want := range []string{`ansible_user: "opc"`, `ansible_ssh_private_key_file:`} {
+		if !strings.Contains(string(content), want) {
+			t.Fatalf("generated runner inventory missing connection var %q:\n%s", want, string(content))
+		}
 	}
 }
 
@@ -498,6 +504,26 @@ func writeFile(t *testing.T, path string, content string) {
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func writeRemoteEnvFixture(t *testing.T, root string) {
+	t.Helper()
+	targetKey := filepath.Join(root, "keys", "target.key")
+	probeKey := filepath.Join(root, "keys", "probe.key")
+	publicKey := filepath.Join(root, "keys", "matilda.pub")
+	writeFile(t, targetKey, "target key\n")
+	writeFile(t, probeKey, "probe key\n")
+	writeFile(t, publicKey, "public key\n")
+	writeFile(t, filepath.Join(root, ".env"), strings.Join([]string{
+		"TARGET_ADMIN_USER=opc",
+		"TARGET_ADMIN_PRIVATE_KEY_FILE=" + targetKey,
+		"MATILDA_PROBE_ANSIBLE_HOST=192.0.2.50",
+		"MATILDA_PROBE_USER=opc",
+		"MATILDA_PROBE_ADMIN_PRIVATE_KEY_FILE=" + probeKey,
+		"MATILDA_PUBLIC_KEY_FILE=" + publicKey,
+		"MATILDA_PROBE_PRIVATE_KEY_ON_PROBE=/home/opc/.ssh/MatildaProbeKey.pem",
+		"",
+	}, "\n"))
 }
 
 func rootFromCwd(t *testing.T) string {
