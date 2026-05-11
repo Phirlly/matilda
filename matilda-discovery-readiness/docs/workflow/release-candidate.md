@@ -86,17 +86,10 @@ MatildaProbeVM:
 
 ## Branch And Tag Workflow
 
-Release work follows the protected-main workflow in [Branching Workflow](BRANCHING.md).
-
-1. Start from current `dev`.
-2. Create a short-lived release or packaging branch.
-3. Read related implementation, docs, packaging, and validation files before editing.
-4. Run local validation and review the diff before opening a pull request.
-5. Merge the release work into `dev` by pull request only after review and CI pass.
-6. Promote `dev` into `main` by a separate pull request only after release validation and CI pass.
-7. Create release tags from `main`.
-8. Do not sync `main` back into `dev` after release unless there is a real file difference, conflict, or branch-protection blocker.
-9. After a release is published, prefer a new tag over moving the published tag unless the tag move is explicitly approved. For RCs, use the next RC tag.
+Release work follows the protected-main workflow in [Branching Workflow](BRANCHING.md)
+and the implementation process in [Development Workflow](DEVELOPMENT.md).
+For RCs, prefer the next RC tag over moving a published tag unless the tag move
+is explicitly approved.
 
 ## Release Validation
 
