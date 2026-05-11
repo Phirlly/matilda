@@ -67,11 +67,11 @@ The import command writes a `version: 1` `inventory.yml`.
 
 Non-Linux targets can be stored in `inventory.yml` for planning. Linux remote actions only run against Linux targets and skip other platforms with a clear message.
 
-Windows and UNIX readiness are guidance-only in this release candidate:
+Windows and UNIX readiness are guidance-only in this release:
 
 ```bash
 ./matilda-prep generate windows
 ./matilda-prep generate unix
 ```
 
-Cloud and Kubernetes inventory entries are scaffold-only in this release candidate.
+Cloud and Kubernetes inventory entries are scaffold-only in this release.
