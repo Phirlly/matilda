@@ -5,6 +5,26 @@
   become: true
 
   tasks:
+    - name: Load Linux readiness defaults for rollback fallbacks
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../../roles/matilda_linux_target/defaults/main.yml"
+        name: matilda_linux_role_defaults
+
+    - name: Default Matilda service user when unset
+      ansible.builtin.set_fact:
+        matilda_service_user: "{{ matilda_linux_role_defaults.matilda_service_user }}"
+      when: matilda_service_user is not defined
+
+    - name: Default Matilda service home when unset
+      ansible.builtin.set_fact:
+        matilda_service_home: "{{ matilda_linux_role_defaults.matilda_service_home }}"
+      when: matilda_service_home is not defined
+
+    - name: Default Matilda sudoers file when unset
+      ansible.builtin.set_fact:
+        matilda_sudoers_file: "{{ matilda_linux_role_defaults.matilda_sudoers_file }}"
+      when: matilda_sudoers_file is not defined
+
     - name: Require an explicit rollback mode
       ansible.builtin.assert:
         that:
