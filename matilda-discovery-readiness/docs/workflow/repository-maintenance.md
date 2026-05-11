@@ -30,7 +30,8 @@ This repository is maintained as the Matilda Discovery Readiness Toolkit.
 These files are local runtime material and must not be committed:
 
 - `.env`
-- `inventory.yml`
+- `targets.csv`
+- legacy root `inventory.yml` if present
 - `.matilda/`
 - `.bin/`
 - `.gocache/`

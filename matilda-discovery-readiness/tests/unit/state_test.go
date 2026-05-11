@@ -19,7 +19,7 @@ func TestStateStoreWritesActionAndReadiness(t *testing.T) {
 
 	doc, err := store.Update(state.Update{
 		Workspace: root,
-		Inventory: "inventory.yml",
+		Inventory: "targets.csv",
 		Result:    result,
 		Readiness: state.ReadinessState{Total: 2, Ready: 1, NotReady: 1},
 		Reports: state.ReportState{

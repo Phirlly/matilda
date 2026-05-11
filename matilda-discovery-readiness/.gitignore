@@ -1,5 +1,6 @@
 **/.DS_Store
 .env
+targets.csv
 docs/matilda-docs-cache/
 inventory.v1.yml
 inventory.yml

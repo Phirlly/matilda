@@ -1,6 +1,8 @@
 # Inventory
 
-Matilda Discovery Readiness uses `inventory.yml` with `version: 1`.
+Matilda Discovery Readiness uses `targets.csv` as the operator inventory file.
+Do not hand-edit `inventory.yml`; the toolkit generates normalized runtime
+inventory under `.matilda/` when it needs YAML for internal planning or Ansible.
 
 Create a starter file with:
 
@@ -18,30 +20,19 @@ Validate it before remote runs:
 
 Use one target entry per system:
 
-```yaml
-version: 1
-
-targets:
-  app01:
-    platform: linux
-    os_family: oracle_linux
-    cloud_provider: oci
-    access_path: direct
-    ansible_host: 203.0.113.10
-    discovery_ip: 10.0.0.10
-    public_ip: 203.0.113.10
-    private_ip: 10.0.0.10
-    privilege_method: sudo
-    configure_mode: remote
+```csv
+hostname,platform,os_family,ansible_host,discovery_ip,access_path,privilege_method,private_ip,public_ip,cloud_provider
+app01,linux,oracle_linux,203.0.113.10,10.0.0.10,direct,sudo,10.0.0.10,203.0.113.10,oci
 ```
 
 Required Linux fields:
 
-- `platform: linux`
-- `access_path: direct` or `via_probe`
+- `hostname`: local target name used in reports.
+- `platform`: `linux`.
 - `ansible_host`: address Ansible uses to configure the target.
 - `discovery_ip`: address MatildaProbeVM uses for discovery and validation.
-- `privilege_method: sudo`
+- `access_path`: `direct` or `via_probe`.
+- `privilege_method`: `sudo`.
 
 Optional Linux fields:
 
@@ -55,17 +46,19 @@ Use `direct` when the operator machine can SSH to the target. Use `via_probe` wh
 
 ## CSV Import
 
-CSV import is available when you have a spreadsheet or exported target list:
+Create or replace local `targets.csv` from a spreadsheet export:
 
 ```bash
 ./matilda-prep inventory import examples/targets.example.csv
 ```
 
-The import command writes a `version: 1` `inventory.yml`.
+The import command validates the CSV, writes local `targets.csv`, and generates
+normalized runtime inventory under `.matilda/generated/`.
 
 ## Platform Planning
 
-Non-Linux targets can be stored in `inventory.yml` for planning. Linux remote actions only run against Linux targets and skip other platforms with a clear message.
+This release automates Linux target readiness only. Keep `targets.csv` focused
+on Linux targets for the remote workflow.
 
 Windows and UNIX readiness are guidance-only in this release:
 
@@ -74,4 +67,5 @@ Windows and UNIX readiness are guidance-only in this release:
 ./matilda-prep generate unix
 ```
 
-Cloud and Kubernetes inventory entries are scaffold-only in this release.
+Cloud and Kubernetes readiness are scaffold-only in this release and are not
+part of the Linux target CSV workflow.

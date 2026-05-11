@@ -37,6 +37,9 @@ Recommended Linux workflow:
 ./matilda-prep report
 ```
 
+After `init`, edit `targets.csv` or import a spreadsheet export with
+`./matilda-prep inventory import <targets.csv>` before running remote actions.
+
 For a fresh clone or release package, run the operator smoke test in [operator-smoke-test.md](operator-smoke-test.md) before changing targets.
 
 Use `./matilda-prep status` when you want a non-interactive status summary without entering the interactive console.

@@ -279,6 +279,49 @@ func TestReadCSVAndWriteV1Inventory(t *testing.T) {
 	}
 }
 
+func TestReadCSVRejectsMissingRequiredColumnsTogether(t *testing.T) {
+	path := writeTempFile(t, "targets.csv", "hostname,discovery_ip\napp01,10.0.0.5\n")
+
+	_, err := inventory.ReadCSV(path)
+	if err == nil {
+		t.Fatal("expected missing required columns error")
+	}
+	for _, want := range []string{"CSV missing required columns", "platform", "ansible_host", "access_path", "privilege_method"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("missing required columns error missing %q: %v", want, err)
+		}
+	}
+}
+
+func TestReadCSVRejectsDuplicateHostnames(t *testing.T) {
+	path := writeTempFile(t, "targets.csv", strings.Join([]string{
+		"hostname,platform,ansible_host,discovery_ip,access_path,privilege_method",
+		"app01,linux,203.0.113.10,10.0.0.10,direct,sudo",
+		"app01,linux,203.0.113.11,10.0.0.11,direct,sudo",
+		"",
+	}, "\n"))
+
+	_, err := inventory.ReadCSV(path)
+	if err == nil || !strings.Contains(err.Error(), `duplicate hostname "app01"`) || !strings.Contains(err.Error(), "row 3") {
+		t.Fatalf("expected duplicate hostname with row number, got %v", err)
+	}
+}
+
+func TestReadCSVIgnoresBlankRowsAndRejectsPartialRows(t *testing.T) {
+	path := writeTempFile(t, "targets.csv", strings.Join([]string{
+		"hostname,platform,ansible_host,discovery_ip,access_path,privilege_method",
+		"app01,linux,203.0.113.10,10.0.0.10,direct,sudo",
+		",,,,,",
+		"app02,linux,,10.0.0.20,direct,sudo",
+		"",
+	}, "\n"))
+
+	_, err := inventory.ReadCSV(path)
+	if err == nil || !strings.Contains(err.Error(), "row 4") || !strings.Contains(err.Error(), "ansible_host") {
+		t.Fatalf("expected partial row error with row number, got %v", err)
+	}
+}
+
 func TestReadCSVRejectsNonLinuxForCurrentImporter(t *testing.T) {
 	path := writeTempFile(t, "targets.csv", "hostname,platform,ansible_host,discovery_ip,access_path,privilege_method\nwin01,windows,10.0.0.5,10.0.0.5,via_probe,winrm\n")
 
