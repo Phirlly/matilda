@@ -133,6 +133,28 @@ func TestCLIInventoryValidateFailureShowsFixTargetsCSVNextStep(t *testing.T) {
 	}
 }
 
+func TestCLIInventoryValidateMissingTargetsCSVShowsInitNextStep(t *testing.T) {
+	withTempProject(t, "", "")
+
+	var out bytes.Buffer
+	err := cli.Execute([]string{"inventory", "validate"}, strings.NewReader(""), &out, &bytes.Buffer{})
+	if err == nil {
+		t.Fatalf("inventory validate should fail when targets.csv is missing:\n%s", out.String())
+	}
+	for _, want := range []string{
+		"Inventory Validate",
+		"FAIL  targets.csv",
+		"missing:",
+		"Run ./matilda-prep init to create targets.csv",
+		"copy examples/targets.example.csv",
+		"target values.",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("missing inventory output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
 func TestCLIInventoryImportWritesTargetsCSVAndGeneratedInventory(t *testing.T) {
 	root := withTempProject(t, "", "")
 	csvPath := filepath.Join(root, "import-source.csv")
@@ -171,11 +193,12 @@ func TestCLIInventoryImportWritesTargetsCSVAndGeneratedInventory(t *testing.T) {
 
 func TestCLIInventoryImportFailureShowsSourceCSVGuidance(t *testing.T) {
 	root := withTempProject(t, validTargetsCSV(), "")
-	csvPath := filepath.Join(root, "import-source.csv")
+	csvArg := "import-source.csv"
+	csvPath := filepath.Join(root, csvArg)
 	writeFile(t, csvPath, "hostname,platform,ansible_host,discovery_ip,access_path,privilege_method\napp02,linux,,10.0.0.20,direct,sudo\n")
 
 	var out bytes.Buffer
-	err := cli.Execute([]string{"inventory", "import", csvPath}, strings.NewReader(""), &out, &bytes.Buffer{})
+	err := cli.Execute([]string{"inventory", "import", csvArg}, strings.NewReader(""), &out, &bytes.Buffer{})
 	if err == nil {
 		t.Fatalf("inventory import should fail for invalid source CSV:\n%s", out.String())
 	}
@@ -183,7 +206,7 @@ func TestCLIInventoryImportFailureShowsSourceCSVGuidance(t *testing.T) {
 		"Inventory Import",
 		"FAIL  source CSV",
 		"row 2 missing required values: ansible_host",
-		"Fix the source CSV, then run ./matilda-prep inventory import CSV again.",
+		"Fix the source CSV, then run ./matilda-prep inventory import " + csvArg + " again.",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("inventory import failure output missing %q:\n%s", want, out.String())

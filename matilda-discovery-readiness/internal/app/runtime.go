@@ -192,7 +192,11 @@ func (r *Runtime) validateInventory(showHeading bool) error {
 	result, targets, err := inventory.ValidateCSVFile(r.targetsCSVPath())
 	printChecks(r.Out, result.Checks)
 	if err != nil {
-		nextLine(r.Out, "Fix targets.csv, then run ./matilda-prep inventory validate again.")
+		if errors.Is(err, os.ErrNotExist) {
+			nextLine(r.Out, "Run ./matilda-prep init to create targets.csv, or copy examples/targets.example.csv and edit target values.")
+		} else {
+			nextLine(r.Out, "Fix targets.csv, then run ./matilda-prep inventory validate again.")
+		}
 		return err
 	}
 	generatedPath, err := r.writeGeneratedInventory(targets)
@@ -210,7 +214,7 @@ func (r *Runtime) InventoryImport(csvPath string) error {
 	if err != nil {
 		section(r.Out, "Inventory")
 		printChecks(r.Out, []runner.Result{{Name: "source CSV", Status: runner.StatusFail, Detail: err.Error()}})
-		nextLine(r.Out, "Fix the source CSV, then run ./matilda-prep inventory import CSV again.")
+		nextLine(r.Out, "Fix the source CSV, then run ./matilda-prep inventory import "+csvPath+" again.")
 		return err
 	}
 	outPath := r.targetsCSVPath()
