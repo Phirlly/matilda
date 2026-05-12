@@ -35,6 +35,50 @@ func TestTerminalRendererUsesSharedSections(t *testing.T) {
 	}
 }
 
+func TestTerminalRendererIndentsWrappedNextLines(t *testing.T) {
+	var out bytes.Buffer
+	renderer := ui.Renderer{Out: &out, Style: ui.Style{Width: 64}}
+
+	renderer.Next("Open reports/readiness.html or use the validated discovery IPs when creating the Matilda discovery task.")
+
+	contentLines := 0
+	lines := strings.Split(out.String(), "\n")
+	for _, line := range lines {
+		if line == "" || line == "Next" {
+			continue
+		}
+		contentLines++
+		if !strings.HasPrefix(line, "  ") {
+			t.Fatalf("wrapped Next line should remain indented, got %q in:\n%s", line, out.String())
+		}
+	}
+	if contentLines < 2 {
+		t.Fatalf("test message should wrap to at least 2 content lines, got %d in:\n%s", contentLines, out.String())
+	}
+}
+
+func TestTerminalRendererIndentsWrappedErrorMessage(t *testing.T) {
+	var out bytes.Buffer
+	renderer := ui.Renderer{Out: &out, Style: ui.Style{Width: 64}}
+
+	renderer.Error("Action failed", "Open reports/readiness.html or use the validated discovery IPs when creating the Matilda discovery task.", "")
+
+	contentLines := 0
+	lines := strings.Split(out.String(), "\n")
+	for _, line := range lines {
+		if line == "" || line == "Action failed" {
+			continue
+		}
+		contentLines++
+		if !strings.HasPrefix(line, "  ") {
+			t.Fatalf("wrapped error line should remain indented, got %q in:\n%s", line, out.String())
+		}
+	}
+	if contentLines < 2 {
+		t.Fatalf("test message should wrap to at least 2 content lines, got %d in:\n%s", contentLines, out.String())
+	}
+}
+
 func TestTerminalPromptUsesDefault(t *testing.T) {
 	var out bytes.Buffer
 	reader := bufio.NewReader(strings.NewReader("\n"))

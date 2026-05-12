@@ -101,7 +101,7 @@ func (r Renderer) Cancelled(text string) {
 func (r Renderer) Next(text string) {
 	fmt.Fprintln(r.Out)
 	r.Section("Next")
-	fmt.Fprintf(r.Out, "  %s\n", Wrap(text, r.Style.Width-4))
+	fmt.Fprintln(r.Out, indentBlock(Wrap(text, r.Style.Width-4), "  "))
 }
 
 func (r Renderer) Warning(text string) {
@@ -112,7 +112,7 @@ func (r Renderer) Error(title string, message string, next string) {
 	fmt.Fprintln(r.Out)
 	fmt.Fprintln(r.Out, r.Style.Bad(title))
 	if message != "" {
-		fmt.Fprintf(r.Out, "  %s\n", Wrap(message, r.Style.Width-4))
+		fmt.Fprintln(r.Out, indentBlock(Wrap(message, r.Style.Width-4), "  "))
 	}
 	if next != "" {
 		r.Next(next)
@@ -204,6 +204,14 @@ func Wrap(text string, width int) string {
 	}
 	if remaining != "" {
 		lines = append(lines, remaining)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func indentBlock(text string, prefix string) string {
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		lines[i] = prefix + line
 	}
 	return strings.Join(lines, "\n")
 }

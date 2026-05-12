@@ -358,6 +358,20 @@ func TestReadCSVRejectsDuplicateHostnames(t *testing.T) {
 	}
 }
 
+func TestReadCSVRejectsDuplicateDiscoveryIPs(t *testing.T) {
+	path := writeTempFile(t, "targets.csv", strings.Join([]string{
+		"hostname,platform,ansible_host,discovery_ip,access_path,privilege_method",
+		"app01,linux,203.0.113.10,10.0.0.10,direct,sudo",
+		"app02,linux,203.0.113.11,10.0.0.10,via_probe,sudo",
+		"",
+	}, "\n"))
+
+	_, err := inventory.ReadCSV(path)
+	if err == nil || !strings.Contains(err.Error(), `duplicate discovery_ip "10.0.0.10"`) || !strings.Contains(err.Error(), "row 3") || !strings.Contains(err.Error(), "row 2") {
+		t.Fatalf("expected duplicate discovery_ip with current and first row numbers, got %v", err)
+	}
+}
+
 func TestReadCSVIgnoresBlankRowsAndRejectsPartialRows(t *testing.T) {
 	path := writeTempFile(t, "targets.csv", strings.Join([]string{
 		"hostname,platform,ansible_host,discovery_ip,access_path,privilege_method",
