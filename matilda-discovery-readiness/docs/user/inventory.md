@@ -16,6 +16,11 @@ Validate it before remote runs:
 ./matilda-prep inventory validate
 ```
 
+Validation reports row numbers for common CSV issues, including missing required
+values, placeholder addresses, duplicate hostnames, duplicate `discovery_ip`
+values, unsupported platforms, unsupported access paths, and unsupported
+privilege methods.
+
 ## Linux Targets
 
 Use one target entry per system:

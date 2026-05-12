@@ -209,6 +209,7 @@ func ReadCSV(path string) ([]Target, error) {
 
 	var targets []Target
 	seenHosts := map[string]int{}
+	seenDiscoveryIPs := map[string]int{}
 	for rowIndex, row := range rows[1:] {
 		rowNumber := rowIndex + 2
 		if emptyCSVRow(row) {
@@ -243,6 +244,11 @@ func ReadCSV(path string) ([]Target, error) {
 		if target.DiscoveryIP == "" || isPlaceholder(target.DiscoveryIP) {
 			return nil, fmt.Errorf("row %d discovery_ip must be the address MatildaProbeVM will use", rowNumber)
 		}
+		discoveryKey := strings.ToLower(target.DiscoveryIP)
+		if firstRow, exists := seenDiscoveryIPs[discoveryKey]; exists {
+			return nil, fmt.Errorf("row %d duplicate discovery_ip %q; first seen on row %d", rowNumber, target.DiscoveryIP, firstRow)
+		}
+		seenDiscoveryIPs[discoveryKey] = rowNumber
 		if target.AccessPath != "direct" && target.AccessPath != "via_probe" {
 			return nil, fmt.Errorf("row %d access_path must be direct or via_probe", rowNumber)
 		}
