@@ -103,6 +103,31 @@ func TestInteractiveRemoteActionReportsAllEnvIssues(t *testing.T) {
 	}
 }
 
+func TestWorkflowMutatingActionsRequireConfirmation(t *testing.T) {
+	for _, action := range []string{
+		"setup",
+		"run",
+		"rollback-sudoers",
+		"rollback-remove-key",
+		"rollback-lock-user",
+		"rollback-delete-user",
+	} {
+		t.Run(action, func(t *testing.T) {
+			rt := app.New(t.TempDir(), strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+
+			result := rt.RunWorkflowAction(action, false)
+			if result.OK || !strings.Contains(result.Error, "requires confirmation") {
+				t.Fatalf("expected confirmation error, got %+v", result)
+			}
+
+			confirmed := rt.RunWorkflowAction(action, true)
+			if confirmed.OK || strings.Contains(confirmed.Error, "requires confirmation") || !strings.Contains(confirmed.Error, "require .env") {
+				t.Fatalf("expected confirmed action to proceed to remote input checks, got %+v", confirmed)
+			}
+		})
+	}
+}
+
 func TestSnapshotNextStepGuidesMissingInventorySetup(t *testing.T) {
 	rt := app.New(t.TempDir(), strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
 
