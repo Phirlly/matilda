@@ -113,6 +113,26 @@ func TestCLIInventoryValidateUsesProjectInventory(t *testing.T) {
 	}
 }
 
+func TestCLIInventoryValidateFailureShowsFixTargetsCSVNextStep(t *testing.T) {
+	withTempProject(t, "hostname,platform,ansible_host,discovery_ip,access_path,privilege_method\napp01,linux,,10.0.0.10,direct,sudo\n", "")
+
+	var out bytes.Buffer
+	err := cli.Execute([]string{"inventory", "validate"}, strings.NewReader(""), &out, &bytes.Buffer{})
+	if err == nil {
+		t.Fatalf("inventory validate should fail for invalid targets.csv:\n%s", out.String())
+	}
+	for _, want := range []string{
+		"Inventory Validate",
+		"FAIL  targets.csv",
+		"row 2 missing required values: ansible_host",
+		"Fix targets.csv, then run ./matilda-prep inventory validate again.",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("inventory validation failure output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
 func TestCLIInventoryImportWritesTargetsCSVAndGeneratedInventory(t *testing.T) {
 	root := withTempProject(t, "", "")
 	csvPath := filepath.Join(root, "import-source.csv")
@@ -146,6 +166,53 @@ func TestCLIInventoryImportWritesTargetsCSVAndGeneratedInventory(t *testing.T) {
 	}
 	if strings.Contains(text, "public_targets:") || strings.Contains(text, "private_targets:") {
 		t.Fatalf("generated inventory should not expose Ansible runner groups:\n%s", text)
+	}
+}
+
+func TestCLIInventoryImportFailureShowsSourceCSVGuidance(t *testing.T) {
+	root := withTempProject(t, validTargetsCSV(), "")
+	csvPath := filepath.Join(root, "import-source.csv")
+	writeFile(t, csvPath, "hostname,platform,ansible_host,discovery_ip,access_path,privilege_method\napp02,linux,,10.0.0.20,direct,sudo\n")
+
+	var out bytes.Buffer
+	err := cli.Execute([]string{"inventory", "import", csvPath}, strings.NewReader(""), &out, &bytes.Buffer{})
+	if err == nil {
+		t.Fatalf("inventory import should fail for invalid source CSV:\n%s", out.String())
+	}
+	for _, want := range []string{
+		"Inventory Import",
+		"FAIL  source CSV",
+		"row 2 missing required values: ansible_host",
+		"Fix the source CSV, then run ./matilda-prep inventory import CSV again.",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("inventory import failure output missing %q:\n%s", want, out.String())
+		}
+	}
+	targetCSV, err := os.ReadFile(filepath.Join(root, "targets.csv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(targetCSV), "app01,linux") || strings.Contains(string(targetCSV), "app02,linux") {
+		t.Fatalf("invalid import should not replace existing targets.csv:\n%s", string(targetCSV))
+	}
+}
+
+func TestCLIInventoryHelpShowsOSFamilyAsOptional(t *testing.T) {
+	withTempProject(t, "", "")
+
+	var out bytes.Buffer
+	err := cli.Execute([]string{"inventory", "help"}, strings.NewReader(""), &out, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("inventory help failed: %v", err)
+	}
+	required := sectionBetween(out.String(), "Required CSV Columns", "Optional CSV Columns")
+	optional := sectionBetween(out.String(), "Optional CSV Columns", "")
+	if strings.Contains(required, "os_family") {
+		t.Fatalf("inventory help should not list os_family as required:\n%s", out.String())
+	}
+	if !strings.Contains(optional, "os_family") {
+		t.Fatalf("inventory help should list os_family as optional:\n%s", out.String())
 	}
 }
 
@@ -557,4 +624,19 @@ func validTargetsCSV() string {
 
 func validationSummary() string {
 	return "Host,DiscoveryIP,Command,FallbackUsed,LocalSudo,DeniedCommand,ProbeSSH,Ready,Remediation\napp01,10.0.0.10,ifconfig,NO,OK,OK,OK,YES,None\n"
+}
+
+func sectionBetween(text string, start string, end string) string {
+	startIndex := strings.Index(text, start)
+	if startIndex < 0 {
+		return ""
+	}
+	section := text[startIndex+len(start):]
+	if end == "" {
+		return section
+	}
+	if endIndex := strings.Index(section, end); endIndex >= 0 {
+		return section[:endIndex]
+	}
+	return section
 }

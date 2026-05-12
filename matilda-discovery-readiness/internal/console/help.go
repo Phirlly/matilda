@@ -84,7 +84,6 @@ func PrintInventoryHelp(out io.Writer) {
 	printHelpSection(out, s, "Required CSV Columns", []helpRow{
 		{Command: "hostname", Detail: "inventory host name"},
 		{Command: "platform", Detail: "current import supports linux"},
-		{Command: "os_family", Detail: "target OS family"},
 		{Command: "ansible_host", Detail: "address used by Ansible"},
 		{Command: "discovery_ip", Detail: "address used by MatildaProbeVM"},
 		{Command: "access_path", Detail: "direct or via_probe"},
@@ -92,9 +91,11 @@ func PrintInventoryHelp(out io.Writer) {
 	})
 	fmt.Fprintln(out)
 	printHelpSection(out, s, "Optional CSV Columns", []helpRow{
+		{Command: "os_family", Detail: "target OS family"},
 		{Command: "public_ip", Detail: "public address when available"},
 		{Command: "private_ip", Detail: "private address when available"},
 		{Command: "cloud_provider", Detail: "provider label such as oci, aws, azure, or gcp"},
+		{Command: "configure_mode", Detail: "defaults to remote"},
 	})
 }
 
