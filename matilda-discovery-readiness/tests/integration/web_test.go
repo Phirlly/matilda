@@ -27,7 +27,7 @@ func TestWebStatusAndDashboardRoutes(t *testing.T) {
 	if dashboard.Code != http.StatusOK {
 		t.Fatalf("dashboard status = %d", dashboard.Code)
 	}
-	for _, want := range []string{"Matilda Discovery Readiness Toolkit", "Workflow Actions", "Actions", "Guidance", "Activity Log", "Target Readiness", "Validated IPs", "Report Files", "Recent Runs", "Target CSV", "Validation details", "Preflight", "Setup", "Validate", "Rollback sudoers"} {
+	for _, want := range []string{"Matilda Discovery Readiness Toolkit", "Workflow Actions", "Actions", "Guidance", "Activity Log", "Target Readiness", "Validated IPs", "Report Files", "Recent Runs", "Target CSV", "Validation details", "Preflight", "Setup", "Validate", "Run full workflow", "Rollback sudoers", "Rollback remove key", "Rollback lock user", "Rollback delete user"} {
 		if !strings.Contains(dashboard.Body.String(), want) {
 			t.Fatalf("dashboard missing %q:\n%s", want, dashboard.Body.String())
 		}

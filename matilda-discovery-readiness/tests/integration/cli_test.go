@@ -363,6 +363,22 @@ func TestCLIHelpScreensUseConsoleSections(t *testing.T) {
 		if args[0] == "inventory" && strings.Contains(out.String(), "inventory migrate") {
 			t.Fatalf("inventory help should not expose migration for v1-default inventory:\n%s", out.String())
 		}
+		if args[0] == "inventory" && strings.Contains(out.String(), "...") {
+			t.Fatalf("inventory help should not truncate command examples:\n%s", out.String())
+		}
+	}
+}
+
+func TestCLIGenerateUnknownTargetDoesNotPrintEmptyArtifactsSection(t *testing.T) {
+	withTempProject(t, validTargetsCSV(), "")
+
+	var out bytes.Buffer
+	err := cli.Execute([]string{"generate", "bad-target"}, strings.NewReader(""), &out, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), `unsupported generate target "bad-target"`) {
+		t.Fatalf("expected unsupported generate target error, got err=%v out=%q", err, out.String())
+	}
+	if strings.Contains(out.String(), "Artifacts") {
+		t.Fatalf("invalid generate target should not print an empty Artifacts section:\n%s", out.String())
 	}
 }
 

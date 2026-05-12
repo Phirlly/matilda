@@ -29,13 +29,27 @@ func TestWorkflowActionGroupsKeepSharedUIOrder(t *testing.T) {
 	}
 
 	remote := groups[2].Actions
-	if len(remote) != 4 {
-		t.Fatalf("expected 4 remote actions, got %d", len(remote))
+	if len(remote) != 8 {
+		t.Fatalf("expected 8 remote actions, got %d", len(remote))
 	}
 	if !remote[1].Mutating || remote[1].ID != "setup" {
 		t.Fatalf("setup should be marked as a mutating remote action: %+v", remote[1])
 	}
-	if !remote[3].Mutating || remote[3].ID != "rollback-sudoers" {
-		t.Fatalf("rollback should be marked as a mutating remote action: %+v", remote[3])
+	if !remote[3].Mutating || remote[3].ID != "run" {
+		t.Fatalf("run should be marked as a mutating remote action: %+v", remote[3])
+	}
+	if remote[3].Key != "0" {
+		t.Fatalf("run should use a single-key shortcut, got %+v", remote[3])
+	}
+	for index, want := range []string{"rollback-sudoers", "rollback-remove-key", "rollback-lock-user", "rollback-delete-user"} {
+		action := remote[index+4]
+		if !action.Mutating || action.ID != want {
+			t.Fatalf("rollback action %d = %+v, want mutating %s", index, action, want)
+		}
+	}
+	for _, action := range app.WorkflowActions() {
+		if len(action.Key) != 1 {
+			t.Fatalf("action %s has non-interactive shortcut %q", action.ID, action.Key)
+		}
 	}
 }

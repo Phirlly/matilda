@@ -15,18 +15,22 @@ The page is organized as:
 - Activity Log with live streamed output
 - target readiness, validated IPs, report files, recent runs, inventory, and validation details
 
-Browser actions match the terminal console menu:
+Browser action labels match the terminal console menu:
 
-- `doctor`
-- `inventory validate`
-- `report`
+- Doctor
+- Inventory validate
+- Generate reports
 - Validated IPs
 - Generate Windows readiness package
 - Generate UNIX admin instructions
-- `preflight`
-- `setup`
-- `validate`
+- Preflight
+- Setup
+- Validate
+- Run full workflow
 - Rollback sudoers
+- Rollback remove key
+- Rollback lock user
+- Rollback delete user
 
 Browser actions start without a full page reload. Output streams into the Activity Log while the action runs, and readiness metrics refresh when the action completes.
 

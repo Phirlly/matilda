@@ -356,6 +356,10 @@ func (r *Runtime) Generate(args []string) error {
 	}
 
 	platform := strings.ToLower(args[0])
+	if platform != "windows" && platform != "unix" {
+		return fmt.Errorf("unsupported generate target %q; use windows or unix", platform)
+	}
+
 	heading(r.Out, "GENERATE", "local readiness guidance only; no target changes")
 	section(r.Out, "Artifacts")
 	var paths []string
@@ -383,8 +387,6 @@ func (r *Runtime) Generate(args []string) error {
 			return err
 		}
 		paths = append(paths, path)
-	default:
-		return fmt.Errorf("unsupported generate target %q; use windows or unix", platform)
 	}
 	ui.New(r.Out).Files(r.displayPaths(paths))
 	successLine(r.Out, "Platform guidance generated locally.")
