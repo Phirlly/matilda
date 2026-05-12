@@ -78,7 +78,7 @@ func PrintInventoryHelp(out io.Writer) {
 
 	printHelpSection(out, s, "Commands", []helpRow{
 		{Command: "./matilda-prep inventory validate", Detail: "check targets.csv shape and required target fields"},
-		{Command: "./matilda-prep inventory import exported-targets.csv", Detail: "copy a CSV into the local targets.csv source"},
+		{Command: "./matilda-prep inventory import CSV", Detail: "copy a CSV into the local targets.csv source"},
 	})
 	fmt.Fprintln(out)
 	printHelpSection(out, s, "Required CSV Columns", []helpRow{

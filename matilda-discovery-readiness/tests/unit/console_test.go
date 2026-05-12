@@ -29,8 +29,9 @@ func TestConsoleModelMovesSelectionWithKeyboard(t *testing.T) {
 		t.Fatalf("up selected index = %d, want 1", model.SelectedIndex())
 	}
 	model = press(model, keyEnd())
-	if model.SelectedIndex() != 9 {
-		t.Fatalf("end selected index = %d, want 9", model.SelectedIndex())
+	wantLast := len(app.WorkflowActions()) - 1
+	if model.SelectedIndex() != wantLast {
+		t.Fatalf("end selected index = %d, want %d", model.SelectedIndex(), wantLast)
 	}
 	model = press(model, keyHome())
 	if model.SelectedIndex() != 0 {
@@ -90,6 +91,19 @@ func TestConsoleMutatingActionRequiresConfirmation(t *testing.T) {
 	}
 	if !strings.Contains(model.ActivityLog(), "No target changes were made") {
 		t.Fatalf("expected cancellation activity, got:\n%s", model.ActivityLog())
+	}
+}
+
+func TestConsoleExpandedMutatingShortcutsOpenConfirmation(t *testing.T) {
+	for _, key := range []string{"0", "s", "x", "l", "d"} {
+		t.Run(key, func(t *testing.T) {
+			model := newConsoleModel(t)
+
+			model = press(model, keyText(key))
+			if !model.ConfirmationOpen() {
+				t.Fatalf("shortcut %q should open confirmation", key)
+			}
+		})
 	}
 }
 

@@ -26,7 +26,11 @@ func WorkflowActions() []ActionSpec {
 		{ID: "preflight", Key: "7", Label: "Preflight", Description: "read-only remote checks", Group: "Remote", Remote: true},
 		{ID: "setup", Key: "8", Label: "Setup", Description: "modifies targets; asks again", Group: "Remote", Remote: true, Mutating: true},
 		{ID: "validate", Key: "9", Label: "Validate", Description: "remote checks and reports", Group: "Remote", Remote: true},
-		{ID: "rollback-sudoers", Key: "10", Label: "Rollback sudoers", Description: "sudoers-only; asks again", Group: "Remote", Remote: true, Mutating: true},
+		{ID: "run", Key: "0", Label: "Run full workflow", Description: "preflight, setup, validate; asks again", Group: "Remote", Remote: true, Mutating: true},
+		{ID: "rollback-sudoers", Key: "s", Label: "Rollback sudoers", Description: "remove sudoers; asks again", Group: "Remote", Remote: true, Mutating: true},
+		{ID: "rollback-remove-key", Key: "x", Label: "Rollback remove key", Description: "remove public key; asks again", Group: "Remote", Remote: true, Mutating: true},
+		{ID: "rollback-lock-user", Key: "l", Label: "Rollback lock user", Description: "lock service account; asks again", Group: "Remote", Remote: true, Mutating: true},
+		{ID: "rollback-delete-user", Key: "d", Label: "Rollback delete user", Description: "delete account and home; asks again", Group: "Remote", Remote: true, Mutating: true},
 	}
 }
 

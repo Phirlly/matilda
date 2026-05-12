@@ -259,6 +259,15 @@ func (r *Runtime) RunWorkflowActionTo(action string, confirmed bool, out io.Writ
 		if err = remoteInputsReady(r.Root); err == nil {
 			err = child.Validate()
 		}
+	case "run":
+		if !confirmed {
+			err = errors.New("run requires confirmation because it includes setup and modifies target systems")
+		} else {
+			err = remoteInputsReady(r.Root)
+			if err == nil {
+				err = child.Run()
+			}
+		}
 	case "rollback-sudoers":
 		if !confirmed {
 			err = errors.New("rollback requires confirmation because it modifies target systems")
@@ -266,6 +275,33 @@ func (r *Runtime) RunWorkflowActionTo(action string, confirmed bool, out io.Writ
 			err = remoteInputsReady(r.Root)
 			if err == nil {
 				err = child.Rollback([]string{"--sudoers-only"})
+			}
+		}
+	case "rollback-remove-key":
+		if !confirmed {
+			err = errors.New("rollback requires confirmation because it modifies target systems")
+		} else {
+			err = remoteInputsReady(r.Root)
+			if err == nil {
+				err = child.Rollback([]string{"--remove-key"})
+			}
+		}
+	case "rollback-lock-user":
+		if !confirmed {
+			err = errors.New("rollback requires confirmation because it modifies target systems")
+		} else {
+			err = remoteInputsReady(r.Root)
+			if err == nil {
+				err = child.Rollback([]string{"--lock-user"})
+			}
+		}
+	case "rollback-delete-user":
+		if !confirmed {
+			err = errors.New("rollback requires confirmation because it modifies target systems")
+		} else {
+			err = remoteInputsReady(r.Root)
+			if err == nil {
+				err = child.Rollback([]string{"--delete-user"})
 			}
 		}
 	default:
