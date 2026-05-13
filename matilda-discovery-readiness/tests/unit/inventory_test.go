@@ -135,7 +135,7 @@ func TestInventoryV1SchemaMatchesImplementedFields(t *testing.T) {
 		}
 	}
 	properties := targetSchema["properties"].(map[string]any)
-	for _, want := range []string{"public_ip", "private_ip"} {
+	for _, want := range []string{"public_ip", "private_ip", "admin_user", "admin_private_key_file"} {
 		if _, ok := properties[want]; !ok {
 			t.Fatalf("inventory v1 schema missing implemented optional field %s", want)
 		}
@@ -244,6 +244,74 @@ func TestWriteLinuxGroupedInventoryAddsSSHConnectionVars(t *testing.T) {
 	}
 }
 
+func TestWriteLinuxGroupedInventoryAddsPerTargetSSHCredentialOverrides(t *testing.T) {
+	outPath := filepath.Join(t.TempDir(), "inventory.linux.yml")
+	targets := []inventory.Target{
+		{
+			Hostname:    "app01",
+			AccessPath:  "direct",
+			AnsibleHost: "203.0.113.10",
+			DiscoveryIP: "10.0.0.10",
+			PublicIP:    "203.0.113.10",
+			PrivateIP:   "10.0.0.10",
+		},
+		{
+			Hostname:            "app02",
+			AccessPath:          "direct",
+			AnsibleHost:         "203.0.113.20",
+			DiscoveryIP:         "10.0.0.20",
+			PublicIP:            "203.0.113.20",
+			PrivateIP:           "10.0.0.20",
+			AdminUser:           "oracle",
+			AdminPrivateKeyFile: "/keys/app02.pem",
+		},
+		{
+			Hostname:            "app03",
+			AccessPath:          "via_probe",
+			AnsibleHost:         "10.0.1.30",
+			DiscoveryIP:         "10.0.1.30",
+			PrivateIP:           "10.0.1.30",
+			AdminUser:           "ubuntu",
+			AdminPrivateKeyFile: "/keys/app03.pem",
+		},
+	}
+	conn := inventory.LinuxConnectionConfig{
+		TargetAdminUser:           "opc",
+		TargetAdminPrivateKeyFile: "/keys/global-target.pem",
+		ProbeUser:                 "opc",
+		ProbeHost:                 "150.136.237.22",
+		ProbeAdminPrivateKeyFile:  "/keys/probe.pem",
+	}
+
+	if err := inventory.WriteLinuxGroupedInventoryWithConnection(outPath, targets, conn); err != nil {
+		t.Fatalf("WriteLinuxGroupedInventoryWithConnection failed: %v", err)
+	}
+	got, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	for _, want := range []string{
+		`ansible_user: "opc"`,
+		`ansible_ssh_private_key_file: "/keys/global-target.pem"`,
+		`app02:`,
+		`ansible_user: "oracle"`,
+		`ansible_ssh_private_key_file: "/keys/app02.pem"`,
+		`app03:`,
+		`ansible_user: "ubuntu"`,
+		`ansible_ssh_private_key_file: "/keys/app03.pem"`,
+		`ProxyCommand=`,
+		`/keys/probe.pem`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("runner inventory missing %q:\n%s", want, text)
+		}
+	}
+	if !strings.Contains(text, `ansible_ssh_common_args:`) {
+		t.Fatalf("private target group should retain ProbeVM ProxyCommand vars:\n%s", text)
+	}
+}
+
 func TestPlanLinuxRunnerRejectsUnsupportedV1Privilege(t *testing.T) {
 	path := writeTempFile(t, "inventory.yml", `version: 1
 
@@ -259,6 +327,33 @@ targets:
 	_, err := inventory.PlanLinuxRunner(path)
 	if err == nil || !strings.Contains(err.Error(), "privilege_method must be sudo") {
 		t.Fatalf("expected privilege method error, got %v", err)
+	}
+}
+
+func TestPlanLinuxRunnerPreservesV1PerTargetSSHCredentials(t *testing.T) {
+	path := writeTempFile(t, "inventory.yml", `version: 1
+
+targets:
+  app01:
+    platform: linux
+    access_path: direct
+    ansible_host: 203.0.113.10
+    discovery_ip: 10.0.0.10
+    admin_user: oracle
+    admin_private_key_file: /keys/app01.pem
+    privilege_method: sudo
+`)
+
+	plan, err := inventory.PlanLinuxRunner(path)
+	if err != nil {
+		t.Fatalf("PlanLinuxRunner failed: %v", err)
+	}
+	if len(plan.Targets) != 1 {
+		t.Fatalf("expected 1 Linux target, got %d", len(plan.Targets))
+	}
+	target := plan.Targets[0]
+	if target.AdminUser != "oracle" || target.AdminPrivateKeyFile != "/keys/app01.pem" {
+		t.Fatalf("per-target SSH credentials were not preserved: %+v", target)
 	}
 }
 
@@ -285,6 +380,41 @@ targets:
 	}
 	if needsProbe {
 		t.Fatalf("non-Linux v1 targets should not require Probe inputs for Linux runner actions")
+	}
+}
+
+func TestReadCSVAndWriteV1InventoryPreservesPerTargetSSHCredentials(t *testing.T) {
+	dir := t.TempDir()
+	csvPath := filepath.Join(dir, "targets.csv")
+	content := "hostname,platform,os_family,ansible_host,discovery_ip,access_path,privilege_method,private_ip,public_ip,cloud_provider,admin_user,admin_private_key_file\napp01,linux,oracle_linux,203.0.113.10,10.0.0.10,direct,sudo,10.0.0.10,203.0.113.10,oci,oracle,/keys/app01.pem\napp02,linux,oracle_linux,10.0.1.20,10.0.1.20,via_probe,sudo,10.0.1.20,,oci,,\n"
+	if err := os.WriteFile(csvPath, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	targets, err := inventory.ReadCSV(csvPath)
+	if err != nil {
+		t.Fatalf("ReadCSV failed: %v", err)
+	}
+	if targets[0].AdminUser != "oracle" || targets[0].AdminPrivateKeyFile != "/keys/app01.pem" {
+		t.Fatalf("CSV per-target SSH credentials were not read: %+v", targets[0])
+	}
+	if targets[1].AdminUser != "" || targets[1].AdminPrivateKeyFile != "" {
+		t.Fatalf("blank per-target credentials should remain empty: %+v", targets[1])
+	}
+
+	outPath := filepath.Join(dir, "inventory.yml")
+	if err := inventory.WriteV1Inventory(outPath, targets); err != nil {
+		t.Fatalf("WriteV1Inventory failed: %v", err)
+	}
+	got, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	for _, want := range []string{"admin_user: oracle", "admin_private_key_file: /keys/app01.pem"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("generated v1 inventory missing %q:\n%s", want, text)
+		}
 	}
 }
 

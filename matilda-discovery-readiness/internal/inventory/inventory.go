@@ -16,17 +16,19 @@ import (
 )
 
 type Target struct {
-	Hostname        string
-	Platform        string
-	OSFamily        string
-	CloudProvider   string
-	AccessPath      string
-	AnsibleHost     string
-	DiscoveryIP     string
-	PublicIP        string
-	PrivateIP       string
-	PrivilegeMethod string
-	ConfigureMode   string
+	Hostname            string
+	Platform            string
+	OSFamily            string
+	CloudProvider       string
+	AccessPath          string
+	AnsibleHost         string
+	DiscoveryIP         string
+	PublicIP            string
+	PrivateIP           string
+	AdminUser           string
+	AdminPrivateKeyFile string
+	PrivilegeMethod     string
+	ConfigureMode       string
 }
 
 type ValidationResult struct {
@@ -216,17 +218,19 @@ func ReadCSV(path string) ([]Target, error) {
 			continue
 		}
 		target := Target{
-			Hostname:        get(row, headers, "hostname"),
-			Platform:        strings.ToLower(get(row, headers, "platform")),
-			OSFamily:        strings.ToLower(get(row, headers, "os_family")),
-			CloudProvider:   strings.ToLower(get(row, headers, "cloud_provider")),
-			AccessPath:      strings.ToLower(get(row, headers, "access_path")),
-			AnsibleHost:     get(row, headers, "ansible_host"),
-			DiscoveryIP:     get(row, headers, "discovery_ip"),
-			PublicIP:        get(row, headers, "public_ip"),
-			PrivateIP:       get(row, headers, "private_ip"),
-			PrivilegeMethod: strings.ToLower(get(row, headers, "privilege_method")),
-			ConfigureMode:   strings.ToLower(get(row, headers, "configure_mode")),
+			Hostname:            get(row, headers, "hostname"),
+			Platform:            strings.ToLower(get(row, headers, "platform")),
+			OSFamily:            strings.ToLower(get(row, headers, "os_family")),
+			CloudProvider:       strings.ToLower(get(row, headers, "cloud_provider")),
+			AccessPath:          strings.ToLower(get(row, headers, "access_path")),
+			AnsibleHost:         get(row, headers, "ansible_host"),
+			DiscoveryIP:         get(row, headers, "discovery_ip"),
+			PublicIP:            get(row, headers, "public_ip"),
+			PrivateIP:           get(row, headers, "private_ip"),
+			AdminUser:           get(row, headers, "admin_user"),
+			AdminPrivateKeyFile: get(row, headers, "admin_private_key_file"),
+			PrivilegeMethod:     strings.ToLower(get(row, headers, "privilege_method")),
+			ConfigureMode:       strings.ToLower(get(row, headers, "configure_mode")),
 		}
 		if missing := missingRequiredCSVValues(row, headers); len(missing) > 0 {
 			return nil, fmt.Errorf("row %d missing required values: %s", rowNumber, strings.Join(missing, ", "))
@@ -378,32 +382,36 @@ func looksLikeLegacyLinuxGroupedInventory(text string) bool {
 
 func targetToV1(target Target) targetV1 {
 	return targetV1{
-		Platform:        normalizeLower(target.Platform),
-		OSFamily:        normalizeLower(target.OSFamily),
-		CloudProvider:   normalizeLower(target.CloudProvider),
-		AccessPath:      normalizeLower(target.AccessPath),
-		AnsibleHost:     strings.TrimSpace(target.AnsibleHost),
-		DiscoveryIP:     strings.TrimSpace(target.DiscoveryIP),
-		PublicIP:        strings.TrimSpace(target.PublicIP),
-		PrivateIP:       strings.TrimSpace(target.PrivateIP),
-		PrivilegeMethod: normalizeLower(target.PrivilegeMethod),
-		ConfigureMode:   normalizeLower(target.ConfigureMode),
+		Platform:            normalizeLower(target.Platform),
+		OSFamily:            normalizeLower(target.OSFamily),
+		CloudProvider:       normalizeLower(target.CloudProvider),
+		AccessPath:          normalizeLower(target.AccessPath),
+		AnsibleHost:         strings.TrimSpace(target.AnsibleHost),
+		DiscoveryIP:         strings.TrimSpace(target.DiscoveryIP),
+		PublicIP:            strings.TrimSpace(target.PublicIP),
+		PrivateIP:           strings.TrimSpace(target.PrivateIP),
+		AdminUser:           strings.TrimSpace(target.AdminUser),
+		AdminPrivateKeyFile: strings.TrimSpace(target.AdminPrivateKeyFile),
+		PrivilegeMethod:     normalizeLower(target.PrivilegeMethod),
+		ConfigureMode:       normalizeLower(target.ConfigureMode),
 	}
 }
 
 func v1ToTarget(hostname string, target targetV1) Target {
 	return Target{
-		Hostname:        strings.TrimSpace(hostname),
-		Platform:        normalizeLower(target.Platform),
-		OSFamily:        normalizeLower(target.OSFamily),
-		CloudProvider:   normalizeLower(target.CloudProvider),
-		AccessPath:      normalizeLower(target.AccessPath),
-		AnsibleHost:     strings.TrimSpace(target.AnsibleHost),
-		DiscoveryIP:     strings.TrimSpace(target.DiscoveryIP),
-		PublicIP:        strings.TrimSpace(target.PublicIP),
-		PrivateIP:       strings.TrimSpace(target.PrivateIP),
-		PrivilegeMethod: normalizeLower(target.PrivilegeMethod),
-		ConfigureMode:   normalizeLower(target.ConfigureMode),
+		Hostname:            strings.TrimSpace(hostname),
+		Platform:            normalizeLower(target.Platform),
+		OSFamily:            normalizeLower(target.OSFamily),
+		CloudProvider:       normalizeLower(target.CloudProvider),
+		AccessPath:          normalizeLower(target.AccessPath),
+		AnsibleHost:         strings.TrimSpace(target.AnsibleHost),
+		DiscoveryIP:         strings.TrimSpace(target.DiscoveryIP),
+		PublicIP:            strings.TrimSpace(target.PublicIP),
+		PrivateIP:           strings.TrimSpace(target.PrivateIP),
+		AdminUser:           strings.TrimSpace(target.AdminUser),
+		AdminPrivateKeyFile: strings.TrimSpace(target.AdminPrivateKeyFile),
+		PrivilegeMethod:     normalizeLower(target.PrivilegeMethod),
+		ConfigureMode:       normalizeLower(target.ConfigureMode),
 	}
 }
 
@@ -431,6 +439,16 @@ func writeLinuxGroup(b *strings.Builder, group string, targets []Target, conn Li
 			fmt.Fprintf(b, "          private_ip: %s\n", target.PrivateIP)
 		}
 		fmt.Fprintf(b, "          discovery_ip: %s\n", target.DiscoveryIP)
+		writeLinuxHostConnectionVars(b, target)
+	}
+}
+
+func writeLinuxHostConnectionVars(b *strings.Builder, target Target) {
+	if strings.TrimSpace(target.AdminUser) != "" {
+		fmt.Fprintf(b, "          ansible_user: %s\n", yamlQuote(target.AdminUser))
+	}
+	if strings.TrimSpace(target.AdminPrivateKeyFile) != "" {
+		fmt.Fprintf(b, "          ansible_ssh_private_key_file: %s\n", yamlQuote(target.AdminPrivateKeyFile))
 	}
 }
 
