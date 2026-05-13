@@ -12,4 +12,5 @@ dist/
 .ansible/
 .gocache/
 .matilda/
+.vscode/
 *.retry
