@@ -460,6 +460,37 @@ func TestReadCSVAndWriteV1Inventory(t *testing.T) {
 	}
 }
 
+func TestExampleTargetsCSVUsesSharedCredentialDefaults(t *testing.T) {
+	_, currentFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not locate test file")
+	}
+	examplePath := filepath.Join(filepath.Dir(currentFile), "..", "..", "examples", "targets.example.csv")
+	content, err := os.ReadFile(examplePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstLine := strings.SplitN(string(content), "\n", 2)[0]
+	for _, unexpected := range []string{"admin_user", "admin_private_key_file"} {
+		if strings.Contains(firstLine, unexpected) {
+			t.Fatalf("starter target CSV should keep per-target SSH override column %q out of the default header:\n%s", unexpected, firstLine)
+		}
+	}
+
+	targets, err := inventory.ReadCSV(examplePath)
+	if err != nil {
+		t.Fatalf("starter target CSV should validate: %v", err)
+	}
+	if len(targets) == 0 {
+		t.Fatalf("starter target CSV should contain example targets")
+	}
+	for _, target := range targets {
+		if target.AdminUser != "" || target.AdminPrivateKeyFile != "" {
+			t.Fatalf("starter target CSV should rely on shared .env credentials by default: %+v", target)
+		}
+	}
+}
+
 func TestReadCSVRejectsMissingRequiredColumnsTogether(t *testing.T) {
 	path := writeTempFile(t, "targets.csv", "hostname,discovery_ip\napp01,10.0.0.5\n")
 
