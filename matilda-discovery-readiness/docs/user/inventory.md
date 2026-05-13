@@ -26,8 +26,8 @@ privilege methods.
 Use one target entry per system:
 
 ```csv
-hostname,platform,os_family,ansible_host,discovery_ip,access_path,privilege_method,private_ip,public_ip,cloud_provider,admin_user,admin_private_key_file
-app01,linux,oracle_linux,203.0.113.10,10.0.0.10,direct,sudo,10.0.0.10,203.0.113.10,oci,,
+hostname,platform,os_family,ansible_host,discovery_ip,access_path,privilege_method,private_ip,public_ip,cloud_provider
+app01,linux,oracle_linux,203.0.113.10,10.0.0.10,direct,sudo,10.0.0.10,203.0.113.10,oci
 ```
 
 Required Linux fields:
@@ -45,23 +45,33 @@ Optional Linux fields:
 - `cloud_provider`
 - `public_ip`
 - `private_ip`
-- `admin_user`: target VM admin SSH user for this row.
-- `admin_private_key_file`: target VM admin SSH private key path for this row.
 - `configure_mode`
 
 Use `direct` when the operator machine can SSH to the target. Use `via_probe` when the target must be reached through MatildaProbeVM.
 
 ## Target SSH Credentials
 
-Most inventories can use one shared target admin SSH credential from `.env`:
+Use one shared target admin SSH credential from `.env` for the normal workflow:
 
 ```bash
 TARGET_ADMIN_USER=opc
 TARGET_ADMIN_PRIVATE_KEY_FILE=/path/to/shared-target-admin-key
 ```
 
-When a target needs a different SSH user or key, set `admin_user` or
-`admin_private_key_file` on that target row:
+With shared target credentials, keep `targets.csv` focused on target addresses
+and leave SSH credentials out of the CSV.
+
+## Optional Per-Target SSH Overrides
+
+Only add per-target SSH columns when one target needs a different SSH user or
+key from the shared `.env` credential. The optional override columns are:
+
+- `admin_user`: target VM admin SSH user for this row.
+- `admin_private_key_file`: target VM admin SSH private key path for this row.
+
+You can omit these columns entirely for the standard shared-key workflow. If
+the columns are present but blank for a row, that row still uses the shared
+`.env` credential.
 
 ```csv
 hostname,platform,os_family,ansible_host,discovery_ip,access_path,privilege_method,private_ip,public_ip,cloud_provider,admin_user,admin_private_key_file
@@ -70,9 +80,7 @@ app02,linux,oracle_linux,203.0.113.20,10.0.0.20,direct,sudo,10.0.0.20,203.0.113.
 app03,linux,oracle_linux,10.0.1.30,10.0.1.30,via_probe,sudo,10.0.1.30,,oci,ubuntu,/path/to/app03-admin-key
 ```
 
-Per-target values override the shared `.env` target admin credential for that
-row only. Blank per-target credential fields fall back to the shared `.env`
-values.
+Per-target values override the shared `.env` target admin credential for that row only.
 
 Target admin credentials are separate from MatildaProbeVM admin credentials.
 For `via_probe` targets, `MATILDA_PROBE_USER` and
