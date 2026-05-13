@@ -488,7 +488,7 @@ func TestCLIReportWritesExpectedFormats(t *testing.T) {
 }
 
 func TestCLILiveWorkflowPlansCSVInventoryForLinuxRunner(t *testing.T) {
-	root := withTempProject(t, validTargetsCSV(), "")
+	root := withTempProject(t, mixedCredentialTargetsCSV(), "")
 	writeRemoteEnvFixture(t, root)
 
 	var out bytes.Buffer
@@ -507,6 +507,20 @@ func TestCLILiveWorkflowPlansCSVInventoryForLinuxRunner(t *testing.T) {
 	for _, want := range []string{`ansible_user: "opc"`, `ansible_ssh_private_key_file:`} {
 		if !strings.Contains(string(content), want) {
 			t.Fatalf("generated runner inventory missing connection var %q:\n%s", want, string(content))
+		}
+	}
+	for _, want := range []string{
+		`app02:`,
+		`ansible_user: "oracle"`,
+		`ansible_ssh_private_key_file: "/keys/app02.pem"`,
+		`app03:`,
+		`ansible_user: "ubuntu"`,
+		`ansible_ssh_private_key_file: "/keys/app03.pem"`,
+		`ProxyCommand=`,
+		`probe.key`,
+	} {
+		if !strings.Contains(string(content), want) {
+			t.Fatalf("generated mixed-credential runner inventory missing %q:\n%s", want, string(content))
 		}
 	}
 }
@@ -643,6 +657,16 @@ func rootFromCwd(t *testing.T) string {
 
 func validTargetsCSV() string {
 	return "hostname,platform,os_family,ansible_host,discovery_ip,access_path,privilege_method,private_ip,public_ip,cloud_provider\napp01,linux,oracle_linux,203.0.113.10,10.0.0.10,direct,sudo,10.0.0.10,203.0.113.10,oci\n"
+}
+
+func mixedCredentialTargetsCSV() string {
+	return strings.Join([]string{
+		"hostname,platform,os_family,ansible_host,discovery_ip,access_path,privilege_method,private_ip,public_ip,cloud_provider,admin_user,admin_private_key_file",
+		"app01,linux,oracle_linux,203.0.113.10,10.0.0.10,direct,sudo,10.0.0.10,203.0.113.10,oci,,",
+		"app02,linux,oracle_linux,203.0.113.20,10.0.0.20,direct,sudo,10.0.0.20,203.0.113.20,oci,oracle,/keys/app02.pem",
+		"app03,linux,oracle_linux,10.0.1.30,10.0.1.30,via_probe,sudo,10.0.1.30,,oci,ubuntu,/keys/app03.pem",
+		"",
+	}, "\n")
 }
 
 func validationSummary() string {
