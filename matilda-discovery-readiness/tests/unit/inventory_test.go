@@ -107,6 +107,106 @@ targets:
 	}
 }
 
+func TestValidateFileReportsMissingInventory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing-inventory.yml")
+
+	result, err := inventory.ValidateFile(path)
+	if err == nil {
+		t.Fatal("expected missing inventory error")
+	}
+	if len(result.Checks) != 1 || result.Checks[0].Name != "inventory.yml" || !strings.Contains(result.Checks[0].Detail, "missing:") {
+		t.Fatalf("expected missing inventory check, got %+v", result.Checks)
+	}
+}
+
+func TestDetectFormatReportsV1AndErrors(t *testing.T) {
+	validPath := writeTempFile(t, "inventory.yml", `version: 1
+
+targets:
+  app01:
+    platform: linux
+    access_path: direct
+    ansible_host: 203.0.113.10
+    discovery_ip: 10.0.0.10
+    privilege_method: sudo
+`)
+
+	format, err := inventory.DetectFormat(validPath)
+	if err != nil {
+		t.Fatalf("DetectFormat should accept v1 inventory: %v", err)
+	}
+	if format != "v1" {
+		t.Fatalf("expected v1 format, got %q", format)
+	}
+
+	invalidPath := writeTempFile(t, "inventory.yml", `targets: {}`)
+	if _, err := inventory.DetectFormat(invalidPath); err == nil || !strings.Contains(err.Error(), "version: 1") {
+		t.Fatalf("expected v1 format error, got %v", err)
+	}
+}
+
+func TestValidateV1NonLinuxPlatformRules(t *testing.T) {
+	path := writeTempFile(t, "inventory.yml", `version: 1
+
+targets:
+  aix01:
+    platform: unix
+    access_path: customer_managed
+    ansible_host: 10.10.0.10
+    discovery_ip: 10.10.0.10
+    privilege_method: dzdo
+  ocidb01:
+    platform: cloud
+    cloud_provider: oci
+    access_path: api
+    privilege_method: cloud_api
+  oke01:
+    platform: kubernetes
+    access_path: customer_managed
+    privilege_method: k8s_api
+`)
+
+	result, err := inventory.ValidateFile(path)
+	if err != nil {
+		t.Fatalf("expected non-Linux scaffold targets to validate structurally: %v", err)
+	}
+	if result.TargetCount != 3 || result.Format != "v1" {
+		t.Fatalf("unexpected validation result: %+v", result)
+	}
+	if !hasCheck(result, "platform support", "skip") {
+		t.Fatalf("expected non-Linux platform support check to be skipped: %+v", result.Checks)
+	}
+}
+
+func TestValidateRejectsUnsupportedPlatformAndPrivilege(t *testing.T) {
+	path := writeTempFile(t, "inventory.yml", `version: 1
+
+targets:
+  app01:
+    platform: solaris
+    access_path: direct
+    ansible_host: 203.0.113.10
+    discovery_ip: 10.0.0.10
+    privilege_method: sudo
+  aix01:
+    platform: unix
+    access_path: direct
+    ansible_host: 10.10.0.10
+    discovery_ip: 10.10.0.10
+    privilege_method: rlogin
+`)
+
+	_, err := inventory.ValidateFile(path)
+	if err == nil {
+		t.Fatal("expected validation failure")
+	}
+	for _, want := range []string{`unsupported platform "solaris"`, `unsupported privilege_method "rlogin"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("validation error missing %q: %v", want, err)
+		}
+	}
+}
+
 func TestInventoryV1SchemaMatchesImplementedFields(t *testing.T) {
 	_, currentFile, _, ok := runtime.Caller(0)
 	if !ok {
@@ -383,6 +483,55 @@ targets:
 	}
 }
 
+func TestRequiresProbeDetectsLinuxViaProbeTargets(t *testing.T) {
+	path := writeTempFile(t, "inventory.yml", `version: 1
+
+targets:
+  app01:
+    platform: linux
+    access_path: via_probe
+    ansible_host: 10.0.1.20
+    discovery_ip: 10.0.1.20
+    privilege_method: sudo
+`)
+
+	needsProbe, err := inventory.RequiresProbe(path)
+	if err != nil {
+		t.Fatalf("RequiresProbe failed: %v", err)
+	}
+	if !needsProbe {
+		t.Fatalf("Linux via_probe targets should require ProbeVM inputs")
+	}
+}
+
+func TestRequiresProbePropagatesInvalidInventoryErrors(t *testing.T) {
+	path := writeTempFile(t, "inventory.yml", `version: 2
+targets: {}
+`)
+
+	_, err := inventory.RequiresProbe(path)
+	if err == nil || !strings.Contains(err.Error(), "version: 1") {
+		t.Fatalf("expected invalid inventory error, got %v", err)
+	}
+}
+
+func TestPlanLinuxRunnerRejectsInventoryWithNoLinuxTargets(t *testing.T) {
+	path := writeTempFile(t, "inventory.yml", `version: 1
+
+targets:
+  win01:
+    platform: windows
+    access_path: direct
+    ansible_host: 10.10.0.20
+    privilege_method: winrm
+`)
+
+	_, err := inventory.PlanLinuxRunner(path)
+	if err == nil || !strings.Contains(err.Error(), "no Linux targets") {
+		t.Fatalf("expected no Linux targets error, got %v", err)
+	}
+}
+
 func TestReadCSVAndWriteV1InventoryPreservesPerTargetSSHCredentials(t *testing.T) {
 	dir := t.TempDir()
 	csvPath := filepath.Join(dir, "targets.csv")
@@ -491,6 +640,64 @@ func TestExampleTargetsCSVUsesSharedCredentialDefaults(t *testing.T) {
 	}
 }
 
+func TestWriteV1InventoryRejectsEmptyAndDuplicateTargets(t *testing.T) {
+	outPath := filepath.Join(t.TempDir(), "inventory.yml")
+	if err := inventory.WriteV1Inventory(outPath, nil); err == nil || !strings.Contains(err.Error(), "at least one target") {
+		t.Fatalf("expected empty inventory error, got %v", err)
+	}
+
+	err := inventory.WriteV1Inventory(outPath, []inventory.Target{
+		{Hostname: "app01", Platform: "linux"},
+		{Hostname: " app01 ", Platform: "linux"},
+	})
+	if err == nil || !strings.Contains(err.Error(), `duplicate inventory hostname "app01"`) {
+		t.Fatalf("expected duplicate hostname error, got %v", err)
+	}
+}
+
+func TestWriteLinuxGroupedInventoryWritesEmptyPrivateGroupForDirectTargets(t *testing.T) {
+	outPath := filepath.Join(t.TempDir(), "inventory.linux.yml")
+	targets := []inventory.Target{
+		{
+			Hostname:    "app01",
+			AccessPath:  "direct",
+			AnsibleHost: "203.0.113.10",
+			DiscoveryIP: "10.0.0.10",
+			PublicIP:    "203.0.113.10",
+			PrivateIP:   "10.0.0.10",
+		},
+	}
+
+	if err := inventory.WriteLinuxGroupedInventory(outPath, targets); err != nil {
+		t.Fatalf("WriteLinuxGroupedInventory failed: %v", err)
+	}
+	got, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	for _, want := range []string{"public_targets:", "app01:", "private_targets:", "hosts: {}"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("runner inventory missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestWriteLinuxGroupedInventoryRejectsUnsupportedAccessPath(t *testing.T) {
+	outPath := filepath.Join(t.TempDir(), "inventory.linux.yml")
+	err := inventory.WriteLinuxGroupedInventory(outPath, []inventory.Target{
+		{
+			Hostname:    "app01",
+			AccessPath:  "customer_managed",
+			AnsibleHost: "203.0.113.10",
+			DiscoveryIP: "10.0.0.10",
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), `unsupported access_path "customer_managed"`) {
+		t.Fatalf("expected unsupported access path error, got %v", err)
+	}
+}
+
 func TestReadCSVRejectsMissingRequiredColumnsTogether(t *testing.T) {
 	path := writeTempFile(t, "targets.csv", "hostname,discovery_ip\napp01,10.0.0.5\n")
 
@@ -502,6 +709,50 @@ func TestReadCSVRejectsMissingRequiredColumnsTogether(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("missing required columns error missing %q: %v", want, err)
 		}
+	}
+}
+
+func TestValidateCSVFileReportsMissingTargetsCSV(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "targets.csv")
+
+	result, targets, err := inventory.ValidateCSVFile(path)
+	if err == nil {
+		t.Fatal("expected missing targets.csv error")
+	}
+	if targets != nil {
+		t.Fatalf("expected no parsed targets, got %+v", targets)
+	}
+	if len(result.Checks) != 1 || result.Checks[0].Name != "targets.csv" || !strings.Contains(result.Checks[0].Detail, "missing:") {
+		t.Fatalf("expected missing targets.csv check, got %+v", result.Checks)
+	}
+}
+
+func TestReadCSVRejectsDuplicateHeaders(t *testing.T) {
+	path := writeTempFile(t, "targets.csv", strings.Join([]string{
+		"hostname,platform,platform,ansible_host,discovery_ip,access_path,privilege_method",
+		"app01,linux,linux,203.0.113.10,10.0.0.10,direct,sudo",
+		"",
+	}, "\n"))
+
+	_, err := inventory.ReadCSV(path)
+	if err == nil || !strings.Contains(err.Error(), "CSV duplicate column(s): platform") {
+		t.Fatalf("expected duplicate header error, got %v", err)
+	}
+}
+
+func TestReadCSVRejectsHeaderOnlyAndBlankTargetRows(t *testing.T) {
+	headerOnly := writeTempFile(t, "targets.csv", "hostname,platform,ansible_host,discovery_ip,access_path,privilege_method\n")
+	if _, err := inventory.ReadCSV(headerOnly); err == nil || !strings.Contains(err.Error(), "header and at least one target row") {
+		t.Fatalf("expected header-only CSV error, got %v", err)
+	}
+
+	blankRows := writeTempFile(t, "targets.csv", strings.Join([]string{
+		"hostname,platform,ansible_host,discovery_ip,access_path,privilege_method",
+		",,,,,",
+		"",
+	}, "\n"))
+	if _, err := inventory.ReadCSV(blankRows); err == nil || !strings.Contains(err.Error(), "did not contain any usable target rows") {
+		t.Fatalf("expected empty target rows error, got %v", err)
 	}
 }
 
@@ -548,6 +799,22 @@ func TestReadCSVIgnoresBlankRowsAndRejectsPartialRows(t *testing.T) {
 	}
 }
 
+func TestReadCSVRejectsPlaceholderAddresses(t *testing.T) {
+	for name, content := range map[string]string{
+		"ansible_host": "hostname,platform,ansible_host,discovery_ip,access_path,privilege_method\napp01,linux,<target-public-ip>,10.0.0.5,direct,sudo\n",
+		"discovery_ip": "hostname,platform,ansible_host,discovery_ip,access_path,privilege_method\napp01,linux,203.0.113.10,<target-private-ip>,direct,sudo\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := writeTempFile(t, "targets.csv", content)
+
+			_, err := inventory.ReadCSV(path)
+			if err == nil || !strings.Contains(err.Error(), name) {
+				t.Fatalf("expected %s placeholder error, got %v", name, err)
+			}
+		})
+	}
+}
+
 func TestReadCSVRejectsNonLinuxForCurrentImporter(t *testing.T) {
 	path := writeTempFile(t, "targets.csv", "hostname,platform,ansible_host,discovery_ip,access_path,privilege_method\nwin01,windows,10.0.0.5,10.0.0.5,via_probe,winrm\n")
 
@@ -584,4 +851,13 @@ func stringSet(values []any) map[string]bool {
 		}
 	}
 	return result
+}
+
+func hasCheck(result inventory.ValidationResult, name string, status string) bool {
+	for _, check := range result.Checks {
+		if check.Name == name && strings.EqualFold(string(check.Status), status) {
+			return true
+		}
+	}
+	return false
 }
