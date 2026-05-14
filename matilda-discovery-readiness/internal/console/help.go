@@ -96,6 +96,8 @@ func PrintInventoryHelp(out io.Writer) {
 		{Command: "private_ip", Detail: "private address when available"},
 		{Command: "cloud_provider", Detail: "provider label such as oci, aws, azure, or gcp"},
 		{Command: "configure_mode", Detail: "defaults to remote"},
+		{Command: "admin_user", Detail: "per-target SSH user override"},
+		{Command: "admin_private_key_file", Detail: "per-target SSH private key path override"},
 	})
 }
 

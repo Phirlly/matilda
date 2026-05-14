@@ -237,6 +237,14 @@ func TestCLIInventoryHelpShowsOSFamilyAsOptional(t *testing.T) {
 	if !strings.Contains(optional, "os_family") {
 		t.Fatalf("inventory help should list os_family as optional:\n%s", out.String())
 	}
+	for _, want := range []string{"admin_user", "admin_private_key_file"} {
+		if strings.Contains(required, want) {
+			t.Fatalf("inventory help should not list %s as required:\n%s", want, out.String())
+		}
+		if !strings.Contains(optional, want) {
+			t.Fatalf("inventory help should list %s as optional:\n%s", want, out.String())
+		}
+	}
 }
 
 func TestCLIInventoryMigrateCommandRemoved(t *testing.T) {

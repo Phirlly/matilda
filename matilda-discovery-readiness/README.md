@@ -44,6 +44,7 @@ Important rules:
 
 - Do not copy private keys to target systems.
 - Only the Matilda discovery public key is installed on targets.
+- Do not copy target admin private keys to MatildaProbeVM.
 - `setup` and rollback actions ask for confirmation before changing targets.
 - Use a disposable or approved target set when testing rollback modes.
 
@@ -71,6 +72,33 @@ MatildaProbeVM, when private targets or Probe validation are used:
 - Runs the registered Matilda Probe and can reach private targets.
 - Has the Matilda discovery private key at the path configured in `.env`.
 - Has `nc` or `ncat` available for Probe-to-target TCP checks.
+
+## Credential Model
+
+Keep SSH credentials in the place where they are actually used:
+
+```text
+Operator machine:
+- target admin private keys
+- MatildaProbeVM admin private key
+- Matilda discovery public key
+
+MatildaProbeVM:
+- Matilda discovery private key only
+
+Linux targets:
+- Matilda discovery public key installed for matilda-svc by setup
+```
+
+Target admin keys are used by the operator machine for `preflight` and `setup`.
+For private targets, MatildaProbeVM is only the SSH jump path. The local SSH
+client still uses the target admin key from the operator machine, so target
+admin private keys do not need to be copied to MatildaProbeVM.
+
+The Matilda discovery private key on MatildaProbeVM is separate from target
+admin keys. During `validate`, MatildaProbeVM uses that discovery key to prove
+it can SSH to each target as `matilda-svc` and run the approved readiness
+command with passwordless sudo.
 
 ## Quick Start
 
@@ -167,6 +195,10 @@ Optional inventory helpers:
 ```bash
 ./matilda-prep inventory import examples/targets.example.csv
 ```
+
+Use one shared target admin credential in `.env` for the normal workflow. Add
+`admin_user` and `admin_private_key_file` columns to `targets.csv` only for
+targets that need a different SSH user or key.
 
 For full inventory guidance, see [docs/user/inventory.md](docs/user/inventory.md).
 
