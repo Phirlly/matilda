@@ -221,7 +221,7 @@ func TestCLIInventoryImportFailureShowsSourceCSVGuidance(t *testing.T) {
 	}
 }
 
-func TestCLIInventoryHelpShowsOSFamilyAsOptional(t *testing.T) {
+func TestCLIInventoryHelpShowsOptionalColumns(t *testing.T) {
 	withTempProject(t, "", "")
 
 	var out bytes.Buffer

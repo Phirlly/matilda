@@ -90,10 +90,11 @@ Linux targets:
 - Matilda discovery public key installed for matilda-svc by setup
 ```
 
-Target admin keys are used by the operator machine for `preflight` and `setup`.
-For private targets, MatildaProbeVM is only the SSH jump path. The local SSH
-client still uses the target admin key from the operator machine, so target
-admin private keys do not need to be copied to MatildaProbeVM.
+Target admin keys are used by the operator machine for remote Ansible actions
+such as `preflight`, `setup`, `validate`, and rollback. For private targets,
+MatildaProbeVM is only the SSH jump path. The local SSH client still uses the
+target admin key from the operator machine, so target admin private keys do not
+need to be copied to MatildaProbeVM.
 
 The Matilda discovery private key on MatildaProbeVM is separate from target
 admin keys. During `validate`, MatildaProbeVM uses that discovery key to prove
