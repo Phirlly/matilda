@@ -11,5 +11,10 @@ matilda-discovery-readiness/targets.csv
 matilda-discovery-readiness/inventory.yml
 matilda-discovery-readiness/.DS_Store
 matilda-discovery-readiness/PLAN.md
+
+# Matilda Cloud Prep local-only files
+matilda-cloud-prep/PLAN.md
+matilda-cloud-prep/docs/
+
 /presentations
 /assessments
