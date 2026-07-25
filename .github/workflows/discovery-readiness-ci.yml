@@ -1,0 +1,97 @@
+name: Discovery Readiness CI
+
+on:
+  pull_request:
+    branches:
+      - dev
+      - main
+  push:
+    branches:
+      - dev
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Go and Ansible checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: matilda-discovery-readiness
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Detect discovery-readiness changes
+        id: changes
+        working-directory: .
+        run: |
+          event="${{ github.event_name }}"
+          zero="0000000000000000000000000000000000000000"
+
+          if [ "$event" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+            head="${{ github.event.pull_request.head.sha }}"
+          elif [ "$event" = "push" ]; then
+            base="${{ github.event.before }}"
+            head="${{ github.sha }}"
+            if [ "$head" = "$zero" ]; then
+              echo "run_checks=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if [ "$base" = "$zero" ]; then
+              base="$(git hash-object -t tree /dev/null)"
+            fi
+          else
+            echo "run_checks=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          changed_files="$(git diff --name-only "$base..$head")"
+          if printf '%s\n' "$changed_files" | grep -E '^(matilda-discovery-readiness/|\.github/workflows/discovery-readiness-ci\.yml$)' >/dev/null; then
+            echo "run_checks=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No discovery-readiness changes detected; required check passes without running project validation."
+            echo "run_checks=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Go
+        if: steps.changes.outputs.run_checks == 'true'
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: matilda-discovery-readiness/go.mod
+          cache-dependency-path: matilda-discovery-readiness/go.sum
+
+      - name: Install Ansible
+        if: steps.changes.outputs.run_checks == 'true'
+        run: |
+          python3 -m pip install --user ansible-core
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Run Go tests
+        if: steps.changes.outputs.run_checks == 'true'
+        run: go test ./...
+
+      - name: Run Go vet
+        if: steps.changes.outputs.run_checks == 'true'
+        run: go vet ./...
+
+      - name: Check launcher syntax
+        if: steps.changes.outputs.run_checks == 'true'
+        run: bash -n matilda-prep
+
+      - name: Check Linux Ansible syntax
+        if: steps.changes.outputs.run_checks == 'true'
+        env:
+          ANSIBLE_CONFIG: ansible/ansible.cfg
+          ANSIBLE_LOCAL_TEMP: /tmp/matilda-ansible-local
+        run: |
+          ansible-playbook -i tests/fixtures/ansible-runner-inventory.yml --syntax-check ansible/playbooks/linux/preflight.yml
+          ansible-playbook -i tests/fixtures/ansible-runner-inventory.yml --syntax-check ansible/playbooks/linux/setup.yml
+          ansible-playbook -i tests/fixtures/ansible-runner-inventory.yml --syntax-check ansible/playbooks/linux/validate.yml
+          ansible-playbook -i tests/fixtures/ansible-runner-inventory.yml --syntax-check ansible/playbooks/linux/rollback.yml
