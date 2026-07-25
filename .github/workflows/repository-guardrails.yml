@@ -1,0 +1,146 @@
+name: Repository Guardrails
+
+on:
+  pull_request:
+    branches:
+      - dev
+      - main
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  guardrails:
+    name: Local-only and branch checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Check main pull request source branch
+        if: github.event_name == 'pull_request' && github.base_ref == 'main' && github.head_ref != 'dev'
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          echo "Pull requests into main must come from dev."
+          echo "Current source branch: $HEAD_REF"
+          exit 1
+
+      - name: Check diff whitespace
+        run: |
+          event="${{ github.event_name }}"
+          zero="0000000000000000000000000000000000000000"
+
+          if [ "$event" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+            head="${{ github.event.pull_request.head.sha }}"
+          elif [ "$event" = "push" ]; then
+            base="${{ github.event.before }}"
+            head="${{ github.sha }}"
+            if [ "$head" = "$zero" ]; then
+              echo "Branch deletion event; no whitespace diff to check."
+              exit 0
+            fi
+            if [ "$base" = "$zero" ]; then
+              base="$(git hash-object -t tree /dev/null)"
+            fi
+          else
+            echo "No whitespace diff check configured for event: $event"
+            exit 0
+          fi
+
+          git diff --check "$base..$head"
+
+      - name: Check local-only files remain untracked
+        run: |
+          forbidden="$(
+            git ls-files \
+              AGENTS.md \
+              PLAN.md \
+              matilda-discovery-readiness/.env \
+              matilda-discovery-readiness/inventory.yml \
+              matilda-discovery-readiness/inventory.v1.yml \
+              matilda-discovery-readiness/PLAN.md \
+              matilda-discovery-readiness/AGENTS.md \
+              matilda-discovery-readiness/.matilda \
+              matilda-discovery-readiness/.bin \
+              matilda-discovery-readiness/.ansible \
+              matilda-discovery-readiness/.gocache \
+              matilda-discovery-readiness/dist \
+              matilda-discovery-readiness/docs/matilda-docs-cache \
+              matilda-discovery-readiness/reports \
+              matilda-cloud-prep/PLAN.md \
+              matilda-cloud-prep/docs \
+              matilda-cloud-prep/.env \
+              matilda-cloud-prep/.env.local \
+              matilda-cloud-prep/.matilda \
+              matilda-cloud-prep/.gocache \
+              matilda-cloud-prep/coverage \
+              matilda-cloud-prep/dist \
+              matilda-cloud-prep/build \
+              matilda-cloud-prep/out \
+              matilda-cloud-prep/reports \
+              matilda-cloud-prep/handoff \
+              matilda-cloud-prep/packages \
+              matilda-cloud-prep/artifacts \
+              matilda-cloud-prep/logs \
+              matilda-cloud-prep/tmp \
+              'matilda-cloud-prep/*.log' \
+              'matilda-cloud-prep/*.pem' \
+              'matilda-cloud-prep/*.key' \
+              'matilda-cloud-prep/*.p12' \
+              'matilda-cloud-prep/*.pfx' \
+              'matilda-cloud-prep/*.tfstate' \
+              'matilda-cloud-prep/*.tfstate.*' \
+              'matilda-cloud-prep/*.tfplan' \
+              'matilda-cloud-prep/*.tfvars' \
+              'matilda-cloud-prep/*.tfvars.json' \
+              'matilda-cloud-prep/*.auto.tfvars' \
+              'matilda-cloud-prep/*.auto.tfvars.json' \
+              matilda-cloud-prep/tfplan \
+              'matilda-cloud-prep/*token*.json' \
+              'matilda-cloud-prep/*token*.txt' \
+              'matilda-cloud-prep/*token*.env' \
+              'matilda-cloud-prep/*token*.yaml' \
+              'matilda-cloud-prep/*token*.yml' \
+              'matilda-cloud-prep/*credentials*.json' \
+              'matilda-cloud-prep/*credential*.json' \
+              'matilda-cloud-prep/*service-account*.json' \
+              'matilda-cloud-prep/*serviceaccount*.json' \
+              'matilda-cloud-prep/*sa-key*.json' \
+              'matilda-cloud-prep/*key*.json' \
+              'matilda-cloud-prep/**/*.log' \
+              'matilda-cloud-prep/**/*.pem' \
+              'matilda-cloud-prep/**/*.key' \
+              'matilda-cloud-prep/**/*.p12' \
+              'matilda-cloud-prep/**/*.pfx' \
+              'matilda-cloud-prep/**/*.tfstate' \
+              'matilda-cloud-prep/**/*.tfstate.*' \
+              'matilda-cloud-prep/**/*.tfplan' \
+              'matilda-cloud-prep/**/*.tfvars' \
+              'matilda-cloud-prep/**/*.tfvars.json' \
+              'matilda-cloud-prep/**/*.auto.tfvars' \
+              'matilda-cloud-prep/**/*.auto.tfvars.json' \
+              'matilda-cloud-prep/**/tfplan' \
+              'matilda-cloud-prep/**/*token*.json' \
+              'matilda-cloud-prep/**/*token*.txt' \
+              'matilda-cloud-prep/**/*token*.env' \
+              'matilda-cloud-prep/**/*token*.yaml' \
+              'matilda-cloud-prep/**/*token*.yml' \
+              'matilda-cloud-prep/**/*credentials*.json' \
+              'matilda-cloud-prep/**/*credential*.json' \
+              'matilda-cloud-prep/**/*service-account*.json' \
+              'matilda-cloud-prep/**/*serviceaccount*.json' \
+              'matilda-cloud-prep/**/*sa-key*.json' \
+              'matilda-cloud-prep/**/*key*.json' \
+            | grep -v '^matilda-discovery-readiness/reports/\.gitkeep$' || true
+          )"
+          if [ -n "$forbidden" ]; then
+            echo "Local-only files must not be tracked:"
+            echo "$forbidden"
+            exit 1
+          fi
