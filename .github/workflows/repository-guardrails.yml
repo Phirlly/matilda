@@ -75,6 +75,68 @@ jobs:
               matilda-discovery-readiness/reports \
               matilda-cloud-prep/PLAN.md \
               matilda-cloud-prep/docs \
+              matilda-cloud-prep/.env \
+              matilda-cloud-prep/.env.local \
+              matilda-cloud-prep/.matilda \
+              matilda-cloud-prep/.gocache \
+              matilda-cloud-prep/coverage \
+              matilda-cloud-prep/dist \
+              matilda-cloud-prep/build \
+              matilda-cloud-prep/out \
+              matilda-cloud-prep/reports \
+              matilda-cloud-prep/handoff \
+              matilda-cloud-prep/packages \
+              matilda-cloud-prep/artifacts \
+              matilda-cloud-prep/logs \
+              matilda-cloud-prep/tmp \
+              'matilda-cloud-prep/*.log' \
+              'matilda-cloud-prep/*.pem' \
+              'matilda-cloud-prep/*.key' \
+              'matilda-cloud-prep/*.p12' \
+              'matilda-cloud-prep/*.pfx' \
+              'matilda-cloud-prep/*.tfstate' \
+              'matilda-cloud-prep/*.tfstate.*' \
+              'matilda-cloud-prep/*.tfplan' \
+              'matilda-cloud-prep/*.tfvars' \
+              'matilda-cloud-prep/*.tfvars.json' \
+              'matilda-cloud-prep/*.auto.tfvars' \
+              'matilda-cloud-prep/*.auto.tfvars.json' \
+              matilda-cloud-prep/tfplan \
+              'matilda-cloud-prep/*token*.json' \
+              'matilda-cloud-prep/*token*.txt' \
+              'matilda-cloud-prep/*token*.env' \
+              'matilda-cloud-prep/*token*.yaml' \
+              'matilda-cloud-prep/*token*.yml' \
+              'matilda-cloud-prep/*credentials*.json' \
+              'matilda-cloud-prep/*credential*.json' \
+              'matilda-cloud-prep/*service-account*.json' \
+              'matilda-cloud-prep/*serviceaccount*.json' \
+              'matilda-cloud-prep/*sa-key*.json' \
+              'matilda-cloud-prep/*key*.json' \
+              'matilda-cloud-prep/**/*.log' \
+              'matilda-cloud-prep/**/*.pem' \
+              'matilda-cloud-prep/**/*.key' \
+              'matilda-cloud-prep/**/*.p12' \
+              'matilda-cloud-prep/**/*.pfx' \
+              'matilda-cloud-prep/**/*.tfstate' \
+              'matilda-cloud-prep/**/*.tfstate.*' \
+              'matilda-cloud-prep/**/*.tfplan' \
+              'matilda-cloud-prep/**/*.tfvars' \
+              'matilda-cloud-prep/**/*.tfvars.json' \
+              'matilda-cloud-prep/**/*.auto.tfvars' \
+              'matilda-cloud-prep/**/*.auto.tfvars.json' \
+              'matilda-cloud-prep/**/tfplan' \
+              'matilda-cloud-prep/**/*token*.json' \
+              'matilda-cloud-prep/**/*token*.txt' \
+              'matilda-cloud-prep/**/*token*.env' \
+              'matilda-cloud-prep/**/*token*.yaml' \
+              'matilda-cloud-prep/**/*token*.yml' \
+              'matilda-cloud-prep/**/*credentials*.json' \
+              'matilda-cloud-prep/**/*credential*.json' \
+              'matilda-cloud-prep/**/*service-account*.json' \
+              'matilda-cloud-prep/**/*serviceaccount*.json' \
+              'matilda-cloud-prep/**/*sa-key*.json' \
+              'matilda-cloud-prep/**/*key*.json' \
             | grep -v '^matilda-discovery-readiness/reports/\.gitkeep$' || true
           )"
           if [ -n "$forbidden" ]; then
