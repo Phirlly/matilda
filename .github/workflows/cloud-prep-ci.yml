@@ -111,7 +111,7 @@ jobs:
       - name: Check Go coverage floor
         if: steps.changes.outputs.run_checks == 'true'
         working-directory: matilda-cloud-prep
-        run: go run ./internal/tools/coveragegate -profile coverage.out -min 88.0
+        run: go run ./internal/tools/coveragegate -profile coverage.out -min 95.0
 
       - name: Run Go vet
         if: steps.changes.outputs.run_checks == 'true'

@@ -172,7 +172,7 @@ introduced first. Provider-specific automation will be added only after the
 corresponding Matilda and official cloud-provider references are verified for
 that provider path.
 
-The Go CI gate runs formatting, tests with coverage, vet, build, and an 88%
+The Go CI gate runs formatting, tests with coverage, vet, build, and a 95%
 minimum coverage floor for the current scaffold.
 
 Project workflow and reference notes remain local-only under `docs/`.

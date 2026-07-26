@@ -11,7 +11,7 @@ import (
 	"strings"
 )
 
-const DefaultMinimumPercent = 88.0
+const DefaultMinimumPercent = 95.0
 
 type Summary struct {
 	Mode              string

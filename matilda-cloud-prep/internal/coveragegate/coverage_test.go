@@ -60,26 +60,26 @@ func TestSummarizeMergesDuplicateBlocks(t *testing.T) {
 func TestEvaluatePassesAtExactThreshold(t *testing.T) {
 	summary, err := Evaluate(strings.NewReader(strings.Join([]string{
 		"mode: set",
-		"covered.go:1.1,10.2 88 1",
-		"uncovered.go:1.1,10.2 12 0",
+		"covered.go:1.1,10.2 95 1",
+		"uncovered.go:1.1,10.2 5 0",
 		"",
-	}, "\n")), 88.0)
+	}, "\n")), 95.0)
 	if err != nil {
 		t.Fatalf("Evaluate returned error: %v", err)
 	}
 
-	if summary.Percent != 88.0 {
-		t.Fatalf("Percent = %.2f, want 88.00", summary.Percent)
+	if summary.Percent != 95.0 {
+		t.Fatalf("Percent = %.2f, want 95.00", summary.Percent)
 	}
 }
 
 func TestEvaluateFailsBelowThreshold(t *testing.T) {
 	summary, err := Evaluate(strings.NewReader(strings.Join([]string{
 		"mode: set",
-		"covered.go:1.1,10.2 87 1",
-		"uncovered.go:1.1,10.2 13 0",
+		"covered.go:1.1,10.2 94 1",
+		"uncovered.go:1.1,10.2 6 0",
 		"",
-	}, "\n")), 88.0)
+	}, "\n")), 95.0)
 	if err == nil {
 		t.Fatal("Evaluate returned nil error, want below-minimum error")
 	}
@@ -88,14 +88,33 @@ func TestEvaluateFailsBelowThreshold(t *testing.T) {
 	if !errors.As(err, &below) {
 		t.Fatalf("Evaluate error = %T %v, want BelowMinimumError", err, err)
 	}
-	if !strings.Contains(err.Error(), "coverage 87.00% is below required 88.00%") {
+	if !strings.Contains(err.Error(), "coverage 94.00% is below required 95.00%") {
 		t.Fatalf("Evaluate error = %q, want user-facing coverage threshold detail", err)
 	}
-	if summary.Percent != 87.0 {
-		t.Fatalf("Percent = %.2f, want 87.00", summary.Percent)
+	if summary.Percent != 94.0 {
+		t.Fatalf("Percent = %.2f, want 94.00", summary.Percent)
 	}
-	if below.Summary.Percent != 87.0 {
-		t.Fatalf("BelowMinimumError summary percent = %.2f, want 87.00", below.Summary.Percent)
+	if below.Summary.Percent != 94.0 {
+		t.Fatalf("BelowMinimumError summary percent = %.2f, want 94.00", below.Summary.Percent)
+	}
+}
+
+func TestEvaluateUsesRawPercentageBeforeThresholdComparison(t *testing.T) {
+	summary, err := Evaluate(strings.NewReader(strings.Join([]string{
+		"mode: set",
+		"covered.go:1.1,10.2 1899 1",
+		"uncovered.go:1.1,10.2 101 0",
+		"",
+	}, "\n")), 95.0)
+	if err == nil {
+		t.Fatal("Evaluate returned nil error for raw coverage below 95%")
+	}
+
+	if summary.Percent >= 95.0 {
+		t.Fatalf("Percent = %.4f, want raw value below 95.0", summary.Percent)
+	}
+	if !strings.Contains(err.Error(), "coverage 94.95% is below required 95.00%") {
+		t.Fatalf("Evaluate error = %q, want raw below-threshold result", err)
 	}
 }
 
@@ -160,7 +179,7 @@ func TestEvaluateRejectsInvalidThresholds(t *testing.T) {
 func TestEvaluateFileRejectsMissingProfile(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "coverage.out")
 
-	_, err := EvaluateFile(missing, 88.0)
+	_, err := EvaluateFile(missing, 95.0)
 	if err == nil {
 		t.Fatal("EvaluateFile returned nil error for missing profile")
 	}
@@ -172,7 +191,7 @@ func TestEvaluateFileRejectsMissingProfile(t *testing.T) {
 func TestEvaluateFileRejectsMalformedProfile(t *testing.T) {
 	profile := writeCoverageProfile(t, "mode: set\nmalformed\n")
 
-	_, err := EvaluateFile(profile, 88.0)
+	_, err := EvaluateFile(profile, 95.0)
 	if err == nil {
 		t.Fatal("EvaluateFile returned nil error for malformed profile")
 	}
@@ -184,14 +203,14 @@ func TestEvaluateFileRejectsMalformedProfile(t *testing.T) {
 func TestRunReportsGateResults(t *testing.T) {
 	profile := writeCoverageProfile(t, strings.Join([]string{
 		"mode: set",
-		"covered.go:1.1,10.2 88 1",
-		"uncovered.go:1.1,10.2 12 0",
+		"covered.go:1.1,10.2 95 1",
+		"uncovered.go:1.1,10.2 5 0",
 		"",
 	}, "\n"))
 
 	var stdout strings.Builder
 	var stderr strings.Builder
-	code := Run([]string{"-profile", profile, "-min", "88.0"}, &stdout, &stderr)
+	code := Run([]string{"-profile", profile, "-min", "95.0"}, &stdout, &stderr)
 
 	if code != ExitOK {
 		t.Fatalf("Run exit code = %d, want %d; stderr: %s", code, ExitOK, stderr.String())
@@ -199,24 +218,24 @@ func TestRunReportsGateResults(t *testing.T) {
 	if stderr.String() != "" {
 		t.Fatalf("stderr = %q, want empty", stderr.String())
 	}
-	for _, want := range []string{"coverage 88.00%", "meets required 88.00%", "88/100 statements"} {
+	for _, want := range []string{"coverage 95.00%", "meets required 95.00%", "95/100 statements"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("stdout = %q, want to contain %q", stdout.String(), want)
 		}
 	}
 }
 
-func TestRunReportsBelowMinimum(t *testing.T) {
+func TestRunUsesDefaultMinimumCoverage(t *testing.T) {
 	profile := writeCoverageProfile(t, strings.Join([]string{
 		"mode: set",
-		"covered.go:1.1,10.2 87 1",
-		"uncovered.go:1.1,10.2 13 0",
+		"covered.go:1.1,10.2 94 1",
+		"uncovered.go:1.1,10.2 6 0",
 		"",
 	}, "\n"))
 
 	var stdout strings.Builder
 	var stderr strings.Builder
-	code := Run([]string{"-profile", profile, "-min", "88.0"}, &stdout, &stderr)
+	code := Run([]string{"-profile", profile}, &stdout, &stderr)
 
 	if code != ExitGateFailed {
 		t.Fatalf("Run exit code = %d, want %d", code, ExitGateFailed)
@@ -224,7 +243,30 @@ func TestRunReportsBelowMinimum(t *testing.T) {
 	if stdout.String() != "" {
 		t.Fatalf("stdout = %q, want empty", stdout.String())
 	}
-	for _, want := range []string{"coverage 87.00%", "below required 88.00%", "87/100 statements"} {
+	if !strings.Contains(stderr.String(), "below required 95.00%") {
+		t.Fatalf("stderr = %q, want default 95%% threshold", stderr.String())
+	}
+}
+
+func TestRunReportsBelowMinimum(t *testing.T) {
+	profile := writeCoverageProfile(t, strings.Join([]string{
+		"mode: set",
+		"covered.go:1.1,10.2 94 1",
+		"uncovered.go:1.1,10.2 6 0",
+		"",
+	}, "\n"))
+
+	var stdout strings.Builder
+	var stderr strings.Builder
+	code := Run([]string{"-profile", profile, "-min", "95.0"}, &stdout, &stderr)
+
+	if code != ExitGateFailed {
+		t.Fatalf("Run exit code = %d, want %d", code, ExitGateFailed)
+	}
+	if stdout.String() != "" {
+		t.Fatalf("stdout = %q, want empty", stdout.String())
+	}
+	for _, want := range []string{"coverage 94.00%", "below required 95.00%", "94/100 statements"} {
 		if !strings.Contains(stderr.String(), want) {
 			t.Fatalf("stderr = %q, want to contain %q", stderr.String(), want)
 		}
@@ -245,7 +287,7 @@ func TestRunReportsProfileErrorsAsGateFailures(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var stdout strings.Builder
 			var stderr strings.Builder
-			code := Run([]string{"-profile", tt.profile, "-min", "88.0"}, &stdout, &stderr)
+			code := Run([]string{"-profile", tt.profile, "-min", "95.0"}, &stdout, &stderr)
 
 			if code != ExitGateFailed {
 				t.Fatalf("Run exit code = %d, want %d", code, ExitGateFailed)
@@ -266,7 +308,7 @@ func TestRunRejectsInvalidArguments(t *testing.T) {
 		args []string
 		want string
 	}{
-		{name: "missing profile flag", args: []string{"-min", "88.0"}, want: "profile"},
+		{name: "missing profile flag", args: []string{"-min", "95.0"}, want: "profile"},
 		{name: "invalid min flag", args: []string{"-profile", "coverage.out", "-min", "not-a-number"}, want: "invalid"},
 		{name: "minimum out of range", args: []string{"-profile", "coverage.out", "-min", "101"}, want: "minimum"},
 		{name: "unexpected positional arg", args: []string{"-profile", "coverage.out", "extra"}, want: "unexpected"},
