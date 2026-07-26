@@ -189,17 +189,23 @@ func commandString(request workflow.Request) string {
 }
 
 func actionPurpose(action assessment.Action) string {
-	switch action {
-	case assessment.ActionPreflight:
-		return "Cloud mutation: no. Checks readiness before setup."
-	case assessment.ActionApplyPrereqs:
-		return "Cloud mutation: yes, only after explicit approval in implemented provider paths."
-	case assessment.ActionValidate:
-		return "Cloud mutation: no. Verifies configured prerequisites after setup."
-	case assessment.ActionPackage:
-		return "Cloud mutation: local files only. Builds a whitelisted handoff artifact."
-	default:
+	contract, ok := workflow.ActionContractFor(action)
+	if !ok {
 		return "Cloud mutation: unknown. Unsupported actions fail closed."
+	}
+	return fmt.Sprintf("Cloud mutation: %s. %s", mutationHelp(contract.MutationLevel), contract.Purpose)
+}
+
+func mutationHelp(level workflow.MutationLevel) string {
+	switch level {
+	case workflow.MutationNone:
+		return "no"
+	case workflow.MutationCloud:
+		return "yes, only after explicit approval in implemented provider paths"
+	case workflow.MutationLocalOnly:
+		return "local files only"
+	default:
+		return "unknown"
 	}
 }
 
