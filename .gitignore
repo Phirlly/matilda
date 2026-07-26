@@ -22,6 +22,7 @@ matilda-cloud-prep/.matilda/
 matilda-cloud-prep/.gocache
 matilda-cloud-prep/.gocache/
 matilda-cloud-prep/coverage
+matilda-cloud-prep/coverage.out
 matilda-cloud-prep/coverage/
 matilda-cloud-prep/dist
 matilda-cloud-prep/dist/
