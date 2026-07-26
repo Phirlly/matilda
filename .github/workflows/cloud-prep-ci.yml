@@ -51,40 +51,69 @@ jobs:
           changed_files="$(git diff --name-only "$base..$head")"
           if printf '%s\n' "$changed_files" | grep -E '^(matilda-cloud-prep/|\.github/workflows/cloud-prep-ci\.yml$)' >/dev/null; then
             echo "run_checks=true" >> "$GITHUB_OUTPUT"
+            echo "base=$base" >> "$GITHUB_OUTPUT"
+            echo "head=$head" >> "$GITHUB_OUTPUT"
           else
             echo "No cloud-prep changes detected; required check passes without running project validation."
             echo "run_checks=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Check cloud-prep bootstrap is validation-safe
+      - name: Check committed diff whitespace
+        if: steps.changes.outputs.run_checks == 'true'
+        run: git diff --check "${{ steps.changes.outputs.base }}..${{ steps.changes.outputs.head }}"
+
+      - name: Verify cloud-prep local-only files are not tracked
         if: steps.changes.outputs.run_checks == 'true'
         run: |
-          if [ ! -d matilda-cloud-prep ]; then
-            echo "No tracked matilda-cloud-prep project files yet."
-            exit 0
-          fi
-
-          if [ -f matilda-cloud-prep/go.mod ]; then
-            echo "matilda-cloud-prep/go.mod exists, but Cloud Prep CI has not been updated with Go validation."
-            echo "Add setup-go, go test, go vet, and build checks before merging product code."
-            exit 1
-          fi
-
-          tracked_files="$(git ls-files matilda-cloud-prep)"
-          if [ -z "$tracked_files" ]; then
-            echo "No tracked matilda-cloud-prep project files yet."
-            exit 0
-          fi
-
           disallowed="$(
-            printf '%s\n' "$tracked_files" \
-              | grep -Ev '^matilda-cloud-prep/README\.md$' || true
+            git ls-files \
+              matilda-cloud-prep/PLAN.md \
+              matilda-cloud-prep/docs \
+              matilda-cloud-prep/coverage.out \
+              matilda-cloud-prep/handoff \
+              matilda-cloud-prep/packages \
+              matilda-cloud-prep/logs \
+              matilda-cloud-prep/tmp \
+              matilda-cloud-prep/matilda-prep \
+              || true
           )"
           if [ -n "$disallowed" ]; then
-            echo "Cloud Prep CI only allows README.md until real project validation is configured."
-            echo "Unexpected tracked files:"
+            echo "Local-only or generated cloud-prep files must not be tracked:"
             echo "$disallowed"
             exit 1
           fi
 
-          echo "matilda-cloud-prep has no Go module yet; README-only bootstrap is allowed."
+      - name: Verify cloud-prep Go module exists
+        if: steps.changes.outputs.run_checks == 'true'
+        run: |
+          if [ ! -f matilda-cloud-prep/go.mod ]; then
+            echo "matilda-cloud-prep/go.mod is required for Cloud Prep validation."
+            exit 1
+          fi
+
+      - name: Set up Go
+        if: steps.changes.outputs.run_checks == 'true'
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: matilda-cloud-prep/go.mod
+          cache: false
+
+      - name: Check Go formatting
+        if: steps.changes.outputs.run_checks == 'true'
+        working-directory: matilda-cloud-prep
+        run: test -z "$(gofmt -l cmd internal)"
+
+      - name: Run Go tests
+        if: steps.changes.outputs.run_checks == 'true'
+        working-directory: matilda-cloud-prep
+        run: go test ./...
+
+      - name: Run Go vet
+        if: steps.changes.outputs.run_checks == 'true'
+        working-directory: matilda-cloud-prep
+        run: go vet ./...
+
+      - name: Build matilda-prep
+        if: steps.changes.outputs.run_checks == 'true'
+        working-directory: matilda-cloud-prep
+        run: go build ./cmd/matilda-prep

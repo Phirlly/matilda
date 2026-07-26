@@ -164,10 +164,12 @@ logs, or generated customer handoff packages.
 
 ## Repository Status
 
-This project is currently in template-readiness stage.
+This project is in early scaffold stage.
 
-The next implementation slice is expected to add the Go module, CLI scaffold,
-initial command contract tests, and CI validation for Go.
+The initial Go module, provider-neutral CLI contract, fail-closed workflow
+registry, minimal manifest model, redaction behavior, and Go CI gate are being
+introduced first. Provider-specific automation will be added only after the
+corresponding Matilda and official cloud-provider references are verified for
+that provider path.
 
-Until then, the only tracked project file is this README. Project workflow and
-reference notes are local-only under `docs/`.
+Project workflow and reference notes remain local-only under `docs/`.
