@@ -103,10 +103,15 @@ jobs:
         working-directory: matilda-cloud-prep
         run: test -z "$(gofmt -l cmd internal)"
 
-      - name: Run Go tests
+      - name: Run Go tests with coverage
         if: steps.changes.outputs.run_checks == 'true'
         working-directory: matilda-cloud-prep
-        run: go test ./...
+        run: go test ./... -coverprofile=coverage.out
+
+      - name: Check Go coverage floor
+        if: steps.changes.outputs.run_checks == 'true'
+        working-directory: matilda-cloud-prep
+        run: go run ./internal/tools/coveragegate -profile coverage.out -min 88.0
 
       - name: Run Go vet
         if: steps.changes.outputs.run_checks == 'true'
