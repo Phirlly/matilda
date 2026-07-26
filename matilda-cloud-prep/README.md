@@ -18,21 +18,22 @@ The CLI will use Matilda assessment terms directly.
 
 Rapid Assessment has two preparation paths:
 
-- `Billing Based`: prepares exported billing data for assessment.
-- `API Based`: prepares cloud API access so Matilda discovery jobs can complete
-  before assessment.
+- `Rapid Assessment - Billing Based`: prepares exported billing data for
+  assessment.
+- `Rapid Assessment - API Based`: prepares cloud API access so Matilda
+  discovery jobs can complete before assessment.
 
-API Based may include cost or billing prerequisites where required by the
-provider and Matilda workflow. Matilda prerequisite guidance identifies asset
-and cost discovery as prerequisites, and describes API-based assessment as using
-discovered assets, billing data, and utilization metrics for the assessment
-period.
+Rapid Assessment - API Based may include cost or billing prerequisites where
+required by the provider and Matilda workflow. Matilda prerequisite guidance
+identifies asset and cost discovery as prerequisites, and describes API-based
+assessment as using discovered assets, billing data, and utilization metrics
+for the assessment period.
 
-For this project, API Based Rapid Assessment prepares access for provider-native
-cloud monitoring or usage signals where the Matilda/provider path supports that
-collection. It must not be described as OS-level, guest-level, memory,
-process-level, service-level, or application-level deep inspection unless that
-deeper scope is separately verified.
+For this project, Rapid Assessment - API Based prepares access for
+provider-native cloud monitoring or usage signals where the Matilda/provider
+path supports that collection. It must not be described as OS-level,
+guest-level, memory, process-level, service-level, or application-level deep
+inspection unless that deeper scope is separately verified.
 
 ### Deep Discovery
 
@@ -55,17 +56,22 @@ Unsupported or unverified provider paths must fail closed with a clear message.
 
 ## Planned User Experience
 
-The primary customer entrypoint will be a guided flow:
+The current scaffold provides a guided entrypoint:
 
 ```bash
 matilda-prep start
 ```
 
-The guided flow will ask for the Matilda outcome first, then the cloud provider,
-then it will inspect the connected environment before recommending coverage and
-changes. Customers should not need to understand provider hierarchy terms,
-billing export internals, IAM/RBAC details, or storage configuration before the
-tool has inspected what exists.
+The guided flow asks for the Matilda outcome first, then the cloud provider,
+and prints the correct objective-first `preflight` command for that path.
+Provider-specific discovery, prerequisite creation, validation, and packaging
+remain fail-closed until those paths are implemented from verified Matilda and
+official provider references.
+
+Future provider workflows should inspect the connected environment before
+recommending coverage and changes. Customers should not need to understand
+provider hierarchy terms, billing export internals, IAM/RBAC details, or
+storage configuration before the tool has inspected what exists.
 
 ## Planned Direct Commands
 
@@ -164,10 +170,15 @@ logs, or generated customer handoff packages.
 
 ## Repository Status
 
-This project is currently in template-readiness stage.
+This project is in early scaffold stage.
 
-The next implementation slice is expected to add the Go module, CLI scaffold,
-initial command contract tests, and CI validation for Go.
+The initial Go module, provider-neutral CLI contract, fail-closed workflow
+registry, minimal manifest model, redaction behavior, and Go CI gate are being
+introduced first. Provider-specific automation will be added only after the
+corresponding Matilda and official cloud-provider references are verified for
+that provider path.
 
-Until then, the only tracked project file is this README. Project workflow and
-reference notes are local-only under `docs/`.
+The Go CI gate runs formatting, tests with coverage, vet, build, and a 95%
+minimum coverage floor for the current scaffold.
+
+Project workflow and reference notes remain local-only under `docs/`.
