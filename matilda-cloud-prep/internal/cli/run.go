@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/assessment"
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/audit"
+	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/guided"
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/workflow"
 )
 
@@ -17,6 +19,10 @@ const (
 )
 
 func Run(args []string, stdout io.Writer, stderr io.Writer) int {
+	return RunWithInput(args, strings.NewReader(""), stdout, stderr)
+}
+
+func RunWithInput(args []string, stdin io.Reader, stdout io.Writer, stderr io.Writer) int {
 	if len(args) == 0 {
 		writeError(stderr, "usage: expected matilda-prep start, rapid-assessment, deep-discovery, --help, or --version")
 		return ExitUsage
@@ -34,7 +40,10 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 			writeError(stderr, "usage: matilda-prep start")
 			return ExitUsage
 		}
-		writeStart(stdout)
+		if err := guided.Run(stdin, stdout); err != nil {
+			writeError(stderr, err.Error())
+			return ExitUsage
+		}
 		return ExitOK
 	}
 
@@ -144,12 +153,6 @@ func hasTrailingHelp(args []string) bool {
 	default:
 		return false
 	}
-}
-
-func writeStart(stdout io.Writer) {
-	fmt.Fprintln(stdout, "matilda-prep start")
-	fmt.Fprintln(stdout, "guided flow: choose Matilda outcome, connect cloud, inspect coverage, review plan, approve, validate, package")
-	fmt.Fprintln(stdout, "direct syntax: matilda-prep rapid-assessment <billing|api> <provider> <action>")
 }
 
 func writeHelp(stdout io.Writer) {

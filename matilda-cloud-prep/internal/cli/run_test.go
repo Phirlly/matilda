@@ -9,14 +9,18 @@ import (
 )
 
 func runCLI(args ...string) (int, string, string) {
+	return runCLIWithInput("", args...)
+}
+
+func runCLIWithInput(input string, args ...string) (int, string, string) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	code := Run(args, &stdout, &stderr)
+	code := RunWithInput(args, strings.NewReader(input), &stdout, &stderr)
 	return code, stdout.String(), stderr.String()
 }
 
-func TestStartAccepted(t *testing.T) {
-	code, stdout, stderr := runCLI("start")
+func TestStartGuidesToSelectedPreflightCommand(t *testing.T) {
+	code, stdout, stderr := runCLIWithInput("1\n3\n", "start")
 
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr: %s", code, stderr)
@@ -24,10 +28,47 @@ func TestStartAccepted(t *testing.T) {
 	if stderr != "" {
 		t.Fatalf("stderr = %q, want empty", stderr)
 	}
-	for _, want := range []string{"guided", "matilda-prep start"} {
+	for _, want := range []string{
+		"Matilda Cloud Prep",
+		"Rapid Assessment - Billing Based",
+		"GCP",
+		"matilda-prep rapid-assessment billing gcp preflight",
+		"Provider-specific cloud automation is not implemented yet",
+	} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("stdout = %q, want to contain %q", stdout, want)
 		}
+	}
+}
+
+func TestStartInvalidSelectionReturnsUsageError(t *testing.T) {
+	code, stdout, stderr := runCLIWithInput("nope\n", "start")
+
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2", code)
+	}
+	if !strings.Contains(stdout, "What do you want to prepare?") {
+		t.Fatalf("stdout = %q, want guided prompt before error", stdout)
+	}
+	if !strings.Contains(stderr, "invalid selection") {
+		t.Fatalf("stderr = %q, want invalid selection message", stderr)
+	}
+}
+
+func TestStartEOFReturnsUsageErrorWithoutProviderFailure(t *testing.T) {
+	code, stdout, stderr := runCLIWithInput("", "start")
+
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2", code)
+	}
+	if !strings.Contains(stdout, "Matilda Cloud Prep") {
+		t.Fatalf("stdout = %q, want guided intro before cancellation", stdout)
+	}
+	if !strings.Contains(stderr, "guided setup cancelled") {
+		t.Fatalf("stderr = %q, want cancellation message", stderr)
+	}
+	if strings.Contains(strings.ToLower(stderr), "provider") {
+		t.Fatalf("stderr = %q, want cancellation distinct from provider failure", stderr)
 	}
 }
 
