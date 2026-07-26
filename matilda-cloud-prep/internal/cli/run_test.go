@@ -116,6 +116,7 @@ func TestRapidAssessmentObjectiveFirstAcceptedButFailsClosed(t *testing.T) {
 			if doc["status"] != "not_implemented" {
 				t.Fatalf("status = %v, want not_implemented in %s", doc["status"], stdout)
 			}
+			assertWorkflowContractFields(t, doc, "not_implemented", "none", "preflight")
 			if doc["code"] != "provider_capability_not_implemented" {
 				t.Fatalf("code = %v, want provider_capability_not_implemented", doc["code"])
 			}
@@ -136,6 +137,7 @@ func TestDeepDiscoveryObjectiveFirstAcceptedButFailsClosed(t *testing.T) {
 	if doc["status"] != "not_implemented" {
 		t.Fatalf("status = %v, want not_implemented", doc["status"])
 	}
+	assertWorkflowContractFields(t, doc, "not_implemented", "none", "preflight")
 	if stderr != "" {
 		t.Fatalf("stderr = %q, want empty", stderr)
 	}
@@ -155,6 +157,7 @@ func TestPackageProducesMinimalManifest(t *testing.T) {
 	if doc["status"] != "ready" {
 		t.Fatalf("status = %v, want ready", doc["status"])
 	}
+	assertWorkflowContractFields(t, doc, "guided", "local_only", "package")
 
 	manifest, ok := doc["manifest"].(map[string]any)
 	if !ok {
@@ -435,6 +438,43 @@ func decodeJSON(t *testing.T, input string) map[string]any {
 		t.Fatalf("output is not valid JSON: %v\n%s", err, input)
 	}
 	return doc
+}
+
+func assertWorkflowContractFields(t *testing.T, doc map[string]any, supportStatus, mutationLevel, action string) {
+	t.Helper()
+
+	if doc["support_status"] != supportStatus {
+		t.Fatalf("support_status = %v, want %s", doc["support_status"], supportStatus)
+	}
+	if doc["mutation_level"] != mutationLevel {
+		t.Fatalf("mutation_level = %v, want %s", doc["mutation_level"], mutationLevel)
+	}
+
+	actionContract, ok := doc["action_contract"].(map[string]any)
+	if !ok {
+		t.Fatalf("action_contract missing or wrong type: %#v", doc["action_contract"])
+	}
+	if actionContract["action"] != action {
+		t.Fatalf("action_contract.action = %v, want %s", actionContract["action"], action)
+	}
+	if actionContract["mutation_level"] != mutationLevel {
+		t.Fatalf("action_contract.mutation_level = %v, want %s", actionContract["mutation_level"], mutationLevel)
+	}
+	if actionContract["purpose"] == "" {
+		t.Fatal("action_contract.purpose is empty")
+	}
+	if actionContract["required_result"] == "" {
+		t.Fatal("action_contract.required_result is empty")
+	}
+
+	sourceHandles, ok := doc["source_handles"].([]any)
+	if !ok || len(sourceHandles) == 0 {
+		t.Fatalf("source_handles missing or empty: %#v", doc["source_handles"])
+	}
+	missingSource, ok := doc["missing_source_of_truth"].([]any)
+	if !ok || len(missingSource) == 0 {
+		t.Fatalf("missing_source_of_truth missing or empty: %#v", doc["missing_source_of_truth"])
+	}
 }
 
 type failingWriter struct{}
