@@ -4,7 +4,7 @@
 `matilda-prep`.
 
 The tool prepares cloud-platform-side prerequisites for Matilda SaaS onboarding
-across AWS, Azure, and Google Cloud. It is intended to help customers and
+across AWS, Azure, Google Cloud, and OCI. It is intended to help customers and
 operators set up, validate, and package the cloud-side inputs needed before
 using Matilda SaaS for Rapid Assessment or Deep Discovery workflows.
 
@@ -46,14 +46,36 @@ API onboarding followed by the Matilda discovery lifecycle: Precheck, Inventory
 generation is separate and should start only after asset and cost discovery
 complete.
 
+For OCI, Deep Discovery preparation is limited to the verified cloud-account
+scope. It must not imply guest OS, service dependency, database, application,
+or Kubernetes-specific automation unless that deeper scope is separately
+verified.
+
 Unsupported or unverified provider paths must fail closed with a clear message.
 
-## Planned CLI Shape
+## Planned User Experience
+
+The primary customer entrypoint will be a guided flow:
+
+```bash
+matilda-prep start
+```
+
+The guided flow will ask for the Matilda outcome first, then the cloud provider,
+then it will inspect the connected environment before recommending coverage and
+changes. Customers should not need to understand provider hierarchy terms,
+billing export internals, IAM/RBAC details, or storage configuration before the
+tool has inspected what exists.
+
+## Planned Direct Commands
+
+Direct commands should use the same outcome-first order as the guided flow.
+They are for repeatable automation, support, and testable command contracts.
 
 The planned Rapid Assessment command grammar is:
 
 ```bash
-matilda-prep <provider> rapid-assessment <billing|api> <action>
+matilda-prep rapid-assessment <billing|api> <provider> <action>
 ```
 
 Rapid Assessment providers:
@@ -62,12 +84,13 @@ Rapid Assessment providers:
 aws
 azure
 gcp
+oci
 ```
 
 The planned Deep Discovery command grammar is provider-specific:
 
 ```bash
-matilda-prep <provider> deep-discovery <action>
+matilda-prep deep-discovery <provider> <action>
 ```
 
 Deep Discovery support must be explicitly verified per provider. GCP API-based
@@ -89,10 +112,10 @@ Every provider path uses the same action names and safety contract.
 
 | Action | Cloud Mutation | Purpose | Result |
 | --- | --- | --- | --- |
-| `preflight` | No | Checks whether the selected provider scope is ready for the requested Matilda path before setup. | Readiness report with pass/warn/fail checks, missing permissions, missing APIs or services, billing/export blockers, and planned prerequisites. |
-| `apply-prereqs` | Yes | Creates or updates only verified cloud-side prerequisites for the selected path. | Change report showing created, updated, skipped, and already-correct resources, plus safe evidence and rollback notes where applicable. |
-| `validate` | No | Confirms the configured cloud-side prerequisites work after setup. | Validation report showing whether identity, scope, API access, billing export access, and provider-specific checks satisfy the selected Matilda path. |
-| `package` | Local files only | Builds a whitelisted handoff artifact from safe local evidence. | Local manifest or archive containing values and proof needed for Matilda SaaS onboarding, excluding credentials, private keys, tokens, raw logs, live inventory, customer data, and cloud state. |
+| `preflight` | No | Checks whether the selected coverage is ready for the requested Matilda path before setup. | Readiness report with pass/warn/fail checks, missing permissions, missing APIs or services, billing/export blockers, and planned prerequisites. |
+| `apply-prereqs` | Yes | Creates or updates only verified cloud-side prerequisites for the selected path. | Change report showing created, updated, skipped, and unchanged resources, plus safe evidence and rollback notes where applicable. |
+| `validate` | No | Confirms the configured cloud-side prerequisites work after setup. | Validation report showing whether identity, coverage, API access, billing export access, and provider-specific checks satisfy the selected Matilda path. |
+| `package` | Local files only | Builds a whitelisted handoff artifact from safe local evidence. | For the first scaffold, a provider-neutral `minimal_v0` manifest only. Future archives require an approved package schema. Credentials, private keys, tokens, raw logs, live inventory, customer data, and cloud state are excluded. |
 
 `preflight` answers "what is missing before setup?" `validate` answers "does
 the completed setup now satisfy the prerequisite path?"
@@ -100,11 +123,11 @@ the completed setup now satisfy the prerequisite path?"
 Examples:
 
 ```bash
-matilda-prep gcp rapid-assessment billing preflight
-matilda-prep gcp rapid-assessment api validate
-matilda-prep gcp deep-discovery preflight
-matilda-prep aws rapid-assessment billing package
-matilda-prep azure rapid-assessment api preflight
+matilda-prep rapid-assessment billing gcp preflight
+matilda-prep rapid-assessment api gcp validate
+matilda-prep deep-discovery gcp preflight
+matilda-prep rapid-assessment billing aws package
+matilda-prep rapid-assessment api azure preflight
 ```
 
 ## Implementation Direction
@@ -114,9 +137,11 @@ The normal implementation path will use official Go SDKs:
 - [Google Cloud Go client libraries](https://docs.cloud.google.com/go/docs/reference)
 - [AWS SDK for Go v2](https://docs.aws.amazon.com/sdk-for-go/v2/developer-guide/welcome.html)
 - [Azure SDK for Go](https://learn.microsoft.com/en-us/azure/developer/go/overview)
+- [OCI SDK for Go](https://docs.oracle.com/en-us/iaas/Content/API/SDKDocs/gosdk.htm)
 
-Cloud provider CLIs such as `aws`, `az`, and `gcloud` may be useful diagnostic
-fallbacks later, but they should not be required for normal automation.
+Cloud provider CLIs such as `aws`, `az`, `gcloud`, and `oci` may be useful
+diagnostic fallbacks later, but they should not be required for normal
+automation.
 
 The planned architecture keeps the CLI entrypoint thin, cloud SDK calls inside
 provider adapters, and provider-neutral workflow logic testable without live
