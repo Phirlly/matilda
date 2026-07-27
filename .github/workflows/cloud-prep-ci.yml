@@ -75,6 +75,9 @@ jobs:
               matilda-cloud-prep/logs \
               matilda-cloud-prep/tmp \
               matilda-cloud-prep/matilda-prep \
+              matilda-cloud-prep/.gocache \
+              matilda-cloud-prep/.gomodcache \
+              matilda-cloud-prep/.gopath \
               || true
           )"
           if [ -n "$disallowed" ]; then

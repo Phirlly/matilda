@@ -16,6 +16,7 @@ import (
 
 const (
 	maxDataExportsListPages = 100
+	maxExportDetailChecks   = 100
 	maxListObjectPages      = 5
 )
 
@@ -89,7 +90,12 @@ func (runner Runner) Run(ctx context.Context, request workflow.Request) workflow
 		state.add(failFinding(providerErrorCode(err, "aws_data_exports_access_denied"), "AWS Data Exports discovery", "AWS Data Exports definitions could not be listed."))
 		return state.report("verified", identitySummary(accountEvidence, callerEvidence))
 	}
-	selected, finding := selectCUR2Export(summaries)
+	exports, err := runner.inspectListedExports(ctx, summaries)
+	if err != nil {
+		state.add(failFinding(providerErrorCode(err, "aws_cur2_export_invalid_shape"), "AWS CUR 2.0 export definition", "Listed AWS exports could not be inspected."))
+		return state.report("verified", identitySummary(accountEvidence, callerEvidence))
+	}
+	export, finding := selectCUR2Export(exports)
 	if finding.Code != "" {
 		state.add(finding)
 		return state.report("verified", identitySummary(accountEvidence, callerEvidence))
@@ -98,14 +104,6 @@ func (runner Runner) Run(ctx context.Context, request workflow.Request) workflow
 		workflow.PlanEvidence{Key: "cur_version", Value: "CUR2.0"},
 	))
 
-	export, err := runner.client.GetExport(ctx, selected.ExportARN)
-	if err != nil {
-		state.add(failFinding(providerErrorCode(err, "aws_cur2_export_invalid_shape"), "AWS CUR 2.0 export definition", "Selected AWS CUR 2.0 export could not be inspected."))
-		return state.report("verified", identitySummary(accountEvidence, callerEvidence))
-	}
-	if export.ExportARN == "" {
-		export.ExportARN = selected.ExportARN
-	}
 	if export.SourceARN == "" {
 		export.SourceARN = export.ExportARN
 	}
@@ -225,31 +223,69 @@ func listAllExports(ctx context.Context, client Client) ([]ExportSummary, error)
 	return nil, dataExportsPaginationError()
 }
 
-func selectCUR2Export(exports []ExportSummary) (ExportSummary, checkFinding) {
-	if len(exports) == 0 {
-		return ExportSummary{}, failFinding("aws_cur2_export_not_found", "AWS CUR 2.0 export discovery", "No AWS Data Exports definitions were found.")
+func (runner Runner) inspectListedExports(ctx context.Context, summaries []ExportSummary) ([]Export, error) {
+	if len(summaries) > maxExportDetailChecks {
+		return nil, dataExportsPaginationError()
 	}
 
-	candidates := []ExportSummary{}
+	exports := make([]Export, 0, len(summaries))
+	for _, summary := range summaries {
+		exportARN := strings.TrimSpace(summary.ExportARN)
+		if exportARN == "" {
+			exports = append(exports, Export{Name: summary.Name})
+			continue
+		}
+		export, err := runner.client.GetExport(ctx, exportARN)
+		if err != nil {
+			return nil, err
+		}
+		if export.Name == "" {
+			export.Name = summary.Name
+		}
+		if export.ExportARN == "" {
+			export.ExportARN = exportARN
+		}
+		if export.SourceARN == "" {
+			export.SourceARN = export.ExportARN
+		}
+		exports = append(exports, export)
+	}
+	return exports, nil
+}
+
+func selectCUR2Export(exports []Export) (Export, checkFinding) {
+	if len(exports) == 0 {
+		return Export{}, failFinding("aws_cur2_export_not_found", "AWS CUR 2.0 export discovery", "No AWS Data Exports definitions were found.")
+	}
+
+	candidates := []Export{}
 	outOfScope := false
 	for _, export := range exports {
 		switch {
-		case export.TableName == cur2TableName:
+		case hasCUR2TableConfiguration(export) || referencesCUR2QuerySource(export.QueryStatement):
 			candidates = append(candidates, export)
-		case export.TableName != "" || export.SourceType != "":
+		case export.QueryStatement != "" || len(export.TableConfigurations) > 0:
 			outOfScope = true
 		}
 	}
 	if len(candidates) == 0 && outOfScope {
-		return ExportSummary{}, failFinding("aws_non_cur2_source_out_of_scope", "AWS billing export source", "Only non-CUR-2.0 billing exports were found for this path.")
+		return Export{}, failFinding("aws_non_cur2_source_out_of_scope", "AWS billing export source", "Only non-CUR-2.0 billing exports were found for this path.")
 	}
 	if len(candidates) == 0 {
-		return ExportSummary{}, failFinding("aws_cur2_export_not_found", "AWS CUR 2.0 export discovery", "No CUR 2.0 export candidate was found.")
+		return Export{}, failFinding("aws_cur2_export_not_found", "AWS CUR 2.0 export discovery", "No CUR 2.0 export candidate was found.")
 	}
 	if len(candidates) > 1 {
-		return ExportSummary{}, failFinding("aws_cur2_export_ambiguous", "AWS CUR 2.0 export discovery", "Multiple CUR 2.0 export candidates were found.")
+		return Export{}, failFinding("aws_cur2_export_ambiguous", "AWS CUR 2.0 export discovery", "Multiple CUR 2.0 export candidates were found.")
 	}
 	return candidates[0], checkFinding{}
+}
+
+func hasCUR2TableConfiguration(export Export) bool {
+	if export.TableConfigurations == nil {
+		return false
+	}
+	_, ok := export.TableConfigurations[cur2TableName]
+	return ok
 }
 
 func hasTable(tables []TableSummary, name string) bool {
@@ -287,11 +323,11 @@ func (runner Runner) deliveryFindings(ctx context.Context, export Export) []chec
 
 	latest := latestExecution(inspectedExecutions)
 	switch strings.ToUpper(strings.TrimSpace(latest.Status)) {
-	case "SUCCEEDED", "SUCCESS", "DELIVERED", "COMPLETED":
+	case "DELIVERY_SUCCESS", "SUCCEEDED", "SUCCESS", "DELIVERED", "COMPLETED":
 		return []checkFinding{passFinding("aws_cur2_delivery_ready", "AWS export delivery status", "Latest AWS Data Exports delivery status is healthy.")}
-	case "IN_PROGRESS", "RUNNING", "STARTED":
+	case "INITIATION_IN_PROCESS", "QUERY_QUEUED", "QUERY_IN_PROCESS", "DELIVERY_IN_PROCESS", "IN_PROGRESS", "RUNNING", "STARTED":
 		return []checkFinding{warnFinding("aws_cur2_delivery_not_started", "AWS export delivery status", "Latest AWS Data Exports delivery is still in progress.", true)}
-	case "FAILED", "FAILURE", "UNHEALTHY":
+	case "QUERY_FAILURE", "DELIVERY_FAILURE", "FAILED", "FAILURE", "UNHEALTHY":
 		return []checkFinding{failFinding("aws_cur2_export_invalid_shape", "AWS export delivery status", "Latest AWS Data Exports delivery reports a failure.")}
 	}
 	return []checkFinding{warnFinding("aws_cur2_delivery_not_started", "AWS export delivery status", "AWS Data Exports delivery status is not conclusive yet.", true)}
@@ -300,7 +336,7 @@ func (runner Runner) deliveryFindings(ctx context.Context, export Export) []chec
 func latestExecution(executions []Execution) Execution {
 	latest := executions[0]
 	for _, execution := range executions[1:] {
-		if execution.StartedAt.After(latest.StartedAt) {
+		if execution.StatusObservedAt.After(latest.StatusObservedAt) {
 			latest = execution
 		}
 	}
@@ -437,6 +473,10 @@ func sourceHandles() []workflow.SourceHandle {
 		{
 			Label: "AWS Official Implementation References",
 			URI:   "docs/references/aws/official-implementation-references.md",
+		},
+		{
+			Label: "AWS SDK Go v2 Read-Only Adapter References",
+			URI:   "docs/references/aws/aws-sdk-go-v2-readonly-adapter.md",
 		},
 	}
 }

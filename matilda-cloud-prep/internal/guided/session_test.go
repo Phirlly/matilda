@@ -20,7 +20,7 @@ func TestRunRapidBillingGCPShowsObjectiveFirstPreflight(t *testing.T) {
 		"matilda-prep rapid-assessment billing gcp preflight",
 		"Skip Configuration",
 		"does not skip cloud-side billing export/report preparation",
-		"Provider-specific cloud automation is not implemented yet",
+		"Implemented provider paths run verified read-only checks",
 		"fail-closed",
 		"non-mutating",
 	} {
