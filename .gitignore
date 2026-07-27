@@ -21,6 +21,10 @@ matilda-cloud-prep/.matilda
 matilda-cloud-prep/.matilda/
 matilda-cloud-prep/.gocache
 matilda-cloud-prep/.gocache/
+matilda-cloud-prep/.gomodcache
+matilda-cloud-prep/.gomodcache/
+matilda-cloud-prep/.gopath
+matilda-cloud-prep/.gopath/
 matilda-cloud-prep/coverage
 matilda-cloud-prep/coverage.out
 matilda-cloud-prep/coverage/

@@ -7,7 +7,7 @@ import (
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/workflow"
 )
 
-func TestDefaultRegistryWiresAWSBillingPreflightAsDependencyBlocked(t *testing.T) {
+func TestRegistryCanKeepAWSBillingPreflightDependencyBlocked(t *testing.T) {
 	request := workflow.Request{
 		Goal:           assessment.RapidAssessment,
 		CollectionPath: assessment.CollectionBilling,
@@ -15,7 +15,7 @@ func TestDefaultRegistryWiresAWSBillingPreflightAsDependencyBlocked(t *testing.T
 		Action:         assessment.ActionPreflight,
 	}
 
-	result := DefaultRegistry().Execute(request)
+	result := Registry(RegistryConfig{}).Execute(request)
 
 	if result.Status != workflow.RunStatusBlocked {
 		t.Fatalf("Status = %q, want %q", result.Status, workflow.RunStatusBlocked)
@@ -55,5 +55,21 @@ func TestDefaultRegistryKeepsUnregisteredProviderPathsFailClosed(t *testing.T) {
 	}
 	if result.Mutated {
 		t.Fatal("unregistered provider path must not report mutation")
+	}
+}
+
+func TestDefaultRegistryConstructionDoesNotRequireAWSConfiguration(t *testing.T) {
+	registry := DefaultRegistry()
+
+	request := workflow.Request{
+		Goal:           assessment.RapidAssessment,
+		CollectionPath: assessment.CollectionBilling,
+		Provider:       assessment.ProviderGCP,
+		Action:         assessment.ActionPreflight,
+	}
+	result := registry.Execute(request)
+
+	if result.Code != "provider_capability_not_implemented" {
+		t.Fatalf("Code = %q, want provider_capability_not_implemented", result.Code)
 	}
 }

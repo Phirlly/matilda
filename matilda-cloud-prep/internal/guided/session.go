@@ -130,7 +130,7 @@ func writeNextSteps(stdout io.Writer, outcome outcomeOption, cloud cloudOption) 
 
 	fmt.Fprintln(stdout)
 	fmt.Fprintln(stdout, "Current scaffold safety:")
-	fmt.Fprintln(stdout, "  Provider-specific cloud automation is not implemented yet.")
+	fmt.Fprintln(stdout, "  Implemented provider paths run verified read-only checks.")
 	fmt.Fprintln(stdout, "  Unimplemented paths remain fail-closed and non-mutating.")
 	fmt.Fprintln(stdout, "  No cloud resources or Matilda SaaS portal settings were changed.")
 }

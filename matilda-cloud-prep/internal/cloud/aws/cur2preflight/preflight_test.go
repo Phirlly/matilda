@@ -42,6 +42,7 @@ func TestPreflightReadyUsesCUR2AndSafeEvidence(t *testing.T) {
 	assertCheckEvidence(t, result, "caller_ref", "sha256:")
 	assertCheckEvidence(t, result, "cur_version", "CUR2.0")
 	assertCheckEvidence(t, result, "previous_billing_period", "2026-06")
+	assertSourceHandle(t, result, "docs/references/aws/aws-sdk-go-v2-readonly-adapter.md")
 
 	for _, call := range []string{
 		"CheckConfiguration",
@@ -60,6 +61,44 @@ func TestPreflightReadyUsesCUR2AndSafeEvidence(t *testing.T) {
 			t.Fatalf("%s was not called", call)
 		}
 	}
+}
+
+func TestPreflightDiscoversCUR2ByInspectingListedExports(t *testing.T) {
+	client := baselineClient()
+	client.exportPages = []ExportPage{{Exports: []ExportSummary{
+		{Name: "focus", ExportARN: "arn:aws:bcm-data-exports:us-east-1:123456789012:export/focus"},
+		{Name: "matilda-cur2", ExportARN: client.export.ExportARN},
+	}}}
+	client.exportsByARN = map[string]Export{
+		"arn:aws:bcm-data-exports:us-east-1:123456789012:export/focus": {
+			Name:           "focus",
+			ExportARN:      "arn:aws:bcm-data-exports:us-east-1:123456789012:export/focus",
+			QueryStatement: "SELECT charge_category FROM FOCUS_1_2_AWS",
+			TableConfigurations: map[string]map[string]string{
+				"FOCUS_1_2_AWS": {},
+			},
+		},
+		client.export.ExportARN: client.export,
+	}
+
+	result := runPreflight(t, client)
+
+	if result.Status != workflow.StatusReady {
+		t.Fatalf("Status = %q, want %q; code=%q", result.Status, workflow.StatusReady, result.Code)
+	}
+	if result.Code != "aws_cur2_preflight_ready" {
+		t.Fatalf("Code = %q, want aws_cur2_preflight_ready", result.Code)
+	}
+	if client.calls["GetExport"] != 2 {
+		t.Fatalf("GetExport calls = %d, want 2", client.calls["GetExport"])
+	}
+	if got := client.getExportARNs; !reflect.DeepEqual(got, []string{
+		"arn:aws:bcm-data-exports:us-east-1:123456789012:export/focus",
+		client.export.ExportARN,
+	}) {
+		t.Fatalf("GetExport ARNs = %#v, want listed export ARNs in order", got)
+	}
+	assertNoUnsafeAWSOutput(t, result)
 }
 
 func TestPreflightClassifiesConfigurationFailures(t *testing.T) {
@@ -137,8 +176,18 @@ func TestPreflightClassifiesTableAndExportDiscoveryFailures(t *testing.T) {
 			name: "FOCUS export only",
 			mutate: func(client *fakeClient) {
 				client.exportPages = []ExportPage{{Exports: []ExportSummary{
-					{Name: "focus", ExportARN: "arn:aws:bcm-data-exports:us-east-1:123456789012:export/focus", TableName: "FOCUS_1_2_AWS"},
+					{Name: "focus", ExportARN: "arn:aws:bcm-data-exports:us-east-1:123456789012:export/focus"},
 				}}}
+				client.exportsByARN = map[string]Export{
+					"arn:aws:bcm-data-exports:us-east-1:123456789012:export/focus": {
+						Name:           "focus",
+						ExportARN:      "arn:aws:bcm-data-exports:us-east-1:123456789012:export/focus",
+						QueryStatement: "SELECT charge_category FROM FOCUS_1_2_AWS",
+						TableConfigurations: map[string]map[string]string{
+							"FOCUS_1_2_AWS": {},
+						},
+					},
+				}
 			},
 			code: "aws_non_cur2_source_out_of_scope",
 		},
@@ -146,8 +195,15 @@ func TestPreflightClassifiesTableAndExportDiscoveryFailures(t *testing.T) {
 			name: "legacy CUR export only",
 			mutate: func(client *fakeClient) {
 				client.exportPages = []ExportPage{{Exports: []ExportSummary{
-					{Name: "legacy", ExportARN: "arn:aws:cur:us-east-1:123456789012:definition/legacy", SourceType: "legacy_cur"},
+					{Name: "legacy", ExportARN: "arn:aws:cur:us-east-1:123456789012:definition/legacy"},
 				}}}
+				client.exportsByARN = map[string]Export{
+					"arn:aws:cur:us-east-1:123456789012:definition/legacy": {
+						Name:           "legacy",
+						ExportARN:      "arn:aws:cur:us-east-1:123456789012:definition/legacy",
+						QueryStatement: "SELECT identity_line_item_id FROM LEGACY_CUR",
+					},
+				}
 			},
 			code: "aws_non_cur2_source_out_of_scope",
 		},
@@ -633,19 +689,28 @@ func TestPreflightClassifiesDeliveryStatus(t *testing.T) {
 			wantStatus: workflow.StatusReady,
 		},
 		{
-			name: "in progress execution warns",
+			name: "AWS delivery success passes",
 			mutate: func(client *fakeClient) {
 				client.executionPages = []ExecutionPage{{Executions: []Execution{{ID: "execution-1"}}}}
-				client.execution = Execution{ID: "execution-1", Status: "IN_PROGRESS"}
+				client.execution = Execution{ID: "execution-1", Status: "DELIVERY_SUCCESS", StatusObservedAt: fixedNow().Add(-1 * time.Hour)}
+			},
+			code:       "aws_cur2_preflight_ready",
+			wantStatus: workflow.StatusReady,
+		},
+		{
+			name: "AWS delivery in progress warns",
+			mutate: func(client *fakeClient) {
+				client.executionPages = []ExecutionPage{{Executions: []Execution{{ID: "execution-1"}}}}
+				client.execution = Execution{ID: "execution-1", Status: "DELIVERY_IN_PROCESS"}
 			},
 			code:       "aws_cur2_delivery_not_started",
 			wantStatus: workflow.StatusReady,
 		},
 		{
-			name: "failed execution blocks",
+			name: "AWS delivery failure blocks",
 			mutate: func(client *fakeClient) {
 				client.executionPages = []ExecutionPage{{Executions: []Execution{{ID: "execution-1"}}}}
-				client.execution = Execution{ID: "execution-1", Status: "FAILED"}
+				client.execution = Execution{ID: "execution-1", Status: "DELIVERY_FAILURE"}
 			},
 			code:       "aws_cur2_export_invalid_shape",
 			wantStatus: workflow.RunStatusBlocked,
@@ -654,12 +719,12 @@ func TestPreflightClassifiesDeliveryStatus(t *testing.T) {
 			name: "latest failed execution blocks despite older success",
 			mutate: func(client *fakeClient) {
 				client.executionPages = []ExecutionPage{{Executions: []Execution{
-					{ID: "older", StartedAt: fixedNow().Add(-3 * time.Hour)},
-					{ID: "newer", StartedAt: fixedNow().Add(-1 * time.Hour)},
+					{ID: "older", StatusObservedAt: fixedNow().Add(-3 * time.Hour)},
+					{ID: "newer", StatusObservedAt: fixedNow().Add(-1 * time.Hour)},
 				}}}
 				client.executionsByID = map[string]Execution{
-					"older": {ID: "older", Status: "SUCCEEDED", StartedAt: fixedNow().Add(-3 * time.Hour)},
-					"newer": {ID: "newer", Status: "FAILED", StartedAt: fixedNow().Add(-1 * time.Hour)},
+					"older": {ID: "older", Status: "SUCCEEDED", StatusObservedAt: fixedNow().Add(-3 * time.Hour)},
+					"newer": {ID: "newer", Status: "FAILED", StatusObservedAt: fixedNow().Add(-1 * time.Hour)},
 				}
 			},
 			code:       "aws_cur2_export_invalid_shape",
@@ -685,16 +750,44 @@ func TestPreflightClassifiesDeliveryStatus(t *testing.T) {
 	}
 }
 
+func TestPreflightChoosesLatestExecutionByStatusObservationTime(t *testing.T) {
+	client := baselineClient()
+	client.executionPages = []ExecutionPage{{Executions: []Execution{
+		{ID: "older-created", StatusObservedAt: fixedNow().Add(-30 * time.Minute)},
+		{ID: "newer-updated", StatusObservedAt: fixedNow().Add(-5 * time.Minute)},
+	}}}
+	client.executionsByID = map[string]Execution{
+		"older-created": {ID: "older-created", Status: "DELIVERY_SUCCESS", StatusObservedAt: fixedNow().Add(-30 * time.Minute)},
+		"newer-updated": {ID: "newer-updated", Status: "DELIVERY_FAILURE", StatusObservedAt: fixedNow().Add(-5 * time.Minute)},
+	}
+
+	result := runPreflight(t, client)
+
+	assertBlockedCode(t, result, "aws_cur2_export_invalid_shape")
+	assertNoUnsafeAWSOutput(t, result)
+}
+
 func TestPreflightHandlesListPagination(t *testing.T) {
 	client := baselineClient()
 	client.exportPages = []ExportPage{
 		{
-			Exports:   []ExportSummary{{Name: "focus", ExportARN: "arn:aws:bcm-data-exports:us-east-1:123456789012:export/focus", TableName: "FOCUS_1_2_AWS"}},
+			Exports:   []ExportSummary{{Name: "focus", ExportARN: "arn:aws:bcm-data-exports:us-east-1:123456789012:export/focus"}},
 			NextToken: "next-export-page",
 		},
 		{
-			Exports: []ExportSummary{{Name: "matilda-cur2", ExportARN: client.export.ExportARN, TableName: "COST_AND_USAGE_REPORT"}},
+			Exports: []ExportSummary{{Name: "matilda-cur2", ExportARN: client.export.ExportARN}},
 		},
+	}
+	client.exportsByARN = map[string]Export{
+		"arn:aws:bcm-data-exports:us-east-1:123456789012:export/focus": {
+			Name:           "focus",
+			ExportARN:      "arn:aws:bcm-data-exports:us-east-1:123456789012:export/focus",
+			QueryStatement: "SELECT charge_category FROM FOCUS_1_2_AWS",
+			TableConfigurations: map[string]map[string]string{
+				"FOCUS_1_2_AWS": {},
+			},
+		},
+		client.export.ExportARN: client.export,
 	}
 	client.objectPages = []ObjectPage{
 		{
@@ -872,6 +965,17 @@ func assertCheckEvidence(t *testing.T, result workflow.Result, key string, wantC
 	t.Fatalf("did not find evidence key %q containing %q", key, wantContains)
 }
 
+func assertSourceHandle(t *testing.T, result workflow.Result, uri string) {
+	t.Helper()
+
+	for _, handle := range result.SourceHandles {
+		if handle.URI == uri {
+			return
+		}
+	}
+	t.Fatalf("did not find source handle URI %q in %#v", uri, result.SourceHandles)
+}
+
 type fakeClient struct {
 	config               Configuration
 	configErr            error
@@ -886,6 +990,8 @@ type fakeClient struct {
 	exportPagesByCall    bool
 	listExportsErr       error
 	export               Export
+	exportsByARN         map[string]Export
+	getExportARNs        []string
 	exportErr            error
 	bucketAccess         BucketAccess
 	bucketErr            error
@@ -953,6 +1059,10 @@ func (f *fakeClient) ListExports(_ context.Context, token string) (ExportPage, e
 
 func (f *fakeClient) GetExport(_ context.Context, exportARN string) (Export, error) {
 	f.record("GetExport")
+	f.getExportARNs = append(f.getExportARNs, exportARN)
+	if f.exportsByARN != nil {
+		return f.exportsByARN[exportARN], f.exportErr
+	}
 	return f.export, f.exportErr
 }
 
@@ -1065,9 +1175,9 @@ func baselineClient() *fakeClient {
 			Resource:      "arn:aws:s3:::matilda-cur2-billing/matilda/cur2/*",
 		}),
 		executionPages: []ExecutionPage{{
-			Executions: []Execution{{ID: "execution-1", StartedAt: fixedNow().Add(-2 * time.Hour)}},
+			Executions: []Execution{{ID: "execution-1", StatusObservedAt: fixedNow().Add(-2 * time.Hour)}},
 		}},
-		execution: Execution{ID: "execution-1", Status: "SUCCEEDED", StartedAt: fixedNow().Add(-2 * time.Hour)},
+		execution: Execution{ID: "execution-1", Status: "SUCCEEDED", StatusObservedAt: fixedNow().Add(-2 * time.Hour)},
 		objectPages: []ObjectPage{{
 			Keys: []string{"matilda/cur2/matilda-cur2/data/BILLING_PERIOD=2026-06/part-000.gz"},
 		}},

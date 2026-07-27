@@ -64,7 +64,8 @@ matilda-prep start
 
 The guided flow asks for the Matilda outcome first, then the cloud provider,
 and prints the correct objective-first `preflight` command for that path.
-Provider-specific discovery, prerequisite creation, validation, and packaging
+Implemented provider paths run verified read-only checks. Unsupported or
+unverified provider discovery, prerequisite creation, validation, and packaging
 remain fail-closed until those paths are implemented from verified Matilda and
 official provider references.
 
