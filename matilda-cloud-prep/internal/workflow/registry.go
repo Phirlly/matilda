@@ -1,6 +1,8 @@
 package workflow
 
 import (
+	"context"
+
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/assessment"
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/handoff"
 )
@@ -30,15 +32,24 @@ type Result struct {
 	Warnings                      []handoff.Warning `json:"warnings,omitempty"`
 }
 
-type Registry struct{}
+type Registry struct {
+	runners map[Request]CapabilityRunner
+}
 
 func DefaultRegistry() Registry {
 	return Registry{}
 }
 
-func (Registry) Execute(request Request) Result {
+func (registry Registry) Execute(request Request) Result {
+	return registry.ExecuteContext(context.Background(), request)
+}
+
+func (registry Registry) ExecuteContext(ctx context.Context, request Request) Result {
 	if request.Action == assessment.ActionPackage {
 		return packageMinimalManifest(request)
+	}
+	if runner := registry.runners[request]; runner != nil {
+		return buildCapabilityResult(request, runner.Run(ctx, request))
 	}
 
 	contract := mustActionContract(request.Action)
