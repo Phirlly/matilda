@@ -8,14 +8,17 @@ import (
 
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/assessment"
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/audit"
+	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/bootstrap"
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/guided"
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/workflow"
 )
 
 const (
 	ExitOK             = 0
+	ExitFailed         = 1
 	ExitUsage          = 2
 	ExitNotImplemented = 3
+	ExitBlocked        = 4
 )
 
 func Run(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -68,16 +71,22 @@ func RunWithInput(args []string, stdin io.Reader, stdout io.Writer, stderr io.Wr
 		return ExitOK
 	}
 
-	result := workflow.DefaultRegistry().Execute(request)
+	result := bootstrap.DefaultRegistry().Execute(request)
 	if err := writeJSON(stdout, result); err != nil {
 		writeError(stderr, err.Error())
 		return ExitUsage
 	}
 
-	if result.Status == workflow.StatusNotImplemented {
+	switch result.Status {
+	case workflow.StatusNotImplemented:
 		return ExitNotImplemented
+	case workflow.RunStatusBlocked:
+		return ExitBlocked
+	case workflow.RunStatusFailed:
+		return ExitFailed
+	default:
+		return ExitOK
 	}
-	return ExitOK
 }
 
 func parseRequest(args []string) (workflow.Request, error) {
