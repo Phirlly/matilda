@@ -127,6 +127,53 @@ func TestRapidAssessmentObjectiveFirstAcceptedButFailsClosed(t *testing.T) {
 	}
 }
 
+func TestAWSBillingPreflightUsesDependencyBlockedRuntimePath(t *testing.T) {
+	code, stdout, stderr := runCLI("rapid-assessment", "billing", "aws", "preflight")
+
+	if code != 4 {
+		t.Fatalf("exit code = %d, want 4; stderr: %s", code, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty for structured blocked output", stderr)
+	}
+
+	doc := decodeJSON(t, stdout)
+	if doc["status"] != "blocked" {
+		t.Fatalf("status = %v, want blocked in %s", doc["status"], stdout)
+	}
+	if doc["support_status"] != "blocked" {
+		t.Fatalf("support_status = %v, want blocked", doc["support_status"])
+	}
+	if doc["mutation_level"] != "none" {
+		t.Fatalf("mutation_level = %v, want none", doc["mutation_level"])
+	}
+	actionContract, ok := doc["action_contract"].(map[string]any)
+	if !ok {
+		t.Fatalf("action_contract missing or wrong type: %#v", doc["action_contract"])
+	}
+	if actionContract["action"] != "preflight" {
+		t.Fatalf("action_contract.action = %v, want preflight", actionContract["action"])
+	}
+	sourceHandles, ok := doc["source_handles"].([]any)
+	if !ok || len(sourceHandles) == 0 {
+		t.Fatalf("source_handles missing or empty: %#v", doc["source_handles"])
+	}
+	if doc["code"] != "aws_provider_capability_blocked" {
+		t.Fatalf("code = %v, want aws_provider_capability_blocked", doc["code"])
+	}
+	if doc["mutated"] != false {
+		t.Fatalf("mutated = %v, want false", doc["mutated"])
+	}
+	if doc["provider_capability_implemented"] != true {
+		t.Fatalf("provider_capability_implemented = %v, want true", doc["provider_capability_implemented"])
+	}
+	for _, forbidden := range []string{"/Users/", "arn:aws", "access_key", "secret_key", "session_token", "raw_billing"} {
+		if strings.Contains(stdout, forbidden) {
+			t.Fatalf("AWS preflight output contains forbidden term %q in %s", forbidden, stdout)
+		}
+	}
+}
+
 func TestDeepDiscoveryObjectiveFirstAcceptedButFailsClosed(t *testing.T) {
 	code, stdout, stderr := runCLI("deep-discovery", "gcp", "preflight")
 
