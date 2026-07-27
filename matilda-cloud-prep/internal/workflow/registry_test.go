@@ -127,6 +127,55 @@ func TestPackageActionReturnsMinimalManifestWithProviderSchemaWarning(t *testing
 	}
 }
 
+func TestPreflightReturnsProviderNeutralExecutionPlan(t *testing.T) {
+	request := Request{
+		Goal:           assessment.RapidAssessment,
+		CollectionPath: assessment.CollectionAPI,
+		Provider:       assessment.ProviderGCP,
+		Action:         assessment.ActionPreflight,
+	}
+
+	result := DefaultRegistry().Execute(request)
+
+	if result.Plan == nil {
+		t.Fatal("preflight result did not include execution plan")
+	}
+	if result.Plan.Request != request {
+		t.Fatalf("plan request = %#v, want %#v", result.Plan.Request, request)
+	}
+	if result.Plan.CoverageRecommendation.CoverageStatus != CoverageUnknown {
+		t.Fatalf("coverage status = %q, want %q", result.Plan.CoverageRecommendation.CoverageStatus, CoverageUnknown)
+	}
+	if result.Plan.PackageSchemaStatus != PackageSchemaProviderSchemaRequired {
+		t.Fatalf("package schema status = %q, want %q", result.Plan.PackageSchemaStatus, PackageSchemaProviderSchemaRequired)
+	}
+	if len(result.Plan.Steps) != 1 {
+		t.Fatalf("plan steps length = %d, want 1", len(result.Plan.Steps))
+	}
+	if result.Plan.Steps[0].Intent != PlanStepBlocked {
+		t.Fatalf("plan step intent = %q, want %q", result.Plan.Steps[0].Intent, PlanStepBlocked)
+	}
+	if result.Plan.Steps[0].RequiresApproval {
+		t.Fatal("provider-neutral blocked plan step unexpectedly requires approval")
+	}
+	if result.Plan.Approval.Approved {
+		t.Fatal("provider-neutral plan approved itself")
+	}
+	if !result.Plan.Approval.Blocked {
+		t.Fatal("provider-neutral blocked plan did not mark approval blocked")
+	}
+	if got := result.Plan.StatusCounts.StepIntents[PlanStepBlocked]; got != 1 {
+		t.Fatalf("blocked step count = %d, want 1", got)
+	}
+	if got := result.Plan.StatusCounts.CheckStatuses[CheckFail]; got != 1 {
+		t.Fatalf("failed check count = %d, want 1", got)
+	}
+	assertSafeSourceHandles(t, result.Plan.SourceHandles)
+	if len(result.Plan.MissingSourceOfTruth) == 0 {
+		t.Fatal("plan missing source-of-truth details")
+	}
+}
+
 func assertSafeSourceHandles(t *testing.T, handles []SourceHandle) {
 	t.Helper()
 
@@ -138,7 +187,7 @@ func assertSafeSourceHandles(t *testing.T, handles []SourceHandle) {
 			t.Fatalf("source handle has empty URI: %#v", handle)
 		}
 		if strings.HasPrefix(handle.URI, "/") || strings.Contains(handle.URI, "/Users/") {
-			t.Fatalf("source handle URI must be relative or official URL, got %q", handle.URI)
+			t.Fatalf("source handle URI must be a cached docs/ relative path, got %q", handle.URI)
 		}
 
 		combined := strings.ToLower(handle.Label + " " + handle.URI)
