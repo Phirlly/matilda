@@ -143,6 +143,93 @@ func TestDeepDiscoveryObjectiveFirstAcceptedButFailsClosed(t *testing.T) {
 	}
 }
 
+func TestPreflightJSONIncludesExecutionPlan(t *testing.T) {
+	code, stdout, stderr := runCLI("rapid-assessment", "api", "gcp", "preflight")
+
+	if code != 3 {
+		t.Fatalf("exit code = %d, want 3; stderr: %s", code, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+
+	doc := decodeJSON(t, stdout)
+	plan, ok := doc["plan"].(map[string]any)
+	if !ok {
+		t.Fatalf("plan missing or wrong type in %s", stdout)
+	}
+	if plan["schema_version"] != "matilda_cloud_prep.execution_plan_v0" {
+		t.Fatalf("plan schema_version = %v, want execution plan v0", plan["schema_version"])
+	}
+	if plan["plan_id"] == "" {
+		t.Fatalf("plan_id is empty in %s", stdout)
+	}
+	if plan["package_schema_status"] != "provider_schema_required" {
+		t.Fatalf("package_schema_status = %v, want provider_schema_required", plan["package_schema_status"])
+	}
+
+	coverage, ok := plan["coverage_recommendation"].(map[string]any)
+	if !ok {
+		t.Fatalf("coverage_recommendation missing or wrong type in %s", stdout)
+	}
+	if coverage["coverage_status"] != "unknown" {
+		t.Fatalf("coverage_status = %v, want unknown", coverage["coverage_status"])
+	}
+
+	approval, ok := plan["approval"].(map[string]any)
+	if !ok {
+		t.Fatalf("approval missing or wrong type in %s", stdout)
+	}
+	if approval["approved"] != false {
+		t.Fatalf("approval.approved = %v, want false", approval["approved"])
+	}
+	if approval["blocked"] != true {
+		t.Fatalf("approval.blocked = %v, want true", approval["blocked"])
+	}
+
+	steps, ok := plan["steps"].([]any)
+	if !ok || len(steps) != 1 {
+		t.Fatalf("steps missing or wrong length in %s", stdout)
+	}
+	step, ok := steps[0].(map[string]any)
+	if !ok {
+		t.Fatalf("step missing or wrong type in %s", stdout)
+	}
+	if step["intent"] != "blocked" {
+		t.Fatalf("step intent = %v, want blocked", step["intent"])
+	}
+	if step["requires_approval"] != false {
+		t.Fatalf("step requires_approval = %v, want false", step["requires_approval"])
+	}
+	if step["credential_material_touched"] != false {
+		t.Fatalf("step credential_material_touched = %v, want false", step["credential_material_touched"])
+	}
+	for _, required := range []string{"current_state", "target_state", "required_permission", "validation", "rollback"} {
+		if step[required] == "" {
+			t.Fatalf("step field %s is empty in %s", required, stdout)
+		}
+	}
+
+	statusCounts, ok := plan["status_counts"].(map[string]any)
+	if !ok {
+		t.Fatalf("status_counts missing or wrong type in %s", stdout)
+	}
+	stepCounts, ok := statusCounts["step_intents"].(map[string]any)
+	if !ok || stepCounts["blocked"] != float64(1) {
+		t.Fatalf("step_intents counts = %#v, want blocked=1", statusCounts["step_intents"])
+	}
+	checkCounts, ok := statusCounts["check_statuses"].(map[string]any)
+	if !ok || checkCounts["fail"] != float64(1) {
+		t.Fatalf("check_statuses counts = %#v, want fail=1", statusCounts["check_statuses"])
+	}
+
+	for _, forbidden := range []string{"/Users/", "private_key", "client_secret", "plain-token", "Bearer"} {
+		if strings.Contains(stdout, forbidden) {
+			t.Fatalf("preflight output contains forbidden term %q in %s", forbidden, stdout)
+		}
+	}
+}
+
 func TestPackageProducesMinimalManifest(t *testing.T) {
 	code, stdout, stderr := runCLI("rapid-assessment", "billing", "aws", "package")
 

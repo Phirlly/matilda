@@ -25,6 +25,7 @@ type Result struct {
 	Request                       Request           `json:"request"`
 	SourceHandles                 []SourceHandle    `json:"source_handles,omitempty"`
 	MissingSourceOfTruth          []string          `json:"missing_source_of_truth,omitempty"`
+	Plan                          *ExecutionPlan    `json:"plan,omitempty"`
 	Manifest                      *handoff.Manifest `json:"manifest,omitempty"`
 	Warnings                      []handoff.Warning `json:"warnings,omitempty"`
 }
@@ -41,6 +42,26 @@ func (Registry) Execute(request Request) Result {
 	}
 
 	contract := mustActionContract(request.Action)
+	plan, planErr := providerNeutralBlockedPlan(request)
+	if planErr != nil {
+		return Result{
+			SchemaVersion:                 "matilda_cloud_prep.result_v0",
+			Status:                        RunStatusFailed,
+			SupportStatus:                 SupportBlocked,
+			MutationLevel:                 contract.MutationLevel,
+			ActionContract:                contract,
+			Code:                          "execution_plan_build_failed",
+			Message:                       "Provider-neutral execution plan could not be built.",
+			Mutated:                       false,
+			ProviderCapabilityImplemented: false,
+			Request:                       request,
+			SourceHandles:                 providerNeutralSourceHandles(),
+			MissingSourceOfTruth: append(providerCapabilityMissingSourceOfTruth(),
+				planErr.Error(),
+			),
+		}
+	}
+
 	return Result{
 		SchemaVersion:                 "matilda_cloud_prep.result_v0",
 		Status:                        RunStatusNotImplemented,
@@ -54,6 +75,7 @@ func (Registry) Execute(request Request) Result {
 		Request:                       request,
 		SourceHandles:                 providerNeutralSourceHandles(),
 		MissingSourceOfTruth:          providerCapabilityMissingSourceOfTruth(),
+		Plan:                          &plan,
 	}
 }
 
@@ -111,6 +133,56 @@ func providerCapabilityMissingSourceOfTruth() []string {
 	return []string{
 		"Provider-specific Matilda requirements and official provider API evidence are required before this capability can be implemented.",
 	}
+}
+
+func providerNeutralBlockedPlan(request Request) (ExecutionPlan, error) {
+	sourceHandles := providerNeutralSourceHandles()
+	missingSourceOfTruth := providerCapabilityMissingSourceOfTruth()
+	return BuildExecutionPlan(ExecutionPlanInput{
+		Request: request,
+		OperatorIdentitySummary: OperatorIdentitySummary{
+			IdentityStatus:       "unknown",
+			Summary:              "Provider-specific operator identity discovery is not implemented in this scaffold.",
+			SourceHandles:        sourceHandles,
+			MissingSourceOfTruth: missingSourceOfTruth,
+		},
+		CoverageRecommendation: CoverageRecommendation{
+			CoverageStatus: CoverageUnknown,
+			Summary:        "Provider-specific discovery is not implemented in this scaffold.",
+		},
+		PackageSchemaStatus: PackageSchemaProviderSchemaRequired,
+		Steps: []PlanStep{
+			{
+				Intent:                    PlanStepBlocked,
+				Title:                     "Provider capability not implemented",
+				Description:               "Provider-specific cloud preparation is not implemented in this scaffold.",
+				Reason:                    "Matilda requirements and official provider API evidence must be verified before this capability can run.",
+				ApprovalKind:              "not_required",
+				CurrentState:              "Provider-specific implementation is unavailable.",
+				TargetState:               "Verified provider-specific implementation exists.",
+				RequiredPermission:        "Provider-specific permission evidence is required before implementation.",
+				CredentialMaterialTouched: false,
+				Validation:                "Provider-specific tests and source handles prove the action is supported before it is enabled.",
+				Rollback:                  "No cloud change is made by this provider-neutral plan.",
+				SourceHandles:             sourceHandles,
+				MissingSourceOfTruth:      missingSourceOfTruth,
+			},
+		},
+		Checks: []PlanCheck{
+			{
+				Status:  CheckFail,
+				Title:   "Provider capability check",
+				Message: "Provider-specific capability is not implemented.",
+				Evidence: []PlanEvidence{
+					{Key: "mutated", Value: "false"},
+					{Key: "provider_capability_implemented", Value: "false"},
+				},
+				SourceHandles: sourceHandles,
+			},
+		},
+		SourceHandles:        sourceHandles,
+		MissingSourceOfTruth: missingSourceOfTruth,
+	})
 }
 
 func packageSchemaMissingSourceOfTruth() []string {
