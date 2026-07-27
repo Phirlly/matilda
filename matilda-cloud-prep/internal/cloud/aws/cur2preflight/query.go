@@ -79,6 +79,21 @@ func validateCUR2Query(statement string, tableColumns []string) checkFinding {
 	return passFinding("aws_cur2_query_valid", "CUR 2.0 query fields", "CUR 2.0 query selects the required billing fields from COST_AND_USAGE_REPORT.")
 }
 
+func referencesCUR2QuerySource(statement string) bool {
+	query := strings.TrimSpace(statement)
+	upper := strings.ToUpper(query)
+	if strings.Count(upper, "SELECT ") != 1 || strings.Count(upper, " FROM ") != 1 {
+		return false
+	}
+	fromStart := strings.Index(upper, " FROM ")
+	if fromStart < 0 {
+		return false
+	}
+	table := strings.TrimSpace(query[fromStart+len(" FROM "):])
+	tableParts := strings.Fields(table)
+	return len(tableParts) == 1 && tableParts[0] == cur2TableName
+}
+
 func parseSelectedColumn(item string, schemaColumns map[string]bool) (source string, output string, ok bool) {
 	trimmed := strings.TrimSpace(item)
 	if trimmed == "" || strings.ContainsAny(trimmed, "().*") {

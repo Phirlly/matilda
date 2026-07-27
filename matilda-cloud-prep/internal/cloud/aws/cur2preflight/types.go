@@ -89,9 +89,9 @@ type BucketAccess struct {
 }
 
 type Execution struct {
-	ID        string
-	Status    string
-	StartedAt time.Time
+	ID               string
+	Status           string
+	StatusObservedAt time.Time
 }
 
 type ExecutionPage struct {

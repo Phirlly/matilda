@@ -6,6 +6,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/bootstrap"
 )
 
 func runCLI(args ...string) (int, string, string) {
@@ -16,6 +18,13 @@ func runCLIWithInput(input string, args ...string) (int, string, string) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	code := RunWithInput(args, strings.NewReader(input), &stdout, &stderr)
+	return code, stdout.String(), stderr.String()
+}
+
+func runCLIWithRegistry(registryInput string, args ...string) (int, string, string) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := RunWithRegistry(args, strings.NewReader(registryInput), &stdout, &stderr, bootstrap.Registry(bootstrap.RegistryConfig{}))
 	return code, stdout.String(), stderr.String()
 }
 
@@ -33,7 +42,7 @@ func TestStartGuidesToSelectedPreflightCommand(t *testing.T) {
 		"Rapid Assessment - Billing Based",
 		"GCP",
 		"matilda-prep rapid-assessment billing gcp preflight",
-		"Provider-specific cloud automation is not implemented yet",
+		"Implemented provider paths run verified read-only checks",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("stdout = %q, want to contain %q", stdout, want)
@@ -128,7 +137,7 @@ func TestRapidAssessmentObjectiveFirstAcceptedButFailsClosed(t *testing.T) {
 }
 
 func TestAWSBillingPreflightUsesDependencyBlockedRuntimePath(t *testing.T) {
-	code, stdout, stderr := runCLI("rapid-assessment", "billing", "aws", "preflight")
+	code, stdout, stderr := runCLIWithRegistry("", "rapid-assessment", "billing", "aws", "preflight")
 
 	if code != 4 {
 		t.Fatalf("exit code = %d, want 4; stderr: %s", code, stderr)

@@ -26,6 +26,10 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 }
 
 func RunWithInput(args []string, stdin io.Reader, stdout io.Writer, stderr io.Writer) int {
+	return RunWithRegistry(args, stdin, stdout, stderr, bootstrap.DefaultRegistry())
+}
+
+func RunWithRegistry(args []string, stdin io.Reader, stdout io.Writer, stderr io.Writer, registry workflow.Registry) int {
 	if len(args) == 0 {
 		writeError(stderr, "usage: expected matilda-prep start, rapid-assessment, deep-discovery, --help, or --version")
 		return ExitUsage
@@ -71,7 +75,7 @@ func RunWithInput(args []string, stdin io.Reader, stdout io.Writer, stderr io.Wr
 		return ExitOK
 	}
 
-	result := bootstrap.DefaultRegistry().Execute(request)
+	result := registry.Execute(request)
 	if err := writeJSON(stdout, result); err != nil {
 		writeError(stderr, err.Error())
 		return ExitUsage

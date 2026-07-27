@@ -353,7 +353,7 @@ func TestPreflightBoundsDataExportsPagination(t *testing.T) {
 				client.executionPages = make([]ExecutionPage, maxDataExportsListPages+1)
 				for index := range client.executionPages {
 					client.executionPages[index] = ExecutionPage{
-						Executions: []Execution{{Status: "SUCCEEDED", StartedAt: fixedNow().Add(time.Duration(index) * time.Minute)}},
+						Executions: []Execution{{Status: "SUCCEEDED", StatusObservedAt: fixedNow().Add(time.Duration(index) * time.Minute)}},
 						NextToken:  fmt.Sprintf("next-execution-page-%03d", index+1),
 					}
 				}
@@ -373,6 +373,36 @@ func TestPreflightBoundsDataExportsPagination(t *testing.T) {
 			assertNoUnsafeAWSOutput(t, result)
 		})
 	}
+}
+
+func TestPreflightBoundsExportDetailInspection(t *testing.T) {
+	client := baselineClient()
+	exports := make([]ExportSummary, maxExportDetailChecks+1)
+	for index := range exports {
+		exports[index] = ExportSummary{
+			Name:      fmt.Sprintf("export-%03d", index),
+			ExportARN: fmt.Sprintf("arn:aws:bcm-data-exports:us-east-1:123456789012:export/export-%03d", index),
+		}
+	}
+	client.exportPages = []ExportPage{{Exports: exports}}
+
+	result := runPreflight(t, client)
+
+	assertBlockedCode(t, result, "aws_data_exports_pagination_unbounded")
+	assertNoUnsafeAWSOutput(t, result)
+}
+
+func TestPreflightHandlesListedExportWithoutARN(t *testing.T) {
+	client := baselineClient()
+	client.exportPages = []ExportPage{{Exports: []ExportSummary{{Name: "incomplete-export-reference"}}}}
+
+	result := runPreflight(t, client)
+
+	assertBlockedCode(t, result, "aws_cur2_export_not_found")
+	if client.calls["GetExport"] != 0 {
+		t.Fatalf("GetExport calls = %d, want 0 for missing export ARN", client.calls["GetExport"])
+	}
+	assertNoUnsafeAWSOutput(t, result)
 }
 
 func TestProviderErrorAndRequestHelpersAreStable(t *testing.T) {

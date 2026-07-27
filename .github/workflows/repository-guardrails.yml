@@ -79,6 +79,8 @@ jobs:
               matilda-cloud-prep/.env.local \
               matilda-cloud-prep/.matilda \
               matilda-cloud-prep/.gocache \
+              matilda-cloud-prep/.gomodcache \
+              matilda-cloud-prep/.gopath \
               matilda-cloud-prep/coverage \
               matilda-cloud-prep/dist \
               matilda-cloud-prep/build \
