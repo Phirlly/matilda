@@ -8,7 +8,12 @@ import (
 )
 
 func TestValidateCachedSourceHandleFilesAcceptsBuiltInReferences(t *testing.T) {
-	if err := ValidateCachedSourceHandleFiles("../..", providerNeutralSourceHandles()); err != nil {
+	root := t.TempDir()
+	for _, handle := range providerNeutralSourceHandles() {
+		writeTestCachedReference(t, root, handle.URI)
+	}
+
+	if err := ValidateCachedSourceHandleFiles(root, providerNeutralSourceHandles()); err != nil {
 		t.Fatalf("ValidateCachedSourceHandleFiles returned error: %v", err)
 	}
 }
