@@ -1,10 +1,13 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/assessment"
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/audit"
@@ -19,6 +22,12 @@ const (
 	ExitUsage          = 2
 	ExitNotImplemented = 3
 	ExitBlocked        = 4
+)
+
+const (
+	defaultDirectTimeout = time.Duration(workflow.DefaultExecutionTimeoutSeconds) * time.Second
+	minDirectTimeout     = 10 * time.Second
+	maxDirectTimeout     = 30 * time.Minute
 )
 
 func Run(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -59,23 +68,25 @@ func RunWithRegistry(args []string, stdin io.Reader, stdout io.Writer, stderr io
 		return ExitUsage
 	}
 
-	requestArgs := args
-	if hasTrailingHelp(args) {
-		requestArgs = args[:len(args)-1]
-	}
-
-	request, err := parseRequest(requestArgs)
+	request, options, helpRequested, err := parseDirectCommand(args)
 	if err != nil {
 		writeError(stderr, err.Error())
 		return ExitUsage
 	}
 
-	if hasTrailingHelp(args) {
+	if helpRequested {
 		writeActionHelp(stdout, request)
 		return ExitOK
 	}
 
-	result := registry.Execute(request)
+	ctx := context.Background()
+	if options.TimeoutSeconds > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(options.TimeoutSeconds)*time.Second)
+		defer cancel()
+	}
+
+	result := registry.ExecuteContext(ctx, request, options)
 	if err := writeJSON(stdout, result); err != nil {
 		writeError(stderr, err.Error())
 		return ExitUsage
@@ -91,6 +102,131 @@ func RunWithRegistry(args []string, stdin io.Reader, stdout io.Writer, stderr io
 	default:
 		return ExitOK
 	}
+}
+
+func parseDirectCommand(args []string) (workflow.Request, workflow.ExecutionOptions, bool, error) {
+	helpRequested := hasTrailingHelp(args)
+	if helpRequested {
+		args = args[:len(args)-1]
+	}
+
+	positionals, flagArgs, err := splitDirectCommand(args)
+	if err != nil {
+		return workflow.Request{}, workflow.ExecutionOptions{}, false, err
+	}
+	request, err := parseRequest(positionals)
+	if err != nil {
+		return workflow.Request{}, workflow.ExecutionOptions{}, false, err
+	}
+	options, err := parseExecutionOptions(request, flagArgs)
+	if err != nil {
+		return workflow.Request{}, workflow.ExecutionOptions{}, false, err
+	}
+	return request, options, helpRequested, nil
+}
+
+func splitDirectCommand(args []string) ([]string, []string, error) {
+	if len(args) == 0 {
+		return nil, nil, fmt.Errorf("usage: expected matilda-prep rapid-assessment or deep-discovery command")
+	}
+
+	var positionalCount int
+	switch args[0] {
+	case string(assessment.RapidAssessment):
+		positionalCount = 4
+	case string(assessment.DeepDiscovery):
+		positionalCount = 3
+	default:
+		return args, nil, nil
+	}
+	if len(args) < positionalCount {
+		return args, nil, nil
+	}
+	return args[:positionalCount], args[positionalCount:], nil
+}
+
+func parseExecutionOptions(request workflow.Request, args []string) (workflow.ExecutionOptions, error) {
+	var profile string
+	var region string
+	var exportRef string
+	var timeoutValue string
+
+	flags := flag.NewFlagSet("matilda-prep", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.StringVar(&profile, "profile", "", "AWS shared config profile")
+	flags.StringVar(&region, "region", "", "AWS region")
+	flags.StringVar(&exportRef, "export-ref", "", "Matilda-generated AWS CUR 2.0 export ref")
+	flags.StringVar(&timeoutValue, "timeout", defaultDirectTimeout.String(), "execution timeout")
+	if err := flags.Parse(args); err != nil {
+		return workflow.ExecutionOptions{}, safeFlagParseError(err)
+	}
+	if flags.NArg() != 0 {
+		return workflow.ExecutionOptions{}, fmt.Errorf("unexpected argument after command")
+	}
+
+	provided := map[string]bool{}
+	flags.Visit(func(f *flag.Flag) {
+		provided[f.Name] = true
+	})
+	if provided["profile"] && strings.TrimSpace(profile) == "" {
+		return workflow.ExecutionOptions{}, fmt.Errorf("profile cannot be empty")
+	}
+	if provided["region"] && strings.TrimSpace(region) == "" {
+		return workflow.ExecutionOptions{}, fmt.Errorf("region cannot be empty")
+	}
+	if provided["export-ref"] && strings.TrimSpace(exportRef) == "" {
+		return workflow.ExecutionOptions{}, fmt.Errorf("export-ref cannot be empty")
+	}
+
+	awsSelectorUsed := provided["profile"] || provided["region"] || provided["export-ref"]
+	if awsSelectorUsed && !isAWSBillingPreflight(request) {
+		return workflow.ExecutionOptions{}, fmt.Errorf("AWS selector flags are supported only for matilda-prep rapid-assessment billing aws preflight")
+	}
+
+	timeout, err := time.ParseDuration(timeoutValue)
+	if err != nil {
+		return workflow.ExecutionOptions{}, fmt.Errorf("invalid timeout value")
+	}
+	if timeout < minDirectTimeout || timeout > maxDirectTimeout {
+		return workflow.ExecutionOptions{}, fmt.Errorf("timeout must be between 10s and 30m")
+	}
+	if timeout%time.Second != 0 {
+		return workflow.ExecutionOptions{}, fmt.Errorf("timeout must use whole seconds")
+	}
+
+	options := workflow.ExecutionOptions{
+		InterfaceMode:  workflow.InterfaceModeDirect,
+		TimeoutSeconds: int(timeout.Seconds()),
+	}
+	if awsSelectorUsed {
+		options.Selectors = &workflow.ExecutionSelectors{
+			AWS: &workflow.AWSExecutionSelectors{
+				Profile:       profile,
+				Region:        region,
+				CUR2ExportRef: exportRef,
+			},
+		}
+	}
+	return workflow.NormalizeExecutionOptions(options)
+}
+
+func safeFlagParseError(err error) error {
+	message := err.Error()
+	switch {
+	case strings.Contains(message, "flag provided but not defined"):
+		return fmt.Errorf("flag provided but not defined")
+	case strings.Contains(message, "flag needs an argument"):
+		return fmt.Errorf("flag needs an argument")
+	default:
+		return fmt.Errorf("invalid command flags")
+	}
+}
+
+func isAWSBillingPreflight(request workflow.Request) bool {
+	return request.Goal == assessment.RapidAssessment &&
+		request.CollectionPath == assessment.CollectionBilling &&
+		request.Provider == assessment.ProviderAWS &&
+		request.Action == assessment.ActionPreflight
 }
 
 func parseRequest(args []string) (workflow.Request, error) {
@@ -181,6 +317,12 @@ Providers:
 
 Actions:
   preflight, apply-prereqs, validate, package
+
+AWS Rapid Assessment - Billing Based preflight options:
+  --profile <aws-profile-name>
+  --region <aws-region>
+  --export-ref <cur2-ref-from-previous-output>
+  --timeout <duration>
 
 Use matilda-prep start for guided setup.
 `)

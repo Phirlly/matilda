@@ -2,6 +2,7 @@ package cur2preflight
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -28,25 +29,21 @@ func validateCUR2Query(statement string, tableColumns []string) checkFinding {
 		return failFinding("aws_cur2_query_unverified", "CUR 2.0 query shape", "CUR 2.0 query statement is empty.")
 	}
 
-	upper := strings.ToUpper(query)
-	if strings.Count(upper, "SELECT ") != 1 || strings.Count(upper, " FROM ") != 1 {
+	if keywordCount(query, "SELECT") != 1 || keywordCount(query, "FROM") != 1 {
 		return failFinding("aws_cur2_query_unverified", "CUR 2.0 query shape", "CUR 2.0 query must contain exactly one SELECT and one FROM.")
 	}
-	if containsKeyword(upper, " WHERE ") || strings.Contains(upper, "\nWHERE ") || strings.Contains(upper, "\tWHERE ") {
+	if containsKeyword(query, "WHERE") {
 		return failFinding("aws_cur2_query_unverified", "CUR 2.0 query shape", "CUR 2.0 preflight does not accept WHERE filters for this path.")
 	}
-	if containsKeyword(upper, " LIMIT ") || strings.Contains(upper, "\nLIMIT ") || strings.Contains(upper, "\tLIMIT ") {
+	if containsKeyword(query, "LIMIT") {
 		return failFinding("aws_cur2_query_unverified", "CUR 2.0 query shape", "CUR 2.0 preflight does not accept LIMIT for this path.")
 	}
 
-	selectStart := strings.Index(upper, "SELECT ")
-	fromStart := strings.Index(upper, " FROM ")
-	if selectStart < 0 || fromStart < 0 || fromStart <= selectStart {
+	selected, table, ok := parseSelectFrom(query)
+	if !ok {
 		return failFinding("aws_cur2_query_unverified", "CUR 2.0 query shape", "CUR 2.0 query could not be parsed safely.")
 	}
 
-	selected := strings.TrimSpace(query[selectStart+len("SELECT ") : fromStart])
-	table := strings.TrimSpace(query[fromStart+len(" FROM "):])
 	tableParts := strings.Fields(table)
 	if len(tableParts) != 1 {
 		return failFinding("aws_cur2_query_unverified", "CUR 2.0 query shape", "CUR 2.0 query has unsupported table clause content.")
@@ -81,17 +78,23 @@ func validateCUR2Query(statement string, tableColumns []string) checkFinding {
 
 func referencesCUR2QuerySource(statement string) bool {
 	query := strings.TrimSpace(statement)
-	upper := strings.ToUpper(query)
-	if strings.Count(upper, "SELECT ") != 1 || strings.Count(upper, " FROM ") != 1 {
+	if keywordCount(query, "SELECT") != 1 || keywordCount(query, "FROM") != 1 {
 		return false
 	}
-	fromStart := strings.Index(upper, " FROM ")
-	if fromStart < 0 {
+	_, table, ok := parseSelectFrom(query)
+	if !ok {
 		return false
 	}
-	table := strings.TrimSpace(query[fromStart+len(" FROM "):])
 	tableParts := strings.Fields(table)
 	return len(tableParts) == 1 && tableParts[0] == cur2TableName
+}
+
+func parseSelectFrom(query string) (string, string, bool) {
+	matches := selectFromPattern.FindStringSubmatch(query)
+	if len(matches) != 3 {
+		return "", "", false
+	}
+	return strings.TrimSpace(matches[1]), strings.TrimSpace(matches[2]), true
 }
 
 func parseSelectedColumn(item string, schemaColumns map[string]bool) (source string, output string, ok bool) {
@@ -149,6 +152,13 @@ func tableColumnSet(columns []string) map[string]bool {
 	return available
 }
 
+var selectFromPattern = regexp.MustCompile(`(?is)^\s*select\s+(.+?)\s+from\s+(.+?)\s*$`)
+
 func containsKeyword(value string, keyword string) bool {
-	return strings.Contains(fmt.Sprintf(" %s ", value), keyword)
+	return keywordCount(value, keyword) > 0
+}
+
+func keywordCount(value string, keyword string) int {
+	pattern := regexp.MustCompile(fmt.Sprintf(`(?i)\b%s\b`, regexp.QuoteMeta(keyword)))
+	return len(pattern.FindAllStringIndex(value, -1))
 }

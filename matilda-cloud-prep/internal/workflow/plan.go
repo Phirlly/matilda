@@ -34,6 +34,7 @@ const (
 type ExecutionPlanInput struct {
 	PlanGeneratedAt         time.Time
 	Request                 Request
+	ExecutionOptions        ExecutionOptions
 	OperatorIdentitySummary OperatorIdentitySummary
 	CoverageRecommendation  CoverageRecommendation
 	PackageSchemaStatus     PackageSchemaStatus
@@ -48,6 +49,7 @@ type ExecutionPlan struct {
 	PlanID                  string                  `json:"plan_id"`
 	PlanGeneratedAt         time.Time               `json:"plan_generated_at"`
 	Request                 Request                 `json:"request"`
+	ExecutionOptions        ExecutionOptions        `json:"execution_options"`
 	OperatorIdentitySummary OperatorIdentitySummary `json:"operator_identity_summary"`
 	CoverageRecommendation  CoverageRecommendation  `json:"coverage_recommendation"`
 	PackageSchemaStatus     PackageSchemaStatus     `json:"package_schema_status"`
@@ -122,6 +124,10 @@ func BuildExecutionPlan(input ExecutionPlanInput) (ExecutionPlan, error) {
 	if err := validateCoverageRecommendation(input.CoverageRecommendation); err != nil {
 		return ExecutionPlan{}, err
 	}
+	executionOptions, err := NormalizeExecutionOptions(input.ExecutionOptions)
+	if err != nil {
+		return ExecutionPlan{}, err
+	}
 
 	sourceHandles, err := safeSourceHandles("source_handles", input.SourceHandles)
 	if err != nil {
@@ -153,6 +159,7 @@ func BuildExecutionPlan(input ExecutionPlanInput) (ExecutionPlan, error) {
 		SchemaVersion:           executionPlanSchemaVersion,
 		PlanGeneratedAt:         generatedAt.UTC(),
 		Request:                 input.Request,
+		ExecutionOptions:        executionOptions,
 		OperatorIdentitySummary: operatorSummary,
 		CoverageRecommendation:  input.CoverageRecommendation,
 		PackageSchemaStatus:     input.PackageSchemaStatus,
@@ -475,6 +482,7 @@ func planIDMaterial(plan ExecutionPlan) any {
 		Steps                  []PlanStep             `json:"steps"`
 		SourceHandles          []SourceHandle         `json:"source_handles"`
 		PackageSchemaStatus    PackageSchemaStatus    `json:"package_schema_status"`
+		ExecutionOptions       ExecutionOptions       `json:"execution_options"`
 	}{
 		Provider:               string(plan.Request.Provider),
 		Goal:                   string(plan.Request.Goal),
@@ -484,6 +492,7 @@ func planIDMaterial(plan ExecutionPlan) any {
 		Steps:                  plan.Steps,
 		SourceHandles:          plan.SourceHandles,
 		PackageSchemaStatus:    plan.PackageSchemaStatus,
+		ExecutionOptions:       plan.ExecutionOptions,
 	}
 }
 

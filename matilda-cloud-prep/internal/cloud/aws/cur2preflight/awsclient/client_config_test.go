@@ -12,7 +12,7 @@ import (
 func TestCheckConfigurationLoadsRegionCredentialsAndBuildsClientsLazily(t *testing.T) {
 	factory := &fakeFactory{}
 	client := New(Config{
-		LoadConfig: func(context.Context) (aws.Config, error) {
+		LoadConfig: func(context.Context, LoadRequest) (aws.Config, error) {
 			return staticConfig("us-west-2"), nil
 		},
 		ClientFactory: factory,
@@ -44,6 +44,57 @@ func TestCheckConfigurationLoadsRegionCredentialsAndBuildsClientsLazily(t *testi
 	}
 }
 
+func TestCheckConfigurationPassesProfileAndRegionToLoader(t *testing.T) {
+	var gotRequest LoadRequest
+	client := New(Config{
+		Profile: "default",
+		Region:  "us-west-2",
+		LoadConfig: func(_ context.Context, request LoadRequest) (aws.Config, error) {
+			gotRequest = request
+			return staticConfig(request.Region), nil
+		},
+		ClientFactory: &fakeFactory{},
+	})
+
+	config, err := client.CheckConfiguration(context.Background())
+
+	if err != nil {
+		t.Fatalf("CheckConfiguration returned error: %v", err)
+	}
+	if gotRequest.Profile != "default" {
+		t.Fatalf("LoadRequest.Profile = %q, want default", gotRequest.Profile)
+	}
+	if gotRequest.Region != "us-west-2" {
+		t.Fatalf("LoadRequest.Region = %q, want us-west-2", gotRequest.Region)
+	}
+	if config.Region != "us-west-2" {
+		t.Fatalf("Configuration.Region = %q, want us-west-2", config.Region)
+	}
+}
+
+func TestCheckConfigurationFailsClosedWhenProfileWouldBeShadowedByEnvCredentials(t *testing.T) {
+	client := New(Config{
+		Profile: "default",
+		Region:  "us-west-2",
+		EnvLookup: func(name string) (string, bool) {
+			if name == "AWS_ACCESS_KEY_ID" {
+				return "test-access-key", true
+			}
+			return "", false
+		},
+		LoadConfig: func(context.Context, LoadRequest) (aws.Config, error) {
+			t.Fatal("LoadConfig should not run when profile is shadowed by AWS credential environment variables")
+			return aws.Config{}, nil
+		},
+		ClientFactory: &fakeFactory{},
+	})
+
+	_, err := client.CheckConfiguration(context.Background())
+
+	assertProviderCode(t, err, "aws_config_profile_shadowed")
+	assertSafeError(t, err)
+}
+
 func TestDefaultConstructorsAreInertUntilConfigurationCheck(t *testing.T) {
 	client := NewDefault()
 	if client == nil {
@@ -68,26 +119,26 @@ func TestDefaultConstructorsAreInertUntilConfigurationCheck(t *testing.T) {
 func TestCheckConfigurationClassifiesMissingRegionAndCredentials(t *testing.T) {
 	tests := []struct {
 		name       string
-		loadConfig func(context.Context) (aws.Config, error)
+		loadConfig func(context.Context, LoadRequest) (aws.Config, error)
 		code       string
 	}{
 		{
 			name: "missing region",
-			loadConfig: func(context.Context) (aws.Config, error) {
+			loadConfig: func(context.Context, LoadRequest) (aws.Config, error) {
 				return staticConfig(""), nil
 			},
 			code: "aws_config_missing_region",
 		},
 		{
 			name: "loader failure",
-			loadConfig: func(context.Context) (aws.Config, error) {
+			loadConfig: func(context.Context, LoadRequest) (aws.Config, error) {
 				return aws.Config{}, errors.New("AKIAEXAMPLE raw credential failure")
 			},
 			code: "aws_config_missing_credentials",
 		},
 		{
 			name: "credential retrieval failure",
-			loadConfig: func(context.Context) (aws.Config, error) {
+			loadConfig: func(context.Context, LoadRequest) (aws.Config, error) {
 				cfg := staticConfig("us-east-1")
 				cfg.Credentials = aws.CredentialsProviderFunc(func(context.Context) (aws.Credentials, error) {
 					return aws.Credentials{}, errors.New("secret raw credential failure")
@@ -114,7 +165,7 @@ func TestReadMethodsLoadConfigurationWhenCalledDirectly(t *testing.T) {
 	stsClient := &fakeSTS{output: &awssts.GetCallerIdentityOutput{Account: aws.String("123456789012"), Arn: aws.String("arn:aws:iam::123456789012:role/operator")}}
 	factory := &fakeFactory{stsClient: stsClient}
 	client := New(Config{
-		LoadConfig: func(context.Context) (aws.Config, error) {
+		LoadConfig: func(context.Context, LoadRequest) (aws.Config, error) {
 			return staticConfig("us-east-1"), nil
 		},
 		ClientFactory: factory,
@@ -213,7 +264,7 @@ func TestReadMethodsFailClosedWhenConfigurationIsMissing(t *testing.T) {
 	for _, method := range methods {
 		t.Run(method.name, func(t *testing.T) {
 			client := New(Config{
-				LoadConfig: func(context.Context) (aws.Config, error) {
+				LoadConfig: func(context.Context, LoadRequest) (aws.Config, error) {
 					return staticConfig(""), nil
 				},
 				ClientFactory: &fakeFactory{},

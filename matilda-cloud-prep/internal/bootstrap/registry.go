@@ -7,12 +7,22 @@ import (
 )
 
 type RegistryConfig struct {
-	AWSBillingPreflightClient cur2preflight.Client
+	AWSBillingPreflightClient        cur2preflight.Client
+	AWSBillingPreflightClientFactory func(workflow.ExecutionOptions) cur2preflight.Client
 }
 
 func DefaultRegistry() workflow.Registry {
 	return Registry(RegistryConfig{
-		AWSBillingPreflightClient: awsclient.NewDefault(),
+		AWSBillingPreflightClientFactory: func(options workflow.ExecutionOptions) cur2preflight.Client {
+			awsOptions := workflow.AWSExecutionSelectors{}
+			if options.Selectors != nil && options.Selectors.AWS != nil {
+				awsOptions = *options.Selectors.AWS
+			}
+			return awsclient.New(awsclient.Config{
+				Profile: awsOptions.Profile,
+				Region:  awsOptions.Region,
+			})
+		},
 	})
 }
 
@@ -20,7 +30,8 @@ func Registry(config RegistryConfig) workflow.Registry {
 	registry, err := workflow.NewRegistry(workflow.Capability{
 		Request: cur2preflight.AWSBillingPreflightRequest(),
 		Runner: cur2preflight.NewRunner(cur2preflight.RunnerConfig{
-			Client: config.AWSBillingPreflightClient,
+			Client:        config.AWSBillingPreflightClient,
+			ClientFactory: config.AWSBillingPreflightClientFactory,
 		}),
 	})
 	if err != nil {

@@ -19,7 +19,7 @@ func TestNewRegistryRejectsInvalidCapabilityRegistrations(t *testing.T) {
 			name: "unsupported action",
 			capability: Capability{
 				Request: Request{Goal: assessment.RapidAssessment, CollectionPath: assessment.CollectionBilling, Provider: assessment.ProviderAWS, Action: assessment.Action("destroy")},
-				Runner:  RunnerFunc(func(context.Context, Request) CapabilityReport { return CapabilityReport{} }),
+				Runner:  RunnerFunc(func(context.Context, Request, ExecutionOptions) CapabilityReport { return CapabilityReport{} }),
 			},
 			want: "not supported",
 		},
@@ -27,7 +27,7 @@ func TestNewRegistryRejectsInvalidCapabilityRegistrations(t *testing.T) {
 			name: "package capability blocked",
 			capability: Capability{
 				Request: Request{Goal: assessment.RapidAssessment, CollectionPath: assessment.CollectionBilling, Provider: assessment.ProviderAWS, Action: assessment.ActionPackage},
-				Runner:  RunnerFunc(func(context.Context, Request) CapabilityReport { return CapabilityReport{} }),
+				Runner:  RunnerFunc(func(context.Context, Request, ExecutionOptions) CapabilityReport { return CapabilityReport{} }),
 			},
 			want: "package schema",
 		},
@@ -127,7 +127,7 @@ func TestRegistryRejectsInvalidCapabilityReportFields(t *testing.T) {
 			tt.mutate(&report)
 			registry, err := NewRegistry(Capability{
 				Request: request,
-				Runner: RunnerFunc(func(context.Context, Request) CapabilityReport {
+				Runner: RunnerFunc(func(context.Context, Request, ExecutionOptions) CapabilityReport {
 					return report
 				}),
 			})
@@ -154,7 +154,7 @@ func TestRegistryAcceptsSafeCapabilityWarnings(t *testing.T) {
 	request := awsBillingPreflightRequest()
 	registry, err := NewRegistry(Capability{
 		Request: request,
-		Runner: RunnerFunc(func(context.Context, Request) CapabilityReport {
+		Runner: RunnerFunc(func(context.Context, Request, ExecutionOptions) CapabilityReport {
 			report := sampleCapabilityReport(request, StatusReady, SupportSupported, "aws_cur2_preflight_ready")
 			report.Warnings = []handoff.Warning{{
 				Code:    "aws_cur2_include_resources_not_required",
@@ -180,10 +180,10 @@ func TestRegistryAcceptsSafeCapabilityWarnings(t *testing.T) {
 func TestDeepDiscoveryDuplicateCapabilityUsesDeepDiscoveryKey(t *testing.T) {
 	request := Request{Goal: assessment.DeepDiscovery, Provider: assessment.ProviderAWS, Action: assessment.ActionPreflight}
 	_, err := NewRegistry(
-		Capability{Request: request, Runner: RunnerFunc(func(context.Context, Request) CapabilityReport {
+		Capability{Request: request, Runner: RunnerFunc(func(context.Context, Request, ExecutionOptions) CapabilityReport {
 			return sampleCapabilityReport(request, StatusReady, SupportSupported, "aws_deep_discovery_preflight_ready")
 		})},
-		Capability{Request: request, Runner: RunnerFunc(func(context.Context, Request) CapabilityReport {
+		Capability{Request: request, Runner: RunnerFunc(func(context.Context, Request, ExecutionOptions) CapabilityReport {
 			return sampleCapabilityReport(request, StatusReady, SupportSupported, "aws_deep_discovery_preflight_ready")
 		})},
 	)

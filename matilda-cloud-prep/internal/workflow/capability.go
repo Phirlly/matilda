@@ -12,13 +12,13 @@ import (
 const resultSchemaVersion = "matilda_cloud_prep.result_v0"
 
 type CapabilityRunner interface {
-	Run(context.Context, Request) CapabilityReport
+	Run(context.Context, Request, ExecutionOptions) CapabilityReport
 }
 
-type RunnerFunc func(context.Context, Request) CapabilityReport
+type RunnerFunc func(context.Context, Request, ExecutionOptions) CapabilityReport
 
-func (f RunnerFunc) Run(ctx context.Context, request Request) CapabilityReport {
-	return f(ctx, request)
+func (f RunnerFunc) Run(ctx context.Context, request Request, options ExecutionOptions) CapabilityReport {
+	return f(ctx, request, options)
 }
 
 type Capability struct {
@@ -59,32 +59,33 @@ func NewRegistry(capabilities ...Capability) (Registry, error) {
 	return Registry{runners: runners}, nil
 }
 
-func buildCapabilityResult(request Request, report CapabilityReport) Result {
+func buildCapabilityResult(request Request, options ExecutionOptions, report CapabilityReport) Result {
 	contract := mustActionContract(request.Action)
 	sourceHandles, err := safeSourceHandles("capability result source handles", report.SourceHandles)
 	if err != nil {
-		return invalidCapabilityResult(request, contract)
+		return invalidCapabilityResult(request, options, contract)
 	}
 	if err := validateCapabilityReport(contract, report); err != nil {
-		return invalidCapabilityResult(request, contract)
+		return invalidCapabilityResult(request, options, contract)
 	}
 	missingSourceOfTruth, err := safeStringList("capability result missing_source_of_truth", report.MissingSourceOfTruth)
 	if err != nil {
-		return invalidCapabilityResult(request, contract)
+		return invalidCapabilityResult(request, options, contract)
 	}
 	warnings, err := safeWarnings(report.Warnings)
 	if err != nil {
-		return invalidCapabilityResult(request, contract)
+		return invalidCapabilityResult(request, options, contract)
 	}
 	if report.PlanInput == nil {
-		return invalidCapabilityResult(request, contract)
+		return invalidCapabilityResult(request, options, contract)
 	}
 
 	planInput := *report.PlanInput
 	planInput.Request = request
+	planInput.ExecutionOptions = options
 	plan, err := BuildExecutionPlan(planInput)
 	if err != nil {
-		return invalidCapabilityResult(request, contract)
+		return invalidCapabilityResult(request, options, contract)
 	}
 
 	return Result{
@@ -98,6 +99,7 @@ func buildCapabilityResult(request Request, report CapabilityReport) Result {
 		Mutated:                       report.Mutated,
 		ProviderCapabilityImplemented: true,
 		Request:                       request,
+		ExecutionOptions:              options,
 		SourceHandles:                 sourceHandles,
 		MissingSourceOfTruth:          missingSourceOfTruth,
 		Plan:                          &plan,
@@ -169,7 +171,7 @@ func safeWarnings(warnings []handoff.Warning) ([]handoff.Warning, error) {
 	return copied, nil
 }
 
-func invalidCapabilityResult(request Request, contract ActionContract) Result {
+func invalidCapabilityResult(request Request, options ExecutionOptions, contract ActionContract) Result {
 	return Result{
 		SchemaVersion:                 resultSchemaVersion,
 		Status:                        RunStatusFailed,
@@ -181,6 +183,7 @@ func invalidCapabilityResult(request Request, contract ActionContract) Result {
 		Mutated:                       false,
 		ProviderCapabilityImplemented: false,
 		Request:                       request,
+		ExecutionOptions:              options,
 		SourceHandles:                 providerNeutralSourceHandles(),
 		MissingSourceOfTruth: []string{
 			"Provider capability output must pass cached-source-handle, mutation, and safe-text validation.",

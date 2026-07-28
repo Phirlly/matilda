@@ -20,6 +20,8 @@ func messageForCode(code string) string {
 		return "AWS Region is not configured."
 	case "aws_config_missing_credentials":
 		return "AWS credentials are not available."
+	case "aws_config_profile_shadowed":
+		return "AWS profile selection is blocked because credential environment variables would take precedence."
 	case "aws_auth_failed":
 		return "AWS caller identity could not be verified."
 	case "aws_data_exports_access_denied":

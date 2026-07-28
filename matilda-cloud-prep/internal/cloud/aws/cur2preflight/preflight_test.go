@@ -3,6 +3,7 @@ package cur2preflight
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -165,10 +166,22 @@ func TestPreflightClassifiesTableAndExportDiscoveryFailures(t *testing.T) {
 		{
 			name: "multiple CUR 2.0 exports",
 			mutate: func(client *fakeClient) {
+				exportA := client.export
+				exportA.Name = "cur2-a"
+				exportA.ExportARN = "arn:aws:bcm-data-exports:us-east-1:123456789012:export/a"
+				exportA.SourceARN = exportA.ExportARN
+				exportB := client.export
+				exportB.Name = "cur2-b"
+				exportB.ExportARN = "arn:aws:bcm-data-exports:us-east-1:123456789012:export/b"
+				exportB.SourceARN = exportB.ExportARN
 				client.exportPages = []ExportPage{{Exports: []ExportSummary{
-					{Name: "cur2-a", ExportARN: "arn:aws:bcm-data-exports:us-east-1:123456789012:export/a", TableName: "COST_AND_USAGE_REPORT"},
-					{Name: "cur2-b", ExportARN: "arn:aws:bcm-data-exports:us-east-1:123456789012:export/b", TableName: "COST_AND_USAGE_REPORT"},
+					{Name: exportA.Name, ExportARN: exportA.ExportARN, TableName: "COST_AND_USAGE_REPORT"},
+					{Name: exportB.Name, ExportARN: exportB.ExportARN, TableName: "COST_AND_USAGE_REPORT"},
 				}}}
+				client.exportsByARN = map[string]Export{
+					exportA.ExportARN: exportA,
+					exportB.ExportARN: exportB,
+				}
 			},
 			code: "aws_cur2_export_ambiguous",
 		},
@@ -222,6 +235,165 @@ func TestPreflightClassifiesTableAndExportDiscoveryFailures(t *testing.T) {
 	}
 }
 
+func TestPreflightAmbiguousCUR2ExportsReturnsSafeCandidateRefs(t *testing.T) {
+	client := baselineClient()
+	secondARN := "arn:aws:bcm-data-exports:us-east-1:123456789012:export/finance-cur2"
+	client.exportPages = []ExportPage{{Exports: []ExportSummary{
+		{Name: "matilda-cur2", ExportARN: client.export.ExportARN, TableName: "COST_AND_USAGE_REPORT"},
+		{Name: "finance-cur2", ExportARN: secondARN, TableName: "COST_AND_USAGE_REPORT"},
+	}}}
+	secondExport := client.export
+	secondExport.Name = "finance-cur2"
+	secondExport.ExportARN = secondARN
+	secondExport.SourceARN = secondARN
+	secondExport.HealthStatus = "WARNING"
+	secondExport.Destination.Output.Format = "PARQUET"
+	secondExport.Destination.Region = "us-west-2"
+	client.exportsByARN = map[string]Export{
+		client.export.ExportARN: client.export,
+		secondARN:               secondExport,
+	}
+
+	result := runPreflight(t, client)
+
+	assertBlockedCode(t, result, "aws_cur2_export_ambiguous")
+	assertGroupedCandidateEvidence(t, result, 1, cur2ExportRef(client.export.ExportARN), "HEALTHY", "TEXT_OR_CSV", "us-east-1")
+	assertGroupedCandidateEvidence(t, result, 2, cur2ExportRef(secondARN), "WARNING", "PARQUET", "us-west-2")
+	assertNoCheckEvidenceKey(t, result, "candidate_export_ref")
+	assertNoCheckEvidenceKey(t, result, "candidate_health")
+	assertNoCheckEvidenceKey(t, result, "candidate_output_format")
+	assertNoCheckEvidenceKey(t, result, "candidate_destination_region")
+	assertNoUnsafeAWSOutput(t, result)
+}
+
+func TestPreflightOmitsUnsafeCandidateMetadata(t *testing.T) {
+	client := baselineClient()
+	secondARN := "arn:aws:bcm-data-exports:us-east-1:123456789012:export/finance-cur2"
+	client.exportPages = []ExportPage{{Exports: []ExportSummary{
+		{Name: "matilda-cur2", ExportARN: client.export.ExportARN, TableName: "COST_AND_USAGE_REPORT"},
+		{Name: "finance-cur2", ExportARN: secondARN, TableName: "COST_AND_USAGE_REPORT"},
+	}}}
+	client.export.HealthStatus = "/private/tmp/health"
+	client.export.Destination.Output.Format = "secret_key=plain-secret-key"
+	client.export.Destination.Region = "arn:aws:ec2:us-east-1:123456789012:region/us-east-1"
+	secondExport := client.export
+	secondExport.Name = "finance-cur2"
+	secondExport.ExportARN = secondARN
+	secondExport.SourceARN = secondARN
+	secondExport.HealthStatus = "HEALTHY"
+	secondExport.Destination.Output.Format = "PARQUET"
+	secondExport.Destination.Region = "us-west-2"
+	client.exportsByARN = map[string]Export{
+		client.export.ExportARN: client.export,
+		secondARN:               secondExport,
+	}
+
+	result := runPreflight(t, client)
+
+	assertBlockedCode(t, result, "aws_cur2_export_ambiguous")
+	assertCheckEvidence(t, result, "candidate_1_export_ref", cur2ExportRef(client.export.ExportARN))
+	assertNoCheckEvidenceKey(t, result, "candidate_1_health")
+	assertNoCheckEvidenceKey(t, result, "candidate_1_output_format")
+	assertNoCheckEvidenceKey(t, result, "candidate_1_destination_region")
+	assertGroupedCandidateEvidence(t, result, 2, cur2ExportRef(secondARN), "HEALTHY", "PARQUET", "us-west-2")
+	assertNoUnsafeAWSOutput(t, result)
+}
+
+func TestPreflightSelectsCUR2ExportByRef(t *testing.T) {
+	client := baselineClient()
+	selectedARN := "arn:aws:bcm-data-exports:us-east-1:123456789012:export/finance-cur2"
+	client.exportPages = []ExportPage{{Exports: []ExportSummary{
+		{Name: "matilda-cur2", ExportARN: client.export.ExportARN, TableName: "COST_AND_USAGE_REPORT"},
+		{Name: "finance-cur2", ExportARN: selectedARN, TableName: "COST_AND_USAGE_REPORT"},
+	}}}
+	selectedExport := client.export
+	selectedExport.Name = "finance-cur2"
+	selectedExport.ExportARN = selectedARN
+	selectedExport.SourceARN = selectedARN
+	selectedExport.Destination.Prefix = "finance/cur2"
+	client.exportsByARN = map[string]Export{
+		client.export.ExportARN: client.export,
+		selectedARN:             selectedExport,
+	}
+	client.bucketPolicy = bucketPolicy(policySpec{
+		Service:       "bcm-data-exports.amazonaws.com",
+		SourceAccount: selectedExport.SourceAccount,
+		SourceARN:     selectedExport.SourceARN,
+		Action:        "s3:PutObject",
+		Resource:      "arn:aws:s3:::matilda-cur2-billing/finance/cur2/*",
+	})
+	client.objectPages = []ObjectPage{{
+		Keys: []string{"finance/cur2/finance-cur2/data/BILLING_PERIOD=2026-06/part-000.gz"},
+	}}
+
+	result := runPreflightWithOptions(t, client, workflow.ExecutionOptions{
+		Selectors: &workflow.ExecutionSelectors{
+			AWS: &workflow.AWSExecutionSelectors{
+				CUR2ExportRef: cur2ExportRef(selectedARN),
+			},
+		},
+	})
+
+	if result.Status != workflow.StatusReady {
+		t.Fatalf("Status = %q, want %q; code=%q", result.Status, workflow.StatusReady, result.Code)
+	}
+	if result.Code != "aws_cur2_preflight_ready" {
+		t.Fatalf("Code = %q, want aws_cur2_preflight_ready", result.Code)
+	}
+	assertCheckEvidence(t, result, "selected_export_ref", cur2ExportRef(selectedARN))
+	assertNoUnsafeAWSOutput(t, result)
+}
+
+func TestPreflightRejectsUnknownCUR2ExportRef(t *testing.T) {
+	client := baselineClient()
+	secondARN := "arn:aws:bcm-data-exports:us-east-1:123456789012:export/finance-cur2"
+	client.exportPages = []ExportPage{{Exports: []ExportSummary{
+		{Name: "matilda-cur2", ExportARN: client.export.ExportARN, TableName: "COST_AND_USAGE_REPORT"},
+		{Name: "finance-cur2", ExportARN: secondARN, TableName: "COST_AND_USAGE_REPORT"},
+	}}}
+	secondExport := client.export
+	secondExport.Name = "finance-cur2"
+	secondExport.ExportARN = secondARN
+	secondExport.SourceARN = secondARN
+	client.exportsByARN = map[string]Export{
+		client.export.ExportARN: client.export,
+		secondARN:               secondExport,
+	}
+
+	result := runPreflightWithOptions(t, client, workflow.ExecutionOptions{
+		Selectors: &workflow.ExecutionSelectors{
+			AWS: &workflow.AWSExecutionSelectors{
+				CUR2ExportRef: "cur2-ffffffffffffffff",
+			},
+		},
+	})
+
+	assertBlockedCode(t, result, "aws_cur2_export_ref_not_found")
+	assertGroupedCandidateEvidence(t, result, 1, cur2ExportRef(client.export.ExportARN), "HEALTHY", "TEXT_OR_CSV", "us-east-1")
+	assertGroupedCandidateEvidence(t, result, 2, cur2ExportRef(secondARN), "HEALTHY", "TEXT_OR_CSV", "us-east-1")
+	assertNoCheckEvidenceKey(t, result, "candidate_export_ref")
+	assertNoUnsafeAWSOutput(t, result)
+}
+
+func TestPreflightFailsClosedWhenExportRefsCannotBeUnique(t *testing.T) {
+	client := baselineClient()
+	duplicateARN := client.export.ExportARN
+	client.exportPages = []ExportPage{{Exports: []ExportSummary{
+		{Name: "matilda-cur2", ExportARN: duplicateARN, TableName: "COST_AND_USAGE_REPORT"},
+		{Name: "duplicate-cur2", ExportARN: duplicateARN, TableName: "COST_AND_USAGE_REPORT"},
+	}}}
+	duplicateExport := client.export
+	duplicateExport.Name = "duplicate-cur2"
+	client.exportsByARN = map[string]Export{
+		duplicateARN: duplicateExport,
+	}
+
+	result := runPreflight(t, client)
+
+	assertBlockedCode(t, result, "aws_cur2_export_ref_collision")
+	assertNoUnsafeAWSOutput(t, result)
+}
+
 func TestPreflightRejectsUnverifiedQueries(t *testing.T) {
 	validSelect := requiredCUR2Select()
 	tests := []struct {
@@ -232,6 +404,11 @@ func TestPreflightRejectsUnverifiedQueries(t *testing.T) {
 		{
 			name:  "select star",
 			query: "SELECT * FROM COST_AND_USAGE_REPORT",
+			code:  "aws_cur2_query_unverified",
+		},
+		{
+			name:  "select without fields",
+			query: "SELECT FROM COST_AND_USAGE_REPORT",
 			code:  "aws_cur2_query_unverified",
 		},
 		{
@@ -276,6 +453,37 @@ func TestPreflightRejectsUnverifiedQueries(t *testing.T) {
 			assertBlockedCode(t, result, tt.code)
 			assertNoUnsafeAWSOutput(t, result)
 		})
+	}
+}
+
+func TestPreflightAcceptsAWSStandardMultilineCUR2Query(t *testing.T) {
+	client := baselineClient()
+	client.table.Columns = append(client.table.Columns, "line_item_resource_id")
+	client.export.QueryStatement = "select\n" +
+		"  " + strings.Join(requiredCUR2Columns(), ",\n  ") + ",\n" +
+		"  line_item_resource_id\n" +
+		"from\n" +
+		"  COST_AND_USAGE_REPORT"
+
+	result := runPreflight(t, client)
+
+	if result.Status != workflow.StatusReady {
+		t.Fatalf("Status = %q, want %q: %#v", result.Status, workflow.StatusReady, result.Plan.Checks)
+	}
+	assertNoUnsafeAWSOutput(t, result)
+}
+
+func TestReferencesCUR2QuerySourceAcceptsAWSStandardWhitespace(t *testing.T) {
+	query := "select\n" +
+		"  " + requiredCUR2Select() + "\n" +
+		"from\n" +
+		"  COST_AND_USAGE_REPORT"
+
+	if !referencesCUR2QuerySource(query) {
+		t.Fatalf("referencesCUR2QuerySource rejected AWS-standard multiline query")
+	}
+	if referencesCUR2QuerySource("SELECT " + requiredCUR2Select() + " FROM COST_AND_USAGE_REPORT JOIN other_table") {
+		t.Fatalf("referencesCUR2QuerySource accepted unsupported table clause")
 	}
 }
 
@@ -716,6 +924,15 @@ func TestPreflightClassifiesDeliveryStatus(t *testing.T) {
 			wantStatus: workflow.RunStatusBlocked,
 		},
 		{
+			name: "unverified success-like status warns",
+			mutate: func(client *fakeClient) {
+				client.executionPages = []ExecutionPage{{Executions: []Execution{{ID: "execution-1"}}}}
+				client.execution = Execution{ID: "execution-1", Status: "SUCCEEDED"}
+			},
+			code:       "aws_cur2_delivery_not_started",
+			wantStatus: workflow.StatusReady,
+		},
+		{
 			name: "latest failed execution blocks despite older success",
 			mutate: func(client *fakeClient) {
 				client.executionPages = []ExecutionPage{{Executions: []Execution{
@@ -723,8 +940,8 @@ func TestPreflightClassifiesDeliveryStatus(t *testing.T) {
 					{ID: "newer", StatusObservedAt: fixedNow().Add(-1 * time.Hour)},
 				}}}
 				client.executionsByID = map[string]Execution{
-					"older": {ID: "older", Status: "SUCCEEDED", StatusObservedAt: fixedNow().Add(-3 * time.Hour)},
-					"newer": {ID: "newer", Status: "FAILED", StatusObservedAt: fixedNow().Add(-1 * time.Hour)},
+					"older": {ID: "older", Status: "DELIVERY_SUCCESS", StatusObservedAt: fixedNow().Add(-3 * time.Hour)},
+					"newer": {ID: "newer", Status: "DELIVERY_FAILURE", StatusObservedAt: fixedNow().Add(-1 * time.Hour)},
 				}
 			},
 			code:       "aws_cur2_export_invalid_shape",
@@ -890,6 +1107,11 @@ func TestPreflightClassifiesBoundedPaginationIncomplete(t *testing.T) {
 
 func runPreflight(t *testing.T, client *fakeClient) workflow.Result {
 	t.Helper()
+	return runPreflightWithOptions(t, client, workflow.ExecutionOptions{})
+}
+
+func runPreflightWithOptions(t *testing.T, client *fakeClient, options workflow.ExecutionOptions) workflow.Result {
+	t.Helper()
 
 	request := workflow.Request{
 		Goal:           assessment.RapidAssessment,
@@ -907,7 +1129,7 @@ func runPreflight(t *testing.T, client *fakeClient) workflow.Result {
 	if err != nil {
 		t.Fatalf("NewRegistry returned error: %v", err)
 	}
-	return registry.Execute(request)
+	return registry.ExecuteContext(context.Background(), request, options)
 }
 
 func assertBlockedCode(t *testing.T, result workflow.Result, code string) {
@@ -952,17 +1174,49 @@ func assertNoUnsafeAWSOutput(t *testing.T, result workflow.Result) {
 func assertCheckEvidence(t *testing.T, result workflow.Result, key string, wantContains string) {
 	t.Helper()
 
-	if result.Plan == nil {
-		t.Fatal("result plan is nil")
-	}
-	for _, check := range result.Plan.Checks {
-		for _, evidence := range check.Evidence {
-			if evidence.Key == key && strings.Contains(evidence.Value, wantContains) {
-				return
-			}
+	values := checkEvidenceValues(result, key)
+	for _, value := range values {
+		if strings.Contains(value, wantContains) {
+			return
 		}
 	}
 	t.Fatalf("did not find evidence key %q containing %q", key, wantContains)
+}
+
+func assertNoCheckEvidenceKey(t *testing.T, result workflow.Result, key string) {
+	t.Helper()
+
+	if values := checkEvidenceValues(result, key); len(values) > 0 {
+		t.Fatalf("evidence key %q = %#v, want absent", key, values)
+	}
+}
+
+func assertGroupedCandidateEvidence(t *testing.T, result workflow.Result, index int, exportRef string, health string, outputFormat string, region string) {
+	t.Helper()
+
+	prefix := fmt.Sprintf("candidate_%d", index)
+	assertCheckEvidence(t, result, prefix+"_export_ref", exportRef)
+	assertCheckEvidence(t, result, prefix+"_health", health)
+	assertCheckEvidence(t, result, prefix+"_output_format", outputFormat)
+	assertCheckEvidence(t, result, prefix+"_destination_region", region)
+	if !strings.HasPrefix(exportRef, "cur2-") {
+		t.Fatalf("candidate %d export ref = %q, want cur2- prefix", index, exportRef)
+	}
+}
+
+func checkEvidenceValues(result workflow.Result, key string) []string {
+	if result.Plan == nil {
+		return nil
+	}
+	values := []string{}
+	for _, check := range result.Plan.Checks {
+		for _, evidence := range check.Evidence {
+			if evidence.Key == key {
+				values = append(values, evidence.Value)
+			}
+		}
+	}
+	return values
 }
 
 func assertSourceHandle(t *testing.T, result workflow.Result, uri string) {
@@ -1177,7 +1431,7 @@ func baselineClient() *fakeClient {
 		executionPages: []ExecutionPage{{
 			Executions: []Execution{{ID: "execution-1", StatusObservedAt: fixedNow().Add(-2 * time.Hour)}},
 		}},
-		execution: Execution{ID: "execution-1", Status: "SUCCEEDED", StatusObservedAt: fixedNow().Add(-2 * time.Hour)},
+		execution: Execution{ID: "execution-1", Status: "DELIVERY_SUCCESS", StatusObservedAt: fixedNow().Add(-2 * time.Hour)},
 		objectPages: []ObjectPage{{
 			Keys: []string{"matilda/cur2/matilda-cur2/data/BILLING_PERIOD=2026-06/part-000.gz"},
 		}},
