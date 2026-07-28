@@ -144,3 +144,25 @@ func TestDefaultRegistryConstructionDoesNotRequireAWSConfiguration(t *testing.T)
 		t.Fatalf("Code = %q, want provider_capability_not_implemented", result.Code)
 	}
 }
+
+func TestDefaultGuidedConfigWiresAWSBillingWithoutRunningDiscovery(t *testing.T) {
+	registry := Registry(RegistryConfig{})
+
+	config := DefaultGuidedConfig(registry)
+
+	if config.AWSBilling == nil {
+		t.Fatal("DefaultGuidedConfig should provide AWS guided billing support")
+	}
+	if config.TimeoutSeconds != 0 {
+		t.Fatalf("TimeoutSeconds = %d, want guided default to be applied at runtime", config.TimeoutSeconds)
+	}
+	result := config.Registry.Execute(workflow.Request{
+		Goal:           assessment.RapidAssessment,
+		CollectionPath: assessment.CollectionBilling,
+		Provider:       assessment.ProviderGCP,
+		Action:         assessment.ActionPreflight,
+	})
+	if result.Code != "provider_capability_not_implemented" {
+		t.Fatalf("Code = %q, want provider_capability_not_implemented from supplied registry", result.Code)
+	}
+}

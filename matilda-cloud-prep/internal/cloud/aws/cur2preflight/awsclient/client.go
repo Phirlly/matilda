@@ -121,7 +121,7 @@ func (client *Client) ensureConfigured(ctx context.Context) error {
 		Region:  client.region,
 	})
 	if err != nil {
-		return providerError("aws_config_missing_credentials")
+		return classifyConfigurationError(err)
 	}
 	if cfg.Region == "" {
 		return providerError("aws_config_missing_region")
@@ -130,7 +130,7 @@ func (client *Client) ensureConfigured(ctx context.Context) error {
 		return providerError("aws_config_missing_credentials")
 	}
 	if _, err := cfg.Credentials.Retrieve(ctx); err != nil {
-		return providerError("aws_config_missing_credentials")
+		return classifyConfigurationError(err)
 	}
 
 	dataCfg := cfg

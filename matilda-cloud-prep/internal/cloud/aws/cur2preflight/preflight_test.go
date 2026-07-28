@@ -104,19 +104,34 @@ func TestPreflightDiscoversCUR2ByInspectingListedExports(t *testing.T) {
 
 func TestPreflightClassifiesConfigurationFailures(t *testing.T) {
 	tests := []struct {
-		name string
-		err  error
-		code string
+		name        string
+		err         error
+		code        string
+		wantMessage string
 	}{
 		{
-			name: "missing region",
-			err:  NewProviderError("aws_config_missing_region", "AWS Region is not configured."),
-			code: "aws_config_missing_region",
+			name:        "missing region",
+			err:         NewProviderError("aws_config_missing_region", "AWS Region is not configured."),
+			code:        "aws_config_missing_region",
+			wantMessage: "AWS Region is not configured.",
 		},
 		{
-			name: "missing credentials",
-			err:  NewProviderError("aws_config_missing_credentials", "AWS credentials are not available."),
-			code: "aws_config_missing_credentials",
+			name:        "missing credentials",
+			err:         NewProviderError("aws_config_missing_credentials", "AWS credentials are not available."),
+			code:        "aws_config_missing_credentials",
+			wantMessage: "AWS credentials are not available.",
+		},
+		{
+			name:        "configuration timeout",
+			err:         NewProviderError("aws_config_timeout", "raw request id from provider"),
+			code:        "aws_config_timeout",
+			wantMessage: "AWS SDK configuration timed out.",
+		},
+		{
+			name:        "configuration cancelled",
+			err:         NewProviderError("aws_config_cancelled", "raw arn:aws:iam::123456789012:role/operator"),
+			code:        "aws_config_cancelled",
+			wantMessage: "AWS SDK configuration was cancelled.",
 		},
 	}
 
@@ -128,6 +143,7 @@ func TestPreflightClassifiesConfigurationFailures(t *testing.T) {
 			result := runPreflight(t, client)
 
 			assertBlockedCode(t, result, tt.code)
+			assertPlanCheckMessage(t, result, "AWS SDK configuration", tt.wantMessage)
 			assertNoUnsafeAWSOutput(t, result)
 			if client.calls["GetCallerIdentity"] != 0 {
 				t.Fatal("identity check should not run after configuration failure")
@@ -297,6 +313,93 @@ func TestPreflightOmitsUnsafeCandidateMetadata(t *testing.T) {
 	assertNoCheckEvidenceKey(t, result, "candidate_1_destination_region")
 	assertGroupedCandidateEvidence(t, result, 2, cur2ExportRef(secondARN), "HEALTHY", "PARQUET", "us-west-2")
 	assertNoUnsafeAWSOutput(t, result)
+}
+
+func TestPreflightOmitsIdentifierLikeCandidateMetadata(t *testing.T) {
+	client := baselineClient()
+	secondARN := "arn:aws:bcm-data-exports:us-east-1:123456789012:export/finance-cur2"
+	client.exportPages = []ExportPage{{Exports: []ExportSummary{
+		{Name: "matilda-cur2", ExportARN: client.export.ExportARN, TableName: "COST_AND_USAGE_REPORT"},
+		{Name: "finance-cur2", ExportARN: secondARN, TableName: "COST_AND_USAGE_REPORT"},
+	}}}
+	client.export.HealthStatus = "123456789012"
+	client.export.Destination.Output.Format = "AKIAIOSFODNN7EXAMPLE"
+	client.export.Destination.Region = "ASIAIOSFODNN7EXAMPLE"
+	secondExport := client.export
+	secondExport.Name = "finance-cur2"
+	secondExport.ExportARN = secondARN
+	secondExport.SourceARN = secondARN
+	secondExport.HealthStatus = "HEALTHY"
+	secondExport.Destination.Output.Format = "PARQUET"
+	secondExport.Destination.Region = "us-west-2"
+	client.exportsByARN = map[string]Export{
+		client.export.ExportARN: client.export,
+		secondARN:               secondExport,
+	}
+
+	result := runPreflight(t, client)
+
+	assertBlockedCode(t, result, "aws_cur2_export_ambiguous")
+	assertCheckEvidence(t, result, "candidate_1_export_ref", cur2ExportRef(client.export.ExportARN))
+	assertNoCheckEvidenceKey(t, result, "candidate_1_health")
+	assertNoCheckEvidenceKey(t, result, "candidate_1_output_format")
+	assertNoCheckEvidenceKey(t, result, "candidate_1_destination_region")
+	assertGroupedCandidateEvidence(t, result, 2, cur2ExportRef(secondARN), "HEALTHY", "PARQUET", "us-west-2")
+	assertNoUnsafeAWSOutput(t, result)
+}
+
+func TestSafeEvidenceValueRejectsSensitiveIdentifierShapesWithoutOverblocking(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{
+			name:  "safe health value",
+			value: "HEALTHY",
+			want:  "HEALTHY",
+		},
+		{
+			name:  "safe output format",
+			value: "PARQUET",
+			want:  "PARQUET",
+		},
+		{
+			name:  "safe region",
+			value: "us-west-2",
+			want:  "us-west-2",
+		},
+		{
+			name:  "raw account id",
+			value: "123456789012",
+		},
+		{
+			name:  "access key id shape",
+			value: "AKIAIOSFODNN7EXAMPLE",
+		},
+		{
+			name:  "temporary access key id shape",
+			value: "ASIAIOSFODNN7EXAMPLE",
+		},
+		{
+			name:  "non account id numeric-looking metadata",
+			value: "12345678901A",
+			want:  "12345678901A",
+		},
+		{
+			name:  "non access key id metadata",
+			value: "AKIAIOSFODNN7EXAMPL_",
+			want:  "AKIAIOSFODNN7EXAMPL_",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := safeEvidenceValue(tt.value); got != tt.want {
+				t.Fatalf("safeEvidenceValue(%q) = %q, want %q", tt.value, got, tt.want)
+			}
+		})
+	}
 }
 
 func TestPreflightSelectsCUR2ExportByRef(t *testing.T) {
@@ -1144,6 +1247,23 @@ func assertBlockedCode(t *testing.T, result workflow.Result, code string) {
 	if result.Mutated {
 		t.Fatal("blocked preflight must not report mutation")
 	}
+}
+
+func assertPlanCheckMessage(t *testing.T, result workflow.Result, title string, message string) {
+	t.Helper()
+
+	if result.Plan == nil {
+		t.Fatal("result.Plan is nil")
+	}
+	for _, check := range result.Plan.Checks {
+		if check.Title == title {
+			if check.Message != message {
+				t.Fatalf("check %q message = %q, want %q", title, check.Message, message)
+			}
+			return
+		}
+	}
+	t.Fatalf("did not find plan check titled %q", title)
 }
 
 func assertNoUnsafeAWSOutput(t *testing.T, result workflow.Result) {

@@ -33,7 +33,11 @@ type AWSExecutionSelectors struct {
 	CUR2ExportRef string `json:"cur2_export_ref,omitempty"`
 }
 
-var cur2ExportRefPattern = regexp.MustCompile(`^cur2-[a-f0-9]+$`)
+var (
+	cur2ExportRefPattern      = regexp.MustCompile(`^cur2-[a-f0-9]+$`)
+	awsAccountIDLikePattern   = regexp.MustCompile(`^\d{12}$`)
+	awsAccessKeyIDLikePattern = regexp.MustCompile(`(?i)^(AKIA|ASIA)[A-Z0-9]{16}$`)
+)
 
 func DefaultExecutionOptions() ExecutionOptions {
 	options, err := NormalizeExecutionOptions(ExecutionOptions{
@@ -112,6 +116,9 @@ func normalizeAWSExecutionSelectors(input *AWSExecutionSelectors) (*AWSExecution
 		if pathLikeSelectorValue(normalized.Profile) {
 			return nil, fmt.Errorf("profile: execution_options aws profile must not be a local path")
 		}
+		if sensitiveIdentifierLikeSelectorValue(normalized.Profile) {
+			return nil, fmt.Errorf("profile: execution_options aws profile must not look like sensitive cloud identifier material")
+		}
 	}
 	if normalized.Region != "" {
 		if err := ensureSafeText("execution_options aws region", normalized.Region); err != nil {
@@ -119,6 +126,9 @@ func normalizeAWSExecutionSelectors(input *AWSExecutionSelectors) (*AWSExecution
 		}
 		if pathLikeSelectorValue(normalized.Region) {
 			return nil, fmt.Errorf("region: execution_options aws region must not be a local path")
+		}
+		if sensitiveIdentifierLikeSelectorValue(normalized.Region) {
+			return nil, fmt.Errorf("region: execution_options aws region must not look like sensitive cloud identifier material")
 		}
 	}
 	if normalized.CUR2ExportRef != "" {
@@ -145,4 +155,8 @@ func validCUR2ExportRef(value string) bool {
 
 func pathLikeSelectorValue(value string) bool {
 	return strings.ContainsAny(value, `/\`)
+}
+
+func sensitiveIdentifierLikeSelectorValue(value string) bool {
+	return awsAccountIDLikePattern.MatchString(value) || awsAccessKeyIDLikePattern.MatchString(value)
 }

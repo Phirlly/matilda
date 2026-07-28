@@ -1,6 +1,7 @@
 package awsclient
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -20,6 +21,10 @@ func messageForCode(code string) string {
 		return "AWS Region is not configured."
 	case "aws_config_missing_credentials":
 		return "AWS credentials are not available."
+	case "aws_config_timeout":
+		return "AWS SDK configuration timed out."
+	case "aws_config_cancelled":
+		return "AWS SDK configuration was cancelled."
 	case "aws_config_profile_shadowed":
 		return "AWS profile selection is blocked because credential environment variables would take precedence."
 	case "aws_auth_failed":
@@ -40,6 +45,17 @@ func messageForCode(code string) string {
 		return "AWS S3 bucket could not be inspected."
 	default:
 		return "AWS provider call failed."
+	}
+}
+
+func classifyConfigurationError(err error) error {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return providerError("aws_config_timeout")
+	case errors.Is(err, context.Canceled):
+		return providerError("aws_config_cancelled")
+	default:
+		return providerError("aws_config_missing_credentials")
 	}
 }
 

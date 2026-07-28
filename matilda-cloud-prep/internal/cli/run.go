@@ -35,10 +35,15 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 }
 
 func RunWithInput(args []string, stdin io.Reader, stdout io.Writer, stderr io.Writer) int {
-	return RunWithRegistry(args, stdin, stdout, stderr, bootstrap.DefaultRegistry())
+	registry := bootstrap.DefaultRegistry()
+	return runWithRuntime(args, stdin, stdout, stderr, registry, bootstrap.DefaultGuidedConfig(registry))
 }
 
 func RunWithRegistry(args []string, stdin io.Reader, stdout io.Writer, stderr io.Writer, registry workflow.Registry) int {
+	return runWithRuntime(args, stdin, stdout, stderr, registry, guided.Config{Registry: registry})
+}
+
+func runWithRuntime(args []string, stdin io.Reader, stdout io.Writer, stderr io.Writer, registry workflow.Registry, guidedConfig guided.Config) int {
 	if len(args) == 0 {
 		writeError(stderr, "usage: expected matilda-prep start, rapid-assessment, deep-discovery, --help, or --version")
 		return ExitUsage
@@ -56,7 +61,7 @@ func RunWithRegistry(args []string, stdin io.Reader, stdout io.Writer, stderr io
 			writeError(stderr, "usage: matilda-prep start")
 			return ExitUsage
 		}
-		if err := guided.Run(stdin, stdout); err != nil {
+		if err := guided.RunWithConfig(stdin, stdout, guidedConfig); err != nil {
 			writeError(stderr, err.Error())
 			return ExitUsage
 		}

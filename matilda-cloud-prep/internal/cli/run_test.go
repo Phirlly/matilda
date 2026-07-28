@@ -11,6 +11,8 @@ import (
 
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/assessment"
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/bootstrap"
+	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/cloud/aws/billingguide"
+	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/guided"
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/workflow"
 )
 
@@ -50,6 +52,66 @@ func TestStartGuidesToSelectedPreflightCommand(t *testing.T) {
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("stdout = %q, want to contain %q", stdout, want)
+		}
+	}
+}
+
+func TestStartAWSBillingUsesInjectedGuidedRuntime(t *testing.T) {
+	request := workflow.Request{
+		Goal:           assessment.RapidAssessment,
+		CollectionPath: assessment.CollectionBilling,
+		Provider:       assessment.ProviderAWS,
+		Action:         assessment.ActionPreflight,
+	}
+	var gotOptions workflow.ExecutionOptions
+	registry, err := workflow.NewRegistry(workflow.Capability{
+		Request: request,
+		Runner: workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+			gotOptions = options
+			return cliCapabilityReport(got, workflow.StatusReady, workflow.SupportSupported, "aws_cur2_preflight_ready")
+		}),
+	})
+	if err != nil {
+		t.Fatalf("NewRegistry returned error: %v", err)
+	}
+	guide := fakeCLIAWSBillingGuide{
+		source: billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"},
+		identity: billingguide.VerifiedIdentity{
+			Source:       billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"},
+			AccountLabel: "account-ending-9012",
+			CallerRef:    "sha256:abcdef123456",
+			Region:       "us-east-1",
+		},
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := runWithRuntime([]string{"start"}, strings.NewReader("1\n1\ny\n"), &stdout, &stderr, registry, guided.Config{Registry: registry, AWSBilling: guide})
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr: %s", code, stderr.String())
+	}
+	if stderr.String() != "" {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	if gotOptions.InterfaceMode != workflow.InterfaceModeGuided {
+		t.Fatalf("runner interface mode = %q, want guided", gotOptions.InterfaceMode)
+	}
+	if gotOptions.Selectors == nil || gotOptions.Selectors.AWS == nil || gotOptions.Selectors.AWS.Profile != "default" {
+		t.Fatalf("runner AWS selectors = %#v, want selected profile", gotOptions)
+	}
+	for _, want := range []string{
+		"Connect AWS account",
+		"Inspect AWS CUR 2.0 billing exports",
+		"matilda-prep rapid-assessment billing aws preflight --profile default --region us-east-1",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, want to contain %q", stdout.String(), want)
+		}
+	}
+	for _, forbidden := range []string{"arn:aws", "123456789012", "access_key", "secret_key", "session_token", "/Users/"} {
+		if strings.Contains(stdout.String(), forbidden) {
+			t.Fatalf("stdout leaked forbidden value %q in %s", forbidden, stdout.String())
 		}
 	}
 }
@@ -308,6 +370,11 @@ func TestDirectFlagValidationFailsBeforeExecution(t *testing.T) {
 			name: "unknown flag",
 			args: []string{"rapid-assessment", "billing", "aws", "preflight", "--export-name", "report"},
 			want: "flag provided but not defined",
+		},
+		{
+			name: "flag needs argument",
+			args: []string{"rapid-assessment", "billing", "aws", "preflight", "--profile"},
+			want: "flag needs an argument",
 		},
 		{
 			name: "unsafe trailing argument",
@@ -821,6 +888,19 @@ type failingWriter struct{}
 
 func (failingWriter) Write([]byte) (int, error) {
 	return 0, errors.New("write failed")
+}
+
+type fakeCLIAWSBillingGuide struct {
+	source   billingguide.CredentialSource
+	identity billingguide.VerifiedIdentity
+}
+
+func (fake fakeCLIAWSBillingGuide) DiscoverCredentialSources(context.Context) ([]billingguide.CredentialSource, error) {
+	return []billingguide.CredentialSource{fake.source}, nil
+}
+
+func (fake fakeCLIAWSBillingGuide) VerifyIdentity(context.Context, billingguide.CredentialSource) (billingguide.VerifiedIdentity, error) {
+	return fake.identity, nil
 }
 
 func cliCapabilityReport(request workflow.Request, status workflow.RunStatus, support workflow.SupportStatus, code string) workflow.CapabilityReport {
