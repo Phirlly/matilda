@@ -43,7 +43,7 @@ func ParseGoal(value string) (Goal, error) {
 	case RapidAssessment, DeepDiscovery:
 		return Goal(normalized), nil
 	default:
-		return "", fmt.Errorf("invalid goal %q: expected rapid-assessment or deep-discovery", value)
+		return "", fmt.Errorf("invalid goal: expected rapid-assessment or deep-discovery")
 	}
 }
 
@@ -53,7 +53,7 @@ func ParseCollectionPath(value string) (CollectionPath, error) {
 	case CollectionBilling, CollectionAPI:
 		return CollectionPath(normalized), nil
 	default:
-		return "", fmt.Errorf("invalid collection path %q: expected billing or api", value)
+		return "", fmt.Errorf("invalid collection path: expected billing or api")
 	}
 }
 
@@ -63,7 +63,7 @@ func ParseProvider(value string) (Provider, error) {
 	case ProviderAWS, ProviderAzure, ProviderGCP, ProviderOCI:
 		return Provider(normalized), nil
 	default:
-		return "", fmt.Errorf("invalid provider %q: expected aws, azure, gcp, or oci", value)
+		return "", fmt.Errorf("invalid provider: expected aws, azure, gcp, or oci")
 	}
 }
 
@@ -73,7 +73,7 @@ func ParseAction(value string) (Action, error) {
 	case ActionPreflight, ActionApplyPrereqs, ActionValidate, ActionPackage:
 		return Action(normalized), nil
 	default:
-		return "", fmt.Errorf("invalid action %q: expected preflight, apply-prereqs, validate, or package", value)
+		return "", fmt.Errorf("invalid action: expected preflight, apply-prereqs, validate, or package")
 	}
 }
 

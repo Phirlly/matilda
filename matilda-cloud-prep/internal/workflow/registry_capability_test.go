@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/assessment"
 )
@@ -12,13 +13,18 @@ import (
 func TestRegistryDispatchesInjectedCapability(t *testing.T) {
 	request := awsBillingPreflightRequest()
 	called := false
+	sawDeadline := false
 
 	registry, err := NewRegistry(Capability{
 		Request: request,
-		Runner: RunnerFunc(func(ctx context.Context, got Request) CapabilityReport {
+		Runner: RunnerFunc(func(ctx context.Context, got Request, options ExecutionOptions) CapabilityReport {
 			called = true
+			_, sawDeadline = ctx.Deadline()
 			if got != request {
 				t.Fatalf("runner request = %#v, want %#v", got, request)
+			}
+			if options.TimeoutSeconds != DefaultExecutionTimeoutSeconds {
+				t.Fatalf("runner timeout = %d, want default %d", options.TimeoutSeconds, DefaultExecutionTimeoutSeconds)
 			}
 			return sampleCapabilityReport(request, StatusReady, SupportSupported, "aws_cur2_preflight_ready")
 		}),
@@ -31,6 +37,9 @@ func TestRegistryDispatchesInjectedCapability(t *testing.T) {
 
 	if !called {
 		t.Fatal("injected capability was not called")
+	}
+	if !sawDeadline {
+		t.Fatal("registry Execute did not apply default execution deadline")
 	}
 	if result.Status != StatusReady {
 		t.Fatalf("Status = %q, want %q", result.Status, StatusReady)
@@ -56,11 +65,166 @@ func TestRegistryDispatchesInjectedCapability(t *testing.T) {
 	assertSafeSourceHandles(t, result.SourceHandles)
 }
 
+func TestRegistryPreservesCallerSuppliedDeadline(t *testing.T) {
+	request := awsBillingPreflightRequest()
+	callerDeadline := time.Now().Add(30 * time.Second).Round(time.Second)
+	parent, cancel := context.WithDeadline(context.Background(), callerDeadline)
+	defer cancel()
+	var gotDeadline time.Time
+
+	registry, err := NewRegistry(Capability{
+		Request: request,
+		Runner: RunnerFunc(func(ctx context.Context, got Request, options ExecutionOptions) CapabilityReport {
+			var ok bool
+			gotDeadline, ok = ctx.Deadline()
+			if !ok {
+				t.Fatal("runner context did not preserve caller deadline")
+			}
+			return sampleCapabilityReport(got, StatusReady, SupportSupported, "aws_cur2_preflight_ready")
+		}),
+	})
+	if err != nil {
+		t.Fatalf("NewRegistry returned error: %v", err)
+	}
+
+	result := registry.ExecuteContext(parent, request, ExecutionOptions{TimeoutSeconds: 120})
+
+	if result.Status != StatusReady {
+		t.Fatalf("Status = %q, want %q", result.Status, StatusReady)
+	}
+	if !gotDeadline.Equal(callerDeadline) {
+		t.Fatalf("runner deadline = %s, want caller deadline %s", gotDeadline, callerDeadline)
+	}
+}
+
+func TestRegistryPassesExecutionOptionsToCapabilityRunner(t *testing.T) {
+	request := awsBillingPreflightRequest()
+	options := ExecutionOptions{
+		InterfaceMode:  InterfaceModeDirect,
+		TimeoutSeconds: 45,
+		Selectors: &ExecutionSelectors{
+			AWS: &AWSExecutionSelectors{
+				Profile:       "default",
+				Region:        "us-west-2",
+				CUR2ExportRef: "cur2-1234abcd5678ef90",
+			},
+		},
+	}
+	var gotOptions ExecutionOptions
+
+	registry, err := NewRegistry(Capability{
+		Request: request,
+		Runner: RunnerFunc(func(ctx context.Context, got Request, options ExecutionOptions) CapabilityReport {
+			gotOptions = options
+			return sampleCapabilityReport(got, StatusReady, SupportSupported, "aws_cur2_preflight_ready")
+		}),
+	})
+	if err != nil {
+		t.Fatalf("NewRegistry returned error: %v", err)
+	}
+
+	result := registry.ExecuteContext(context.Background(), request, options)
+
+	if result.Status != StatusReady {
+		t.Fatalf("Status = %q, want %q", result.Status, StatusReady)
+	}
+	if gotOptions.SchemaVersion != ExecutionOptionsSchemaVersion {
+		t.Fatalf("runner options schema = %q, want %q", gotOptions.SchemaVersion, ExecutionOptionsSchemaVersion)
+	}
+	if gotOptions.InterfaceMode != InterfaceModeDirect || gotOptions.TimeoutSeconds != 45 {
+		t.Fatalf("runner options = %#v, want direct 45s", gotOptions)
+	}
+	if gotOptions.Selectors == nil || gotOptions.Selectors.AWS == nil {
+		t.Fatalf("runner AWS selectors missing: %#v", gotOptions)
+	}
+	if gotOptions.Selectors.AWS.Profile != "default" || gotOptions.Selectors.AWS.Region != "us-west-2" || gotOptions.Selectors.AWS.CUR2ExportRef != "cur2-1234abcd5678ef90" {
+		t.Fatalf("runner AWS selectors = %#v, want supplied selectors", gotOptions.Selectors.AWS)
+	}
+	if result.ExecutionOptions.Selectors == nil || result.ExecutionOptions.Selectors.AWS == nil {
+		t.Fatalf("result execution_options missing AWS selectors: %#v", result.ExecutionOptions)
+	}
+	if result.ExecutionOptions.TimeoutSeconds != 45 {
+		t.Fatalf("result execution_options timeout = %d, want 45", result.ExecutionOptions.TimeoutSeconds)
+	}
+	if result.Plan == nil || result.Plan.ExecutionOptions.TimeoutSeconds != 45 {
+		t.Fatalf("plan execution_options = %#v, want timeout 45", result.Plan)
+	}
+}
+
+func TestRegistryRejectsInvalidExecutionOptionsBeforeRunner(t *testing.T) {
+	tests := []struct {
+		name      string
+		options   ExecutionOptions
+		forbidden []string
+	}{
+		{
+			name: "raw ARN export ref",
+			options: ExecutionOptions{
+				Selectors: &ExecutionSelectors{
+					AWS: &AWSExecutionSelectors{
+						CUR2ExportRef: "arn:aws:bcm-data-exports:us-east-1:123456789012:export/live",
+					},
+				},
+			},
+			forbidden: []string{"arn:aws"},
+		},
+		{
+			name:      "unsafe schema version",
+			options:   ExecutionOptions{SchemaVersion: "/private/tmp/schema"},
+			forbidden: []string{"/private/tmp"},
+		},
+		{
+			name:      "unsafe interface mode",
+			options:   ExecutionOptions{InterfaceMode: InterfaceMode("arn:aws:iam::123456789012:role/operator")},
+			forbidden: []string{"arn:aws"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			request := awsBillingPreflightRequest()
+			called := false
+			registry, err := NewRegistry(Capability{
+				Request: request,
+				Runner: RunnerFunc(func(ctx context.Context, got Request, options ExecutionOptions) CapabilityReport {
+					called = true
+					return sampleCapabilityReport(got, StatusReady, SupportSupported, "aws_cur2_preflight_ready")
+				}),
+			})
+			if err != nil {
+				t.Fatalf("NewRegistry returned error: %v", err)
+			}
+
+			result := registry.ExecuteContext(context.Background(), request, tt.options)
+			encoded, err := json.Marshal(result)
+			if err != nil {
+				t.Fatalf("Marshal result returned error: %v", err)
+			}
+			output := string(encoded)
+
+			if called {
+				t.Fatal("runner was called after invalid execution options")
+			}
+			if result.Status != RunStatusFailed {
+				t.Fatalf("Status = %q, want %q", result.Status, RunStatusFailed)
+			}
+			if result.Code != "execution_options_invalid" {
+				t.Fatalf("Code = %q, want execution_options_invalid", result.Code)
+			}
+			for _, forbidden := range tt.forbidden {
+				if strings.Contains(output, forbidden) {
+					t.Fatalf("invalid execution-options result leaked %q: %s", forbidden, output)
+				}
+			}
+		})
+	}
+}
+
 func TestRegistryKeepsUnregisteredPathsFailClosed(t *testing.T) {
 	request := awsBillingPreflightRequest()
 	registry, err := NewRegistry(Capability{
 		Request: request,
-		Runner: RunnerFunc(func(ctx context.Context, got Request) CapabilityReport {
+		Runner: RunnerFunc(func(ctx context.Context, got Request, options ExecutionOptions) CapabilityReport {
 			return sampleCapabilityReport(got, StatusReady, SupportSupported, "aws_cur2_preflight_ready")
 		}),
 	})
@@ -91,10 +255,10 @@ func TestRegistryKeepsUnregisteredPathsFailClosed(t *testing.T) {
 func TestRegistryRejectsDuplicateCapabilityRegistration(t *testing.T) {
 	request := awsBillingPreflightRequest()
 	_, err := NewRegistry(
-		Capability{Request: request, Runner: RunnerFunc(func(context.Context, Request) CapabilityReport {
+		Capability{Request: request, Runner: RunnerFunc(func(context.Context, Request, ExecutionOptions) CapabilityReport {
 			return sampleCapabilityReport(request, StatusReady, SupportSupported, "first")
 		})},
-		Capability{Request: request, Runner: RunnerFunc(func(context.Context, Request) CapabilityReport {
+		Capability{Request: request, Runner: RunnerFunc(func(context.Context, Request, ExecutionOptions) CapabilityReport {
 			return sampleCapabilityReport(request, StatusReady, SupportSupported, "second")
 		})},
 	)
@@ -144,7 +308,7 @@ func TestRegistryRejectsUnsafeCapabilityResult(t *testing.T) {
 			request := awsBillingPreflightRequest()
 			registry, err := NewRegistry(Capability{
 				Request: request,
-				Runner: RunnerFunc(func(context.Context, Request) CapabilityReport {
+				Runner: RunnerFunc(func(context.Context, Request, ExecutionOptions) CapabilityReport {
 					return tt.report
 				}),
 			})
@@ -178,7 +342,7 @@ func TestRegistryRejectsMutationFromReadOnlyCapability(t *testing.T) {
 	request := awsBillingPreflightRequest()
 	registry, err := NewRegistry(Capability{
 		Request: request,
-		Runner: RunnerFunc(func(context.Context, Request) CapabilityReport {
+		Runner: RunnerFunc(func(context.Context, Request, ExecutionOptions) CapabilityReport {
 			report := sampleCapabilityReport(request, StatusReady, SupportSupported, "aws_cur2_preflight_ready")
 			report.Mutated = true
 			return report

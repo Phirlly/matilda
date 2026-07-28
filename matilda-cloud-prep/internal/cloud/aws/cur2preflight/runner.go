@@ -21,13 +21,15 @@ const (
 )
 
 type RunnerConfig struct {
-	Client Client
-	Now    time.Time
+	Client        Client
+	ClientFactory func(workflow.ExecutionOptions) Client
+	Now           time.Time
 }
 
 type Runner struct {
-	client Client
-	now    time.Time
+	client        Client
+	clientFactory func(workflow.ExecutionOptions) Client
+	now           time.Time
 }
 
 func NewRunner(config RunnerConfig) Runner {
@@ -36,19 +38,21 @@ func NewRunner(config RunnerConfig) Runner {
 		now = time.Now().UTC()
 	}
 	return Runner{
-		client: config.Client,
-		now:    now.UTC(),
+		client:        config.Client,
+		clientFactory: config.ClientFactory,
+		now:           now.UTC(),
 	}
 }
 
-func (runner Runner) Run(ctx context.Context, request workflow.Request) workflow.CapabilityReport {
+func (runner Runner) Run(ctx context.Context, request workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
 	state := newRunState(request)
-	if isNilClient(runner.client) {
+	client := runner.clientFor(options)
+	if isNilClient(client) {
 		state.add(failFinding("aws_provider_capability_blocked", "AWS preflight client", "AWS CUR 2.0 preflight client is not configured."))
 		return state.report("unknown", "AWS caller identity was not checked.")
 	}
 
-	config, err := runner.client.CheckConfiguration(ctx)
+	config, err := client.CheckConfiguration(ctx)
 	if err != nil {
 		state.add(failFinding(providerErrorCode(err, "aws_config_missing_credentials"), "AWS SDK configuration", configurationFailureMessage(err)))
 		return state.report("unknown", "AWS caller identity was not checked because configuration failed.")
@@ -59,7 +63,7 @@ func (runner Runner) Run(ctx context.Context, request workflow.Request) workflow
 	}
 	state.add(withEvidence(passFinding("aws_config_ready", "AWS SDK configuration", "AWS Region and credential provider configuration are available."), workflow.PlanEvidence{Key: "region_configured", Value: "true"}))
 
-	identity, err := runner.client.GetCallerIdentity(ctx)
+	identity, err := client.GetCallerIdentity(ctx)
 	if err != nil {
 		state.add(failFinding(providerErrorCode(err, "aws_auth_failed"), "AWS caller identity", "AWS caller identity could not be verified."))
 		return state.report("unavailable", "AWS caller identity could not be verified.")
@@ -75,7 +79,7 @@ func (runner Runner) Run(ctx context.Context, request workflow.Request) workflow
 		workflow.PlanEvidence{Key: "caller_ref", Value: callerEvidence},
 	))
 
-	tables, err := listAllTables(ctx, runner.client)
+	tables, err := listAllTables(ctx, client)
 	if err != nil {
 		state.add(failFinding(providerErrorCode(err, "aws_data_exports_access_denied"), "AWS Data Exports table metadata", "AWS Data Exports table metadata could not be listed."))
 		return state.report("verified", identitySummary(accountEvidence, callerEvidence))
@@ -85,23 +89,25 @@ func (runner Runner) Run(ctx context.Context, request workflow.Request) workflow
 		return state.report("verified", identitySummary(accountEvidence, callerEvidence))
 	}
 
-	summaries, err := listAllExports(ctx, runner.client)
+	summaries, err := listAllExports(ctx, client)
 	if err != nil {
 		state.add(failFinding(providerErrorCode(err, "aws_data_exports_access_denied"), "AWS Data Exports discovery", "AWS Data Exports definitions could not be listed."))
 		return state.report("verified", identitySummary(accountEvidence, callerEvidence))
 	}
-	exports, err := runner.inspectListedExports(ctx, summaries)
+	exports, err := runner.inspectListedExports(ctx, client, summaries)
 	if err != nil {
 		state.add(failFinding(providerErrorCode(err, "aws_cur2_export_invalid_shape"), "AWS CUR 2.0 export definition", "Listed AWS exports could not be inspected."))
 		return state.report("verified", identitySummary(accountEvidence, callerEvidence))
 	}
-	export, finding := selectCUR2Export(exports)
+	requestedExportRef := awsCUR2ExportRefOption(options)
+	export, selectedExportRef, finding := selectCUR2Export(exports, requestedExportRef)
 	if finding.Code != "" {
 		state.add(finding)
 		return state.report("verified", identitySummary(accountEvidence, callerEvidence))
 	}
 	state.add(withEvidence(passFinding("aws_cur2_export_selected", "AWS CUR 2.0 export discovery", "Exactly one CUR 2.0 export candidate was selected for read-only inspection."),
 		workflow.PlanEvidence{Key: "cur_version", Value: "CUR2.0"},
+		workflow.PlanEvidence{Key: "selected_export_ref", Value: selectedExportRef},
 	))
 
 	if export.SourceARN == "" {
@@ -116,7 +122,7 @@ func (runner Runner) Run(ctx context.Context, request workflow.Request) workflow
 		state.add(failFinding("aws_cur2_export_invalid_shape", "CUR 2.0 table configuration", "AWS export is missing COST_AND_USAGE_REPORT table configuration."))
 		return state.report("verified", identitySummary(accountEvidence, callerEvidence))
 	}
-	table, err := runner.client.GetTable(ctx, cur2TableName, tableConfig)
+	table, err := client.GetTable(ctx, cur2TableName, tableConfig)
 	if err != nil {
 		state.add(failFinding(providerErrorCode(err, "aws_cur2_table_unavailable"), "CUR 2.0 table availability", "COST_AND_USAGE_REPORT table metadata could not be inspected."))
 		return state.report("verified", identitySummary(accountEvidence, callerEvidence))
@@ -139,7 +145,7 @@ func (runner Runner) Run(ctx context.Context, request workflow.Request) workflow
 		}
 	}
 
-	bucketAccess, err := runner.client.HeadBucket(ctx, export.Destination.Bucket)
+	bucketAccess, err := client.HeadBucket(ctx, export.Destination.Bucket)
 	if err != nil {
 		state.add(failFinding(providerErrorCode(err, "aws_s3_bucket_inaccessible"), "AWS S3 bucket reachability", "S3 destination bucket could not be checked."))
 		return state.report("verified", identitySummary(accountEvidence, callerEvidence))
@@ -156,7 +162,7 @@ func (runner Runner) Run(ctx context.Context, request workflow.Request) workflow
 	}
 	state.add(passFinding("aws_s3_bucket_reachable", "AWS S3 bucket reachability", "S3 destination bucket is reachable through read-only preflight."))
 
-	policy, err := runner.client.GetBucketPolicy(ctx, export.Destination.Bucket)
+	policy, err := client.GetBucketPolicy(ctx, export.Destination.Bucket)
 	if err != nil {
 		state.add(failFinding(providerErrorCode(err, "aws_s3_bucket_policy_inaccessible"), "AWS S3 bucket policy visibility", "S3 bucket policy could not be inspected."))
 		return state.report("verified", identitySummary(accountEvidence, callerEvidence))
@@ -167,7 +173,7 @@ func (runner Runner) Run(ctx context.Context, request workflow.Request) workflow
 		return state.report("verified", identitySummary(accountEvidence, callerEvidence))
 	}
 
-	for _, finding := range runner.deliveryFindings(ctx, export) {
+	for _, finding := range runner.deliveryFindings(ctx, client, export) {
 		state.add(finding)
 		if finding.Status == workflow.CheckFail {
 			return state.report("verified", identitySummary(accountEvidence, callerEvidence))
@@ -175,10 +181,20 @@ func (runner Runner) Run(ctx context.Context, request workflow.Request) workflow
 	}
 
 	period := previousBillingPeriod(runner.now)
-	partitionFinding := runner.previousMonthFinding(ctx, export, period)
+	partitionFinding := runner.previousMonthFinding(ctx, client, export, period)
 	state.add(partitionFinding)
 
 	return state.report("verified", identitySummary(accountEvidence, callerEvidence))
+}
+
+func (runner Runner) clientFor(options workflow.ExecutionOptions) Client {
+	if !isNilClient(runner.client) {
+		return runner.client
+	}
+	if runner.clientFactory == nil {
+		return nil
+	}
+	return runner.clientFactory(options)
 }
 
 func listAllTables(ctx context.Context, client Client) ([]TableSummary, error) {
@@ -223,7 +239,7 @@ func listAllExports(ctx context.Context, client Client) ([]ExportSummary, error)
 	return nil, dataExportsPaginationError()
 }
 
-func (runner Runner) inspectListedExports(ctx context.Context, summaries []ExportSummary) ([]Export, error) {
+func (runner Runner) inspectListedExports(ctx context.Context, client Client, summaries []ExportSummary) ([]Export, error) {
 	if len(summaries) > maxExportDetailChecks {
 		return nil, dataExportsPaginationError()
 	}
@@ -235,7 +251,7 @@ func (runner Runner) inspectListedExports(ctx context.Context, summaries []Expor
 			exports = append(exports, Export{Name: summary.Name})
 			continue
 		}
-		export, err := runner.client.GetExport(ctx, exportARN)
+		export, err := client.GetExport(ctx, exportARN)
 		if err != nil {
 			return nil, err
 		}
@@ -253,9 +269,16 @@ func (runner Runner) inspectListedExports(ctx context.Context, summaries []Expor
 	return exports, nil
 }
 
-func selectCUR2Export(exports []Export) (Export, checkFinding) {
+func awsCUR2ExportRefOption(options workflow.ExecutionOptions) string {
+	if options.Selectors == nil || options.Selectors.AWS == nil {
+		return ""
+	}
+	return strings.TrimSpace(options.Selectors.AWS.CUR2ExportRef)
+}
+
+func selectCUR2Export(exports []Export, requestedRef string) (Export, string, checkFinding) {
 	if len(exports) == 0 {
-		return Export{}, failFinding("aws_cur2_export_not_found", "AWS CUR 2.0 export discovery", "No AWS Data Exports definitions were found.")
+		return Export{}, "", failFinding("aws_cur2_export_not_found", "AWS CUR 2.0 export discovery", "No AWS Data Exports definitions were found.")
 	}
 
 	candidates := []Export{}
@@ -269,15 +292,124 @@ func selectCUR2Export(exports []Export) (Export, checkFinding) {
 		}
 	}
 	if len(candidates) == 0 && outOfScope {
-		return Export{}, failFinding("aws_non_cur2_source_out_of_scope", "AWS billing export source", "Only non-CUR-2.0 billing exports were found for this path.")
+		return Export{}, "", failFinding("aws_non_cur2_source_out_of_scope", "AWS billing export source", "Only non-CUR-2.0 billing exports were found for this path.")
 	}
 	if len(candidates) == 0 {
-		return Export{}, failFinding("aws_cur2_export_not_found", "AWS CUR 2.0 export discovery", "No CUR 2.0 export candidate was found.")
+		return Export{}, "", failFinding("aws_cur2_export_not_found", "AWS CUR 2.0 export discovery", "No CUR 2.0 export candidate was found.")
+	}
+
+	refs, err := cur2ExportRefs(candidates)
+	if err != nil {
+		return Export{}, "", failFinding("aws_cur2_export_ref_collision", "AWS CUR 2.0 export refs", "CUR 2.0 export candidates could not be assigned unique safe refs.")
+	}
+
+	if requestedRef != "" {
+		for index, candidate := range candidates {
+			if refs[index] == requestedRef {
+				return candidate, refs[index], checkFinding{}
+			}
+		}
+		return Export{}, "", withEvidence(failFinding("aws_cur2_export_ref_not_found", "AWS CUR 2.0 export selection", "Requested CUR 2.0 export ref did not match a discovered candidate."),
+			candidateEvidence(candidates, refs)...,
+		)
 	}
 	if len(candidates) > 1 {
-		return Export{}, failFinding("aws_cur2_export_ambiguous", "AWS CUR 2.0 export discovery", "Multiple CUR 2.0 export candidates were found.")
+		return Export{}, "", withEvidence(failFinding("aws_cur2_export_ambiguous", "AWS CUR 2.0 export discovery", "Multiple CUR 2.0 export candidates were found."),
+			candidateEvidence(candidates, refs)...,
+		)
 	}
-	return candidates[0], checkFinding{}
+	return candidates[0], refs[0], checkFinding{}
+}
+
+func cur2ExportRefs(exports []Export) ([]string, error) {
+	for _, length := range []int{16, 24, 32} {
+		refs := make([]string, len(exports))
+		seen := map[string]struct{}{}
+		collision := false
+		for index, export := range exports {
+			refs[index] = cur2ExportRefWithLength(export.ExportARN, length)
+			if _, exists := seen[refs[index]]; exists {
+				collision = true
+				break
+			}
+			seen[refs[index]] = struct{}{}
+		}
+		if !collision {
+			return refs, nil
+		}
+	}
+	return nil, fmt.Errorf("CUR 2.0 export refs are not unique")
+}
+
+func cur2ExportRef(exportARN string) string {
+	return cur2ExportRefWithLength(exportARN, 16)
+}
+
+func cur2ExportRefWithLength(exportARN string, length int) string {
+	sum := sha256.Sum256([]byte("aws:bcm-data-exports:export-arn:" + exportARN))
+	return "cur2-" + hex.EncodeToString(sum[:])[:length]
+}
+
+func candidateEvidence(candidates []Export, refs []string) []workflow.PlanEvidence {
+	evidence := make([]workflow.PlanEvidence, 0, len(candidates)*4)
+	for index, candidate := range candidates {
+		prefix := fmt.Sprintf("candidate_%d", index+1)
+		evidence = append(evidence, workflow.PlanEvidence{Key: prefix + "_export_ref", Value: refs[index]})
+		if health := safeEvidenceValue(candidate.HealthStatus); health != "" {
+			evidence = append(evidence, workflow.PlanEvidence{Key: prefix + "_health", Value: health})
+		}
+		if output := safeEvidenceValue(candidate.Destination.Output.Format); output != "" {
+			evidence = append(evidence, workflow.PlanEvidence{Key: prefix + "_output_format", Value: output})
+		}
+		if region := safeEvidenceValue(candidate.Destination.Region); region != "" {
+			evidence = append(evidence, workflow.PlanEvidence{Key: prefix + "_destination_region", Value: region})
+		}
+	}
+	return evidence
+}
+
+func safeEvidenceValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	lower := strings.ToLower(value)
+	for _, forbidden := range []string{
+		"/users/",
+		"/private/",
+		"/tmp/",
+		"/home/",
+		"\\",
+		".pem",
+		"access_key",
+		"apikey",
+		"api_key",
+		"arn:",
+		"bearer ",
+		"client-secret",
+		"client_secret",
+		"ocid1.",
+		"passphrase",
+		"password",
+		"plain-secret",
+		"plain-token",
+		"private-key",
+		"private_key",
+		"projects/",
+		"refresh_token",
+		"secret_key",
+		"service_account_json",
+		"session_token",
+		"token=",
+	} {
+		if strings.Contains(lower, forbidden) {
+			return ""
+		}
+	}
+	if strings.ContainsAny(value, `/\`) {
+		return ""
+	}
+	return value
 }
 
 func hasCUR2TableConfiguration(export Export) bool {
@@ -297,8 +429,8 @@ func hasTable(tables []TableSummary, name string) bool {
 	return false
 }
 
-func (runner Runner) deliveryFindings(ctx context.Context, export Export) []checkFinding {
-	executions, err := listAllExecutions(ctx, runner.client, export.ExportARN)
+func (runner Runner) deliveryFindings(ctx context.Context, client Client, export Export) []checkFinding {
+	executions, err := listAllExecutions(ctx, client, export.ExportARN)
 	if err != nil {
 		return []checkFinding{failFinding(providerErrorCode(err, "aws_data_exports_access_denied"), "AWS export delivery status", "AWS Data Exports delivery executions could not be inspected.")}
 	}
@@ -312,7 +444,7 @@ func (runner Runner) deliveryFindings(ctx context.Context, export Export) []chec
 	inspectedExecutions := make([]Execution, 0, len(executions))
 	for _, execution := range executions {
 		if execution.ID != "" {
-			inspected, err := runner.client.GetExecution(ctx, export.ExportARN, execution.ID)
+			inspected, err := client.GetExecution(ctx, export.ExportARN, execution.ID)
 			if err != nil {
 				return []checkFinding{failFinding(providerErrorCode(err, "aws_data_exports_access_denied"), "AWS export delivery status", "AWS Data Exports delivery execution could not be inspected.")}
 			}
@@ -323,11 +455,11 @@ func (runner Runner) deliveryFindings(ctx context.Context, export Export) []chec
 
 	latest := latestExecution(inspectedExecutions)
 	switch strings.ToUpper(strings.TrimSpace(latest.Status)) {
-	case "DELIVERY_SUCCESS", "SUCCEEDED", "SUCCESS", "DELIVERED", "COMPLETED":
+	case "DELIVERY_SUCCESS":
 		return []checkFinding{passFinding("aws_cur2_delivery_ready", "AWS export delivery status", "Latest AWS Data Exports delivery status is healthy.")}
-	case "INITIATION_IN_PROCESS", "QUERY_QUEUED", "QUERY_IN_PROCESS", "DELIVERY_IN_PROCESS", "IN_PROGRESS", "RUNNING", "STARTED":
+	case "INITIATION_IN_PROCESS", "QUERY_QUEUED", "QUERY_IN_PROCESS", "DELIVERY_IN_PROCESS":
 		return []checkFinding{warnFinding("aws_cur2_delivery_not_started", "AWS export delivery status", "Latest AWS Data Exports delivery is still in progress.", true)}
-	case "QUERY_FAILURE", "DELIVERY_FAILURE", "FAILED", "FAILURE", "UNHEALTHY":
+	case "QUERY_FAILURE", "DELIVERY_FAILURE":
 		return []checkFinding{failFinding("aws_cur2_export_invalid_shape", "AWS export delivery status", "Latest AWS Data Exports delivery reports a failure.")}
 	}
 	return []checkFinding{warnFinding("aws_cur2_delivery_not_started", "AWS export delivery status", "AWS Data Exports delivery status is not conclusive yet.", true)}
@@ -376,10 +508,10 @@ func dataExportsPaginationError() error {
 	return NewProviderError("aws_data_exports_pagination_unbounded", "AWS Data Exports pagination did not converge within the bounded preflight inspection window.")
 }
 
-func (runner Runner) previousMonthFinding(ctx context.Context, export Export, period string) checkFinding {
+func (runner Runner) previousMonthFinding(ctx context.Context, client Client, export Export, period string) checkFinding {
 	token := ""
 	for pageNumber := 0; pageNumber < maxListObjectPages; pageNumber++ {
-		page, err := runner.client.ListObjects(ctx, export.Destination.Bucket, export.Destination.Prefix, token, 1000)
+		page, err := client.ListObjects(ctx, export.Destination.Bucket, export.Destination.Prefix, token, 1000)
 		if err != nil {
 			return failFinding(providerErrorCode(err, "aws_s3_bucket_inaccessible"), "AWS previous-month billing partition", "S3 previous-month billing partition could not be listed.")
 		}
@@ -429,6 +561,8 @@ func configurationFailureMessage(err error) string {
 		return "AWS Region is not configured."
 	case "aws_config_missing_credentials":
 		return "AWS credentials are not available."
+	case "aws_config_profile_shadowed":
+		return "AWS profile selection is blocked because credential environment variables would take precedence."
 	default:
 		return "AWS SDK configuration could not be loaded."
 	}

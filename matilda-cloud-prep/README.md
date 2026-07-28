@@ -137,6 +137,19 @@ matilda-prep rapid-assessment billing aws package
 matilda-prep rapid-assessment api azure preflight
 ```
 
+AWS Rapid Assessment - Billing Based preflight also supports direct selectors
+for repeatable runs:
+
+```bash
+matilda-prep rapid-assessment billing aws preflight --profile default --region us-east-1
+matilda-prep rapid-assessment billing aws preflight --export-ref cur2-1234abcd5678ef90
+matilda-prep rapid-assessment billing aws preflight --timeout 5m
+```
+
+If more than one CUR 2.0 export is discovered, preflight fails closed and
+returns safe generated export refs. Rerun with `--export-ref` to choose one.
+Raw AWS export ARNs are not printed as user-facing selectors.
+
 ## Implementation Direction
 
 The normal implementation path will use official Go SDKs:

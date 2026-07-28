@@ -2,12 +2,16 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/assessment"
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/bootstrap"
+	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/workflow"
 )
 
 func runCLI(args ...string) (int, string, string) {
@@ -180,6 +184,193 @@ func TestAWSBillingPreflightUsesDependencyBlockedRuntimePath(t *testing.T) {
 		if strings.Contains(stdout, forbidden) {
 			t.Fatalf("AWS preflight output contains forbidden term %q in %s", forbidden, stdout)
 		}
+	}
+}
+
+func TestAWSBillingPreflightFlagsReachRunnerAndJSON(t *testing.T) {
+	request := workflow.Request{
+		Goal:           assessment.RapidAssessment,
+		CollectionPath: assessment.CollectionBilling,
+		Provider:       assessment.ProviderAWS,
+		Action:         assessment.ActionPreflight,
+	}
+	var gotOptions workflow.ExecutionOptions
+	var sawDeadline bool
+	registry, err := workflow.NewRegistry(workflow.Capability{
+		Request: request,
+		Runner: workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+			gotOptions = options
+			_, sawDeadline = ctx.Deadline()
+			return cliCapabilityReport(got, workflow.StatusReady, workflow.SupportSupported, "aws_cur2_preflight_ready")
+		}),
+	})
+	if err != nil {
+		t.Fatalf("NewRegistry returned error: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := RunWithRegistry([]string{
+		"rapid-assessment", "billing", "aws", "preflight",
+		"--profile", "default",
+		"--region", "us-west-2",
+		"--export-ref", "cur2-1234abcd5678ef90",
+		"--timeout", "45s",
+	}, strings.NewReader(""), &stdout, &stderr, registry)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr: %s", code, stderr.String())
+	}
+	if stderr.String() != "" {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	if !sawDeadline {
+		t.Fatal("runner context did not include a deadline from --timeout")
+	}
+	if gotOptions.TimeoutSeconds != int((45 * time.Second).Seconds()) {
+		t.Fatalf("runner timeout = %d, want 45", gotOptions.TimeoutSeconds)
+	}
+	if gotOptions.InterfaceMode != workflow.InterfaceModeDirect {
+		t.Fatalf("runner interface mode = %q, want direct", gotOptions.InterfaceMode)
+	}
+	if gotOptions.Selectors == nil || gotOptions.Selectors.AWS == nil {
+		t.Fatalf("runner AWS selectors missing: %#v", gotOptions)
+	}
+	if gotOptions.Selectors.AWS.Profile != "default" ||
+		gotOptions.Selectors.AWS.Region != "us-west-2" ||
+		gotOptions.Selectors.AWS.CUR2ExportRef != "cur2-1234abcd5678ef90" {
+		t.Fatalf("runner AWS selectors = %#v, want supplied selector values", gotOptions.Selectors.AWS)
+	}
+
+	doc := decodeJSON(t, stdout.String())
+	executionOptions, ok := doc["execution_options"].(map[string]any)
+	if !ok {
+		t.Fatalf("execution_options missing or wrong type in %s", stdout.String())
+	}
+	if executionOptions["schema_version"] != "matilda_cloud_prep.execution_options_v0" {
+		t.Fatalf("execution_options.schema_version = %v, want v0", executionOptions["schema_version"])
+	}
+	if executionOptions["interface_mode"] != "direct" {
+		t.Fatalf("execution_options.interface_mode = %v, want direct", executionOptions["interface_mode"])
+	}
+	if executionOptions["timeout_seconds"] != float64(45) {
+		t.Fatalf("execution_options.timeout_seconds = %v, want 45", executionOptions["timeout_seconds"])
+	}
+	selectors, ok := executionOptions["selectors"].(map[string]any)
+	if !ok {
+		t.Fatalf("execution_options.selectors missing or wrong type: %#v", executionOptions["selectors"])
+	}
+	awsSelectors, ok := selectors["aws"].(map[string]any)
+	if !ok {
+		t.Fatalf("execution_options.selectors.aws missing or wrong type: %#v", selectors["aws"])
+	}
+	if awsSelectors["profile"] != "default" || awsSelectors["region"] != "us-west-2" || awsSelectors["cur2_export_ref"] != "cur2-1234abcd5678ef90" {
+		t.Fatalf("execution_options.selectors.aws = %#v, want supplied selector values", awsSelectors)
+	}
+	for _, forbidden := range []string{"arn:aws", "/Users/", "access_key", "secret_key", "session_token"} {
+		if strings.Contains(stdout.String(), forbidden) {
+			t.Fatalf("stdout contains forbidden term %q in %s", forbidden, stdout.String())
+		}
+	}
+}
+
+func TestAWSSelectorFlagsAreScopedToAWSBillingPreflight(t *testing.T) {
+	tests := [][]string{
+		{"rapid-assessment", "api", "aws", "preflight", "--profile", "default"},
+		{"rapid-assessment", "billing", "gcp", "preflight", "--region", "us-west-2"},
+		{"deep-discovery", "aws", "preflight", "--export-ref", "cur2-1234abcd5678ef90"},
+	}
+
+	for _, args := range tests {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			code, stdout, stderr := runCLI(args...)
+
+			if code != 2 {
+				t.Fatalf("exit code = %d, want 2", code)
+			}
+			if stdout != "" {
+				t.Fatalf("stdout = %q, want empty", stdout)
+			}
+			if !strings.Contains(stderr, "AWS selector flags are supported only for matilda-prep rapid-assessment billing aws preflight") {
+				t.Fatalf("stderr = %q, want AWS selector scope message", stderr)
+			}
+		})
+	}
+}
+
+func TestDirectFlagValidationFailsBeforeExecution(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "unknown flag",
+			args: []string{"rapid-assessment", "billing", "aws", "preflight", "--export-name", "report"},
+			want: "flag provided but not defined",
+		},
+		{
+			name: "unsafe trailing argument",
+			args: []string{"rapid-assessment", "billing", "aws", "preflight", "arn:aws:bcm-data-exports:us-east-1:123456789012:export/live"},
+			want: "unexpected argument after command",
+		},
+		{
+			name: "unsafe timeout value",
+			args: []string{"rapid-assessment", "billing", "aws", "preflight", "--timeout", "/private/tmp/timeout"},
+			want: "invalid timeout value",
+		},
+		{
+			name: "short timeout",
+			args: []string{"rapid-assessment", "billing", "aws", "preflight", "--timeout", "5s"},
+			want: "timeout must be between 10s and 30m",
+		},
+		{
+			name: "long timeout",
+			args: []string{"rapid-assessment", "billing", "aws", "preflight", "--timeout", "31m"},
+			want: "timeout must be between 10s and 30m",
+		},
+		{
+			name: "fractional timeout",
+			args: []string{"rapid-assessment", "billing", "aws", "preflight", "--timeout", "10.5s"},
+			want: "timeout must use whole seconds",
+		},
+		{
+			name: "empty profile",
+			args: []string{"rapid-assessment", "billing", "aws", "preflight", "--profile", ""},
+			want: "profile cannot be empty",
+		},
+		{
+			name: "unsafe export ref",
+			args: []string{"rapid-assessment", "billing", "aws", "preflight", "--export-ref", "arn:aws:bcm-data-exports:us-east-1:123456789012:export/live"},
+			want: "cur2_export_ref",
+		},
+		{
+			name: "path-like profile",
+			args: []string{"rapid-assessment", "billing", "aws", "preflight", "--profile", "/private/tmp/aws-profile"},
+			want: "profile",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			code, stdout, stderr := runCLI(tt.args...)
+
+			if code != 2 {
+				t.Fatalf("exit code = %d, want 2", code)
+			}
+			if stdout != "" {
+				t.Fatalf("stdout = %q, want empty", stdout)
+			}
+			if !strings.Contains(stderr, tt.want) {
+				t.Fatalf("stderr = %q, want %q", stderr, tt.want)
+			}
+			if strings.Contains(stderr, "arn:aws") {
+				t.Fatalf("stderr leaked raw ARN: %s", stderr)
+			}
+			if strings.Contains(stderr, "/private/tmp") {
+				t.Fatalf("stderr leaked local path: %s", stderr)
+			}
+		})
 	}
 }
 
@@ -381,9 +572,13 @@ func TestInvalidInputsReturnUsageErrors(t *testing.T) {
 		want string
 	}{
 		{name: "goal", args: []string{"migration"}, want: "invalid goal"},
+		{name: "unsafe goal", args: []string{"arn:aws:iam::123456789012:role/operator"}, want: "invalid goal"},
 		{name: "collection path", args: []string{"rapid-assessment", "full", "gcp", "preflight"}, want: "invalid collection path"},
+		{name: "unsafe collection path", args: []string{"rapid-assessment", "/private/tmp/full", "gcp", "preflight"}, want: "invalid collection path"},
 		{name: "provider", args: []string{"rapid-assessment", "billing", "digitalocean", "preflight"}, want: "invalid provider"},
+		{name: "unsafe provider", args: []string{"rapid-assessment", "billing", "arn:aws:iam::123456789012:role/operator", "preflight"}, want: "invalid provider"},
 		{name: "action", args: []string{"rapid-assessment", "billing", "gcp", "destroy"}, want: "invalid action"},
+		{name: "unsafe action", args: []string{"rapid-assessment", "billing", "gcp", "/private/tmp/destroy"}, want: "invalid action"},
 		{name: "rapid assessment arity", args: []string{"rapid-assessment", "billing", "gcp"}, want: "usage"},
 		{name: "deep discovery provider", args: []string{"deep-discovery", "digitalocean", "preflight"}, want: "invalid provider"},
 		{name: "deep discovery action", args: []string{"deep-discovery", "gcp", "destroy"}, want: "invalid action"},
@@ -401,6 +596,11 @@ func TestInvalidInputsReturnUsageErrors(t *testing.T) {
 			}
 			if !strings.Contains(stderr, tt.want) {
 				t.Fatalf("stderr = %q, want to contain %q", stderr, tt.want)
+			}
+			for _, forbidden := range []string{"arn:aws", "/private/tmp", "/Users/"} {
+				if strings.Contains(stderr, forbidden) {
+					t.Fatalf("stderr leaked unsafe value %q: %s", forbidden, stderr)
+				}
 			}
 		})
 	}
@@ -530,7 +730,7 @@ func TestActionHelpDoesNotExecuteWorkflow(t *testing.T) {
 	}
 }
 
-func TestUsageErrorsAreRedacted(t *testing.T) {
+func TestUsageErrorsDoNotEchoSecretLikeInput(t *testing.T) {
 	secretArgs := []string{
 		"client_secret=plain-secret",
 		"private_key_id=plain-private-key-id",
@@ -560,14 +760,11 @@ func TestUsageErrorsAreRedacted(t *testing.T) {
 			if strings.Contains(stderr, "plain-") {
 				t.Fatalf("stderr leaked secret-like value: %q", stderr)
 			}
-			if !strings.Contains(stderr, "[REDACTED]") {
-				t.Fatalf("stderr = %q, want redaction marker", stderr)
+			if strings.Contains(stderr, arg) {
+				t.Fatalf("stderr echoed invalid secret-like input: %q", stderr)
 			}
 			if !strings.Contains(stderr, "expected rapid-assessment or deep-discovery") {
 				t.Fatalf("stderr = %q, want surrounding error text preserved", stderr)
-			}
-			if !strings.Contains(stderr, "\": expected rapid-assessment or deep-discovery") {
-				t.Fatalf("stderr = %q, want redaction to preserve closing quote and colon", stderr)
 			}
 		})
 	}
@@ -624,4 +821,57 @@ type failingWriter struct{}
 
 func (failingWriter) Write([]byte) (int, error) {
 	return 0, errors.New("write failed")
+}
+
+func cliCapabilityReport(request workflow.Request, status workflow.RunStatus, support workflow.SupportStatus, code string) workflow.CapabilityReport {
+	handles := []workflow.SourceHandle{{
+		Label: "AWS CUR 2.0 Preflight Source Bundle",
+		URI:   "docs/references/aws/aws-rapid-assessment-billing-cur2-preflight-source-bundle.md",
+	}}
+	return workflow.CapabilityReport{
+		Status:        status,
+		SupportStatus: support,
+		Code:          code,
+		Message:       "AWS CUR 2.0 billing preflight completed.",
+		Mutated:       false,
+		SourceHandles: handles,
+		PlanInput: &workflow.ExecutionPlanInput{
+			Request: request,
+			OperatorIdentitySummary: workflow.OperatorIdentitySummary{
+				IdentityStatus: "verified",
+				Summary:        "AWS caller identity was verified with account ending 9012 and caller hash sha256:123456789abc.",
+				SourceHandles:  handles,
+			},
+			CoverageRecommendation: workflow.CoverageRecommendation{
+				CoverageStatus: workflow.CoverageUnknown,
+				Summary:        "AWS billing coverage is evaluated from the selected CUR 2.0 export.",
+			},
+			PackageSchemaStatus: workflow.PackageSchemaProviderSchemaRequired,
+			Steps: []workflow.PlanStep{{
+				Intent:                    workflow.PlanStepReuse,
+				Title:                     "Review existing AWS CUR 2.0 export",
+				Description:               "Use read-only checks to evaluate an existing AWS Data Exports CUR 2.0 export.",
+				Reason:                    "Rapid Assessment - Billing Based requires exported AWS billing data.",
+				ApprovalKind:              "not_required",
+				CurrentState:              "Existing AWS export metadata is visible through read-only checks.",
+				TargetState:               "Existing AWS export satisfies the CUR 2.0 billing readiness rules.",
+				RequiredPermission:        "bcm-data-exports:ListExports",
+				CredentialMaterialTouched: false,
+				Validation:                "Read-only preflight checks produced pass signals for the selected export.",
+				Rollback:                  "No cloud change is made by preflight.",
+				SourceHandles:             handles,
+			}},
+			Checks: []workflow.PlanCheck{{
+				Status:  workflow.CheckPass,
+				Title:   "AWS CUR 2.0 preflight capability",
+				Message: "Injected AWS CUR 2.0 preflight capability returned a safe result.",
+				Evidence: []workflow.PlanEvidence{
+					{Key: "mutated", Value: "false"},
+					{Key: "code", Value: code},
+				},
+				SourceHandles: handles,
+			}},
+			SourceHandles: handles,
+		},
+	}
 }

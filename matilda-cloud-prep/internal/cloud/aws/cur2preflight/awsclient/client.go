@@ -2,6 +2,7 @@ package awsclient
 
 import (
 	"context"
+	"os"
 
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/cloud/aws/cur2preflight"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -14,8 +15,16 @@ import (
 const dataExportsRegion = "us-east-1"
 
 type Config struct {
-	LoadConfig    func(context.Context) (aws.Config, error)
+	Profile       string
+	Region        string
+	EnvLookup     func(string) (string, bool)
+	LoadConfig    func(context.Context, LoadRequest) (aws.Config, error)
 	ClientFactory ClientFactory
+}
+
+type LoadRequest struct {
+	Profile string
+	Region  string
 }
 
 type ClientFactory interface {
@@ -44,8 +53,11 @@ type s3API interface {
 }
 
 type Client struct {
-	loadConfig func(context.Context) (aws.Config, error)
+	loadConfig func(context.Context, LoadRequest) (aws.Config, error)
 	factory    ClientFactory
+	profile    string
+	region     string
+	envLookup  func(string) (string, bool)
 	configured bool
 	config     cur2preflight.Configuration
 	sts        stsAPI
@@ -56,17 +68,31 @@ type Client struct {
 func New(config Config) *Client {
 	loader := config.LoadConfig
 	if loader == nil {
-		loader = func(ctx context.Context) (aws.Config, error) {
-			return awsconfig.LoadDefaultConfig(ctx)
+		loader = func(ctx context.Context, request LoadRequest) (aws.Config, error) {
+			options := []func(*awsconfig.LoadOptions) error{}
+			if request.Profile != "" {
+				options = append(options, awsconfig.WithSharedConfigProfile(request.Profile))
+			}
+			if request.Region != "" {
+				options = append(options, awsconfig.WithRegion(request.Region))
+			}
+			return awsconfig.LoadDefaultConfig(ctx, options...)
 		}
 	}
 	factory := config.ClientFactory
 	if factory == nil {
 		factory = defaultFactory{}
 	}
+	envLookup := config.EnvLookup
+	if envLookup == nil {
+		envLookup = os.LookupEnv
+	}
 	return &Client{
 		loadConfig: loader,
 		factory:    factory,
+		profile:    config.Profile,
+		region:     config.Region,
+		envLookup:  envLookup,
 	}
 }
 
@@ -86,7 +112,14 @@ func (client *Client) ensureConfigured(ctx context.Context) error {
 		return nil
 	}
 
-	cfg, err := client.loadConfig(ctx)
+	if client.profile != "" && client.hasCredentialEnvironment() {
+		return providerError("aws_config_profile_shadowed")
+	}
+
+	cfg, err := client.loadConfig(ctx, LoadRequest{
+		Profile: client.profile,
+		Region:  client.region,
+	})
 	if err != nil {
 		return providerError("aws_config_missing_credentials")
 	}
@@ -109,6 +142,21 @@ func (client *Client) ensureConfigured(ctx context.Context) error {
 	client.s3 = client.factory.S3Client(cfg)
 	client.configured = true
 	return nil
+}
+
+func (client *Client) hasCredentialEnvironment() bool {
+	for _, name := range []string{
+		"AWS_ACCESS_KEY_ID",
+		"AWS_ACCESS_KEY",
+		"AWS_SECRET_ACCESS_KEY",
+		"AWS_SESSION_TOKEN",
+		"AWS_WEB_IDENTITY_TOKEN_FILE",
+	} {
+		if _, ok := client.envLookup(name); ok {
+			return true
+		}
+	}
+	return false
 }
 
 type defaultFactory struct{}

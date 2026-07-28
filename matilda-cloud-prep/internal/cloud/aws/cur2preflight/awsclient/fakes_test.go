@@ -18,7 +18,7 @@ func readyClient(t *testing.T, stsClient *fakeSTS, data *fakeDataExports, s3Clie
 	t.Helper()
 
 	client := New(Config{
-		LoadConfig: func(context.Context) (aws.Config, error) {
+		LoadConfig: func(context.Context, LoadRequest) (aws.Config, error) {
 			return staticConfig("us-west-2"), nil
 		},
 		ClientFactory: &fakeFactory{
