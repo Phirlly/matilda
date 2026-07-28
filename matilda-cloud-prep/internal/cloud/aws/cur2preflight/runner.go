@@ -406,10 +406,42 @@ func safeEvidenceValue(value string) string {
 			return ""
 		}
 	}
+	if sensitiveEvidenceIdentifierLikeValue(value) {
+		return ""
+	}
 	if strings.ContainsAny(value, `/\`) {
 		return ""
 	}
 	return value
+}
+
+func sensitiveEvidenceIdentifierLikeValue(value string) bool {
+	value = strings.TrimSpace(value)
+	if len(value) == 12 && allDigits(value) {
+		return true
+	}
+	upper := strings.ToUpper(value)
+	return len(upper) == 20 &&
+		(strings.HasPrefix(upper, "AKIA") || strings.HasPrefix(upper, "ASIA")) &&
+		allUpperAlphaNumeric(upper)
+}
+
+func allDigits(value string) bool {
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return value != ""
+}
+
+func allUpperAlphaNumeric(value string) bool {
+	for _, r := range value {
+		if (r < '0' || r > '9') && (r < 'A' || r > 'Z') {
+			return false
+		}
+	}
+	return value != ""
 }
 
 func hasCUR2TableConfiguration(export Export) bool {
@@ -561,6 +593,10 @@ func configurationFailureMessage(err error) string {
 		return "AWS Region is not configured."
 	case "aws_config_missing_credentials":
 		return "AWS credentials are not available."
+	case "aws_config_timeout":
+		return "AWS SDK configuration timed out."
+	case "aws_config_cancelled":
+		return "AWS SDK configuration was cancelled."
 	case "aws_config_profile_shadowed":
 		return "AWS profile selection is blocked because credential environment variables would take precedence."
 	default:

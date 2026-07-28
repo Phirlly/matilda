@@ -124,6 +124,21 @@ func TestRunInvalidOutcomeSelectionReturnsUsageError(t *testing.T) {
 	}
 }
 
+func TestRunInvalidSelectionDoesNotEchoRawInput(t *testing.T) {
+	raw := "arn:aws:iam::123456789012:role/operator"
+
+	_, err := runGuided(raw + "\n")
+
+	if !errors.Is(err, ErrInvalidSelection) {
+		t.Fatalf("Run error = %v, want ErrInvalidSelection", err)
+	}
+	for _, forbidden := range []string{raw, "arn:aws", "123456789012", "operator"} {
+		if strings.Contains(err.Error(), forbidden) {
+			t.Fatalf("error leaked raw selection value %q: %v", forbidden, err)
+		}
+	}
+}
+
 func TestRunInvalidCloudSelectionReturnsUsageError(t *testing.T) {
 	output, err := runGuided("1\n9\n")
 

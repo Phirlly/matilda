@@ -141,6 +141,34 @@ func TestExecutionOptionsRejectUnsafeSelectorValues(t *testing.T) {
 			want: "region",
 		},
 		{
+			name: "account id looking profile",
+			option: ExecutionOptions{Selectors: &ExecutionSelectors{AWS: &AWSExecutionSelectors{
+				Profile: "123456789012",
+			}}},
+			want: "profile",
+		},
+		{
+			name: "access key looking profile",
+			option: ExecutionOptions{Selectors: &ExecutionSelectors{AWS: &AWSExecutionSelectors{
+				Profile: "AKIAIOSFODNN7EXAMPLE",
+			}}},
+			want: "profile",
+		},
+		{
+			name: "account id looking region",
+			option: ExecutionOptions{Selectors: &ExecutionSelectors{AWS: &AWSExecutionSelectors{
+				Region: "123456789012",
+			}}},
+			want: "region",
+		},
+		{
+			name: "access key looking region",
+			option: ExecutionOptions{Selectors: &ExecutionSelectors{AWS: &AWSExecutionSelectors{
+				Region: "AKIAIOSFODNN7EXAMPLE",
+			}}},
+			want: "region",
+		},
+		{
 			name: "generic absolute path profile",
 			option: ExecutionOptions{Selectors: &ExecutionSelectors{AWS: &AWSExecutionSelectors{
 				Profile: "/private/tmp/aws-profile",

@@ -3,6 +3,7 @@ package awsclient
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -146,6 +147,44 @@ func TestCheckConfigurationClassifiesMissingRegionAndCredentials(t *testing.T) {
 				return cfg, nil
 			},
 			code: "aws_config_missing_credentials",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := New(Config{LoadConfig: tt.loadConfig, ClientFactory: &fakeFactory{}})
+
+			_, err := client.CheckConfiguration(context.Background())
+
+			assertProviderCode(t, err, tt.code)
+			assertSafeError(t, err)
+		})
+	}
+}
+
+func TestCheckConfigurationClassifiesContextFailuresPrecisely(t *testing.T) {
+	tests := []struct {
+		name       string
+		loadConfig func(context.Context, LoadRequest) (aws.Config, error)
+		code       string
+	}{
+		{
+			name: "configuration load timeout",
+			loadConfig: func(context.Context, LoadRequest) (aws.Config, error) {
+				return aws.Config{}, fmt.Errorf("sdk configuration failed: %w", context.DeadlineExceeded)
+			},
+			code: "aws_config_timeout",
+		},
+		{
+			name: "credential retrieval cancelled",
+			loadConfig: func(context.Context, LoadRequest) (aws.Config, error) {
+				cfg := staticConfig("us-east-1")
+				cfg.Credentials = aws.CredentialsProviderFunc(func(context.Context) (aws.Credentials, error) {
+					return aws.Credentials{}, context.Canceled
+				})
+				return cfg, nil
+			},
+			code: "aws_config_cancelled",
 		},
 	}
 

@@ -30,6 +30,10 @@ type cloudOption struct {
 }
 
 func Run(stdin io.Reader, stdout io.Writer) error {
+	return RunWithConfig(stdin, stdout, Config{})
+}
+
+func RunWithConfig(stdin io.Reader, stdout io.Writer, config Config) error {
 	reader := bufio.NewScanner(stdin)
 
 	writeIntro(stdout)
@@ -43,6 +47,10 @@ func Run(stdin io.Reader, stdout io.Writer) error {
 	cloud, err := selectCloud(reader, stdout)
 	if err != nil {
 		return err
+	}
+
+	if isAWSBilling(outcome, cloud) && config.AWSBilling != nil {
+		return runAWSBilling(reader, stdout, config)
 	}
 
 	writeNextSteps(stdout, outcome, cloud)
@@ -108,7 +116,7 @@ func readChoice(reader *bufio.Scanner, stdout io.Writer, prompt string, name str
 
 	choice, err := strconv.Atoi(value)
 	if err != nil || choice < 1 || choice > count {
-		return 0, fmt.Errorf("%w %q: expected 1-%d for %s", ErrInvalidSelection, value, count, name)
+		return 0, fmt.Errorf("%w: expected 1-%d for %s", ErrInvalidSelection, count, name)
 	}
 	return choice - 1, nil
 }
