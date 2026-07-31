@@ -39,8 +39,9 @@ type TablePage struct {
 }
 
 type Table struct {
-	Name    string
-	Columns []string
+	Name       string
+	Columns    []string
+	Properties map[string]string
 }
 
 type ExportSummary struct {

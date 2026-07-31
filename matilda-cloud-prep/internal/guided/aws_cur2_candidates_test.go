@@ -31,7 +31,12 @@ func TestRunAWSBillingClassifiesAmbiguousExportsBeforePrompting(t *testing.T) {
 				{Key: "candidate_2_destination_region", Value: "us-west-2"},
 			})
 		case "cur2-1111111111111111":
-			return guidedCapabilityReport(got, workflow.StatusReady, "aws_cur2_preflight_ready", nil)
+			return guidedCapabilityReport(got, workflow.StatusReady, "aws_cur2_preflight_ready", []workflow.PlanEvidence{
+				{Key: "output_format", Value: "TEXT_OR_CSV"},
+				{Key: "compression", Value: "GZIP"},
+				{Key: "time_granularity", Value: "MONTHLY"},
+				{Key: "overwrite", Value: "CREATE_NEW_REPORT"},
+			})
 		case "cur2-2222222222222222":
 			return guidedCapabilityReport(got, workflow.RunStatusBlocked, "aws_cur2_output_settings_blocked", nil)
 		default:
@@ -64,6 +69,10 @@ func TestRunAWSBillingClassifiesAmbiguousExportsBeforePrompting(t *testing.T) {
 	for _, want := range []string{
 		"Classifying 2 CUR 2.0 export candidates",
 		"Auto-selected CUR 2.0 export cur2-1111111111111111",
+		"Readiness: ready",
+		"Support code: aws_cur2_preflight_ready",
+		"Export: TEXT_OR_CSV / GZIP, MONTHLY, CREATE_NEW_REPORT",
+		"Next action: continue with this CUR 2.0 export.",
 		"aws_cur2_output_settings_blocked",
 		"--export-ref cur2-1111111111111111",
 	} {
@@ -95,9 +104,21 @@ func TestRunAWSBillingPromptsForMultipleSelectableExports(t *testing.T) {
 				{Key: "candidate_2_destination_region", Value: "us-west-2"},
 			})
 		case "cur2-aaaaaaaaaaaaaaaa":
-			return guidedCapabilityReport(got, workflow.StatusReady, "aws_cur2_preflight_ready", nil)
+			return guidedCapabilityReport(got, workflow.StatusReady, "aws_cur2_preflight_ready", []workflow.PlanEvidence{
+				{Key: "output_format", Value: "TEXT_OR_CSV"},
+				{Key: "compression", Value: "GZIP"},
+				{Key: "time_granularity", Value: "MONTHLY"},
+				{Key: "overwrite", Value: "CREATE_NEW_REPORT"},
+			})
 		case "cur2-bbbbbbbbbbbbbbbb":
-			return guidedCapabilityReport(got, workflow.RunStatusManualSteps, "aws_cur2_previous_month_manual", nil)
+			return guidedCapabilityReport(got, workflow.RunStatusManualSteps, "aws_backfill_manual_step_required", []workflow.PlanEvidence{
+				{Key: "output_format", Value: "TEXT_OR_CSV"},
+				{Key: "compression", Value: "GZIP"},
+				{Key: "time_granularity", Value: "DAILY"},
+				{Key: "overwrite", Value: "CREATE_NEW_REPORT"},
+				{Key: "previous_billing_period", Value: "2026-06"},
+				{Key: "missing_previous_month_component", Value: "manifest"},
+			})
 		default:
 			t.Fatalf("unexpected export ref %q", exportRef)
 			return workflow.CapabilityReport{}
@@ -122,7 +143,15 @@ func TestRunAWSBillingPromptsForMultipleSelectableExports(t *testing.T) {
 		"Select AWS CUR 2.0 export",
 		"cur2-aaaaaaaaaaaaaaaa, health HEALTHY, output TEXT_OR_CSV, region us-east-1",
 		"cur2-bbbbbbbbbbbbbbbb, health HEALTHY, output TEXT_OR_CSV, region us-west-2",
-		"aws_cur2_previous_month_manual",
+		"Readiness: ready",
+		"Support code: aws_cur2_preflight_ready",
+		"Readiness: manual step required",
+		"Support code: aws_backfill_manual_step_required",
+		"Export: TEXT_OR_CSV / GZIP, MONTHLY, CREATE_NEW_REPORT",
+		"Export: TEXT_OR_CSV / GZIP, DAILY, CREATE_NEW_REPORT",
+		"Previous month: 2026-06 missing manifest",
+		"Next action: request or complete previous-month billing data backfill, then rerun preflight.",
+		"aws_backfill_manual_step_required",
 		"--export-ref cur2-bbbbbbbbbbbbbbbb",
 	} {
 		if !strings.Contains(output, want) {
@@ -138,6 +167,8 @@ func TestCur2CandidatesSanitizesMetadataAtDisplayBoundary(t *testing.T) {
 			{Key: "candidate_1_export_ref", Value: "cur2-aaaaaaaaaaaaaaaa"},
 			{Key: "candidate_1_health", Value: "HEALTHY"},
 			{Key: "candidate_1_output_format", Value: "PARQUET"},
+			{Key: "candidate_1_compression", Value: "PARQUET"},
+			{Key: "candidate_1_time_granularity", Value: "DAILY"},
 			{Key: "candidate_1_destination_region", Value: "us-east-1"},
 			{Key: "candidate_2_export_ref", Value: "cur2-bbbbbbbbbbbbbbbb"},
 			{Key: "candidate_2_health", Value: "arn:aws:iam::123456789012:role/operator"},
@@ -165,7 +196,7 @@ func TestCur2CandidatesSanitizesMetadataAtDisplayBoundary(t *testing.T) {
 		candidateLabel(candidates[4]),
 	}, "\n")
 	for _, want := range []string{
-		"cur2-aaaaaaaaaaaaaaaa, health HEALTHY, output PARQUET, region us-east-1",
+		"cur2-aaaaaaaaaaaaaaaa, health HEALTHY, output PARQUET, compression PARQUET, granularity DAILY, region us-east-1",
 		"cur2-bbbbbbbbbbbbbbbb",
 		"cur2-cccccccccccccccc",
 		"cur2-dddddddddddddddd",
@@ -188,6 +219,573 @@ func TestCur2CandidatesSanitizesMetadataAtDisplayBoundary(t *testing.T) {
 		if strings.Contains(output, forbidden) {
 			t.Fatalf("output leaked unsafe candidate metadata %q: %s", forbidden, output)
 		}
+	}
+}
+
+func TestRepairableCUR2CandidatesFiltersRepairableBlockedResults(t *testing.T) {
+	classified := []classifiedCUR2Candidate{
+		{
+			Candidate: cur2Candidate{Ref: "cur2-repairpolicy0001"},
+			Result:    workflow.Result{Status: workflow.RunStatusBlocked, Code: "aws_s3_delivery_policy_missing"},
+		},
+		{
+			Candidate: cur2Candidate{Ref: "cur2-repairpolicy0002"},
+			Result:    workflow.Result{Status: workflow.RunStatusBlocked, Code: "aws_s3_bucket_policy_inaccessible"},
+		},
+		{
+			Candidate: cur2Candidate{Ref: "cur2-invalidoutput00"},
+			Result:    workflow.Result{Status: workflow.RunStatusBlocked, Code: "aws_cur2_output_settings_blocked"},
+		},
+		{
+			Candidate: cur2Candidate{Ref: "cur2-transient000000"},
+			Result:    workflow.Result{Status: workflow.RunStatusFailed, Code: "aws_data_exports_transient"},
+		},
+	}
+
+	repairable := repairableCUR2Candidates(classified)
+
+	got := []string{}
+	for _, item := range repairable {
+		got = append(got, item.Candidate.Ref)
+	}
+	want := []string{"cur2-repairpolicy0001", "cur2-repairpolicy0002"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("repairable refs = %#v, want %#v", got, want)
+	}
+}
+
+func TestWriteRepairableCUR2CandidateUsesSafeFactsAndPolicyAccessAction(t *testing.T) {
+	item := classifiedCUR2Candidate{
+		Candidate: cur2Candidate{
+			Ref:    "cur2-repairpolicy0002",
+			Output: "PARQUET",
+		},
+		Result: workflow.Result{
+			Status: workflow.RunStatusBlocked,
+			Code:   "aws_s3_bucket_policy_inaccessible",
+			Plan: &workflow.ExecutionPlan{Checks: []workflow.PlanCheck{{
+				Evidence: []workflow.PlanEvidence{
+					{Key: "compression", Value: "PARQUET"},
+					{Key: "time_granularity", Value: "DAILY"},
+					{Key: "previous_billing_period", Value: "2026-06"},
+					{Key: "missing_previous_month_component", Value: "manifest"},
+					{Key: "policy_gap", Value: "arn:aws:s3:::private-bucket/policy"},
+				},
+			}}},
+		},
+	}
+	var output strings.Builder
+
+	writeRepairableCUR2Candidate(&output, item)
+
+	text := output.String()
+	for _, want := range []string{
+		"cur2-repairpolicy0002",
+		"Readiness: repair required",
+		"Support code: aws_s3_bucket_policy_inaccessible",
+		"Export: PARQUET / PARQUET, DAILY",
+		"Previous month: 2026-06 missing manifest",
+		"Next action: grant read access to inspect the S3 bucket policy, then rerun preflight.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("repairable candidate output = %q, want %q", text, want)
+		}
+	}
+	if strings.Contains(text, "arn:aws") || strings.Contains(text, "private-bucket") {
+		t.Fatalf("repairable candidate output leaked unsafe policy evidence: %s", text)
+	}
+	assertGuidedOutputSafe(t, text)
+}
+
+func TestWriteRepairableCUR2CandidateMapsPolicyGapsToPlainLanguage(t *testing.T) {
+	tests := []struct {
+		name       string
+		gap        string
+		wantPhrase string
+	}{
+		{
+			name:       "service principal",
+			gap:        "service_principal_missing",
+			wantPhrase: "the AWS Data Exports service principal",
+		},
+		{
+			name:       "put object action",
+			gap:        "put_object_action_missing",
+			wantPhrase: "permission for AWS Data Exports to write CUR objects",
+		},
+		{
+			name:       "resource coverage",
+			gap:        "put_object_resource_not_covered",
+			wantPhrase: "the selected CUR 2.0 S3 destination prefix",
+		},
+		{
+			name:       "source account",
+			gap:        "source_account_condition_missing",
+			wantPhrase: "the expected aws:SourceAccount condition",
+		},
+		{
+			name:       "source arn",
+			gap:        "source_arn_condition_missing",
+			wantPhrase: "the expected aws:SourceArn condition",
+		},
+		{
+			name:       "unparseable policy",
+			gap:        "policy_unparseable",
+			wantPhrase: "a parsable S3 bucket policy",
+		},
+		{
+			name:       "matching statement",
+			gap:        "matching_allow_statement_missing",
+			wantPhrase: "a matching AWS Data Exports delivery statement",
+		},
+		{
+			name:       "unknown gap",
+			gap:        "unexpected_raw_gap",
+			wantPhrase: "the required AWS Data Exports S3 delivery policy",
+		},
+		{
+			name:       "unknown bucket-shaped gap",
+			gap:        "matilda-cur2-billing",
+			wantPhrase: "the required AWS Data Exports S3 delivery policy",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			item := classifiedCUR2Candidate{
+				Candidate: cur2Candidate{Ref: "cur2-repairpolicy0001", Output: "TEXT_OR_CSV", Compression: "GZIP"},
+				Result: workflow.Result{
+					Status: workflow.RunStatusBlocked,
+					Code:   "aws_s3_delivery_policy_missing",
+					Plan: &workflow.ExecutionPlan{Checks: []workflow.PlanCheck{{
+						Evidence: []workflow.PlanEvidence{
+							{Key: "policy_gap", Value: tt.gap},
+						},
+					}}},
+				},
+			}
+			var output strings.Builder
+
+			writeRepairableCUR2Candidate(&output, item)
+
+			text := output.String()
+			for _, want := range []string{
+				"Blocker: S3 delivery policy does not satisfy " + tt.wantPhrase + ".",
+				"Next action: update the S3 delivery policy to include " + tt.wantPhrase + ", then rerun preflight.",
+			} {
+				if !strings.Contains(text, want) {
+					t.Fatalf("repairable candidate output = %q, want %q", text, want)
+				}
+			}
+			if strings.Contains(text, tt.gap) {
+				t.Fatalf("repairable candidate output exposed raw policy gap %q: %s", tt.gap, text)
+			}
+			assertGuidedOutputSafe(t, text)
+		})
+	}
+}
+
+func TestWriteRepairableCUR2CandidateDropsUnsafeObjectKeyPolicyGap(t *testing.T) {
+	item := classifiedCUR2Candidate{
+		Candidate: cur2Candidate{Ref: "cur2-repairpolicy0004", Output: "TEXT_OR_CSV", Compression: "GZIP"},
+		Result: workflow.Result{
+			Status: workflow.RunStatusBlocked,
+			Code:   "aws_s3_delivery_policy_missing",
+			Plan: &workflow.ExecutionPlan{Checks: []workflow.PlanCheck{{
+				Evidence: []workflow.PlanEvidence{
+					{Key: "policy_gap", Value: "matilda/cur2/private-prefix/BILLING_PERIOD=2026-06/part-000.gz"},
+				},
+			}}},
+		},
+	}
+	var output strings.Builder
+
+	writeRepairableCUR2Candidate(&output, item)
+
+	text := output.String()
+	if strings.Contains(text, "matilda/cur2/private-prefix") || strings.Contains(text, "BILLING_PERIOD=2026-06/part-000.gz") {
+		t.Fatalf("repairable candidate output leaked raw object key policy evidence: %s", text)
+	}
+	if !strings.Contains(text, "Next action: update the S3 delivery policy using the direct preflight finding, then rerun preflight.") {
+		t.Fatalf("repairable candidate output = %q, want safe direct-finding fallback", text)
+	}
+	assertGuidedOutputSafe(t, text)
+}
+
+func TestWriteSelectableCUR2CandidateShowsPolicyWarningWithoutBlocker(t *testing.T) {
+	item := classifiedCUR2Candidate{
+		Candidate: cur2Candidate{Ref: "cur2-policywarning1"},
+		Result: workflow.Result{
+			Status: workflow.StatusReady,
+			Code:   "aws_s3_delivery_policy_missing",
+			Plan: &workflow.ExecutionPlan{Checks: []workflow.PlanCheck{
+				cur2PlanCheck(workflow.CheckPass, "aws_cur2_previous_month_ready",
+					workflow.PlanEvidence{Key: "previous_billing_period", Value: "2026-06"}),
+				cur2PlanCheck(workflow.CheckWarn, "aws_s3_delivery_policy_missing",
+					workflow.PlanEvidence{Key: "policy_gap", Value: "source_arn_condition_missing"}),
+			}},
+		},
+	}
+	var output strings.Builder
+
+	writeSelectableCUR2Candidate(&output, item)
+
+	text := output.String()
+	for _, want := range []string{
+		"cur2-policywarning1",
+		"Readiness: ready",
+		"Support code: aws_s3_delivery_policy_missing",
+		"S3 delivery policy: action needed",
+		"Next action: continue with this CUR 2.0 export; review the S3 delivery policy before relying on future delivery or backfill.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("policy-warning output = %q, want %q", text, want)
+		}
+	}
+	for _, forbidden := range []string{
+		"Blocker:",
+		"source_arn_condition_missing",
+		"Readiness: ready (aws_s3_delivery_policy_missing)",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("policy-warning output contains forbidden value %q: %s", forbidden, text)
+		}
+	}
+	assertGuidedOutputSafe(t, text)
+}
+
+func TestWriteRepairableCUR2CandidateShowsFallbacksWhenFactsAreMissing(t *testing.T) {
+	item := classifiedCUR2Candidate{
+		Candidate: cur2Candidate{
+			Ref:    "cur2-repairpolicy0003",
+			Output: "TEXT_OR_CSV",
+		},
+		Result: workflow.Result{
+			Status: workflow.RunStatusBlocked,
+			Code:   "aws_repairable_unknown",
+		},
+	}
+	var output strings.Builder
+
+	writeRepairableCUR2Candidate(&output, item)
+
+	text := output.String()
+	for _, want := range []string{
+		"cur2-repairpolicy0003",
+		"Readiness: repair required",
+		"Support code: aws_repairable_unknown",
+		"Export: TEXT_OR_CSV / unverified",
+		"Next action: review the direct preflight result and rerun after remediation.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("repairable fallback output = %q, want %q", text, want)
+		}
+	}
+	if strings.Contains(text, "Previous month:") || strings.Contains(text, "Policy:") {
+		t.Fatalf("repairable fallback output should omit unknown previous-month and policy facts: %s", text)
+	}
+	assertGuidedOutputSafe(t, text)
+}
+
+func TestWriteRepairableCUR2CandidatesOmitsOtherSectionWhenAllAreRepairable(t *testing.T) {
+	classified := []classifiedCUR2Candidate{
+		{
+			Candidate: cur2Candidate{Ref: "cur2-repairpolicy0001", Output: "TEXT_OR_CSV", Compression: "GZIP"},
+			Result:    workflow.Result{Status: workflow.RunStatusBlocked, Code: "aws_s3_delivery_policy_missing"},
+		},
+		{
+			Candidate: cur2Candidate{Ref: "cur2-repairpolicy0002", Output: "PARQUET", Compression: "PARQUET"},
+			Result:    workflow.Result{Status: workflow.RunStatusBlocked, Code: "aws_s3_bucket_policy_inaccessible"},
+		},
+	}
+	var output strings.Builder
+
+	writeRepairableCUR2Candidates(&output, classified, classified)
+
+	text := output.String()
+	for _, want := range []string{
+		"No AWS CUR 2.0 export is ready yet.",
+		"Repairable CUR 2.0 export candidates",
+		"cur2-repairpolicy0001",
+		"cur2-repairpolicy0002",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("repairable list output = %q, want %q", text, want)
+		}
+	}
+	if strings.Contains(text, "Other CUR 2.0 candidates") {
+		t.Fatalf("repairable list output should not show other section when all candidates are repairable: %s", text)
+	}
+	assertGuidedOutputSafe(t, text)
+}
+
+func TestWriteSelectableCUR2CandidateMapsPreviousMonthComponentsToPlainLanguage(t *testing.T) {
+	item := classifiedCUR2Candidate{
+		Candidate: cur2Candidate{Ref: "cur2-backfilllabels1"},
+		Result: workflow.Result{
+			Status: workflow.RunStatusManualSteps,
+			Code:   "aws_backfill_manual_step_required",
+			Plan: &workflow.ExecutionPlan{Checks: []workflow.PlanCheck{
+				cur2PlanCheck(workflow.CheckWarn, "aws_backfill_manual_step_required",
+					workflow.PlanEvidence{Key: "previous_billing_period", Value: "2026-06"},
+					workflow.PlanEvidence{Key: "missing_previous_month_component", Value: "data_partition"},
+					workflow.PlanEvidence{Key: "missing_previous_month_component", Value: "manifest"},
+					workflow.PlanEvidence{Key: "missing_previous_month_component", Value: "unexpected_component"}),
+			}},
+		},
+	}
+	var output strings.Builder
+
+	writeSelectableCUR2Candidate(&output, item)
+
+	text := output.String()
+	for _, want := range []string{
+		"Previous month: 2026-06 missing data partition, manifest, previous-month component",
+		"Next action: request or complete previous-month billing data backfill, then rerun preflight.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("previous-month component output = %q, want %q", text, want)
+		}
+	}
+	for _, forbidden := range []string{
+		"data_partition",
+		"unexpected_component",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("previous-month component output exposed raw evidence value %q: %s", forbidden, text)
+		}
+	}
+	assertGuidedOutputSafe(t, text)
+}
+
+func TestWriteSelectableCUR2CandidateUsesPlanChecksForBackfillWithoutPolicyRepair(t *testing.T) {
+	item := classifiedCUR2Candidate{
+		Candidate: cur2Candidate{Ref: "cur2-livebackfill001"},
+		Result: workflow.Result{
+			Status: workflow.RunStatusManualSteps,
+			Code:   "aws_backfill_manual_step_required",
+			Plan: &workflow.ExecutionPlan{Checks: []workflow.PlanCheck{
+				cur2PlanCheck(workflow.CheckPass, "aws_cur2_output_format_ready",
+					workflow.PlanEvidence{Key: "output_format", Value: "TEXT_OR_CSV"}),
+				cur2PlanCheck(workflow.CheckPass, "aws_cur2_compression_ready",
+					workflow.PlanEvidence{Key: "compression", Value: "GZIP"}),
+				cur2PlanCheck(workflow.CheckPass, "aws_cur2_time_granularity_ready",
+					workflow.PlanEvidence{Key: "time_granularity", Value: "MONTHLY"}),
+				cur2PlanCheck(workflow.CheckPass, "aws_cur2_overwrite_ready",
+					workflow.PlanEvidence{Key: "overwrite", Value: "CREATE_NEW_REPORT"}),
+				cur2PlanCheck(workflow.CheckPass, "aws_cur2_delivery_ready"),
+				cur2PlanCheck(workflow.CheckPass, "aws_s3_delivery_policy_ready"),
+				cur2PlanCheck(workflow.CheckWarn, "aws_backfill_manual_step_required",
+					workflow.PlanEvidence{Key: "previous_billing_period", Value: "2026-06"},
+					workflow.PlanEvidence{Key: "missing_previous_month_component", Value: "data_partition"},
+					workflow.PlanEvidence{Key: "missing_previous_month_component", Value: "manifest"}),
+			}},
+		},
+	}
+	var output strings.Builder
+
+	writeSelectableCUR2Candidate(&output, item)
+
+	text := output.String()
+	for _, want := range []string{
+		"cur2-livebackfill001",
+		"Readiness: manual step required",
+		"Support code: aws_backfill_manual_step_required",
+		"Export: TEXT_OR_CSV / GZIP, MONTHLY, CREATE_NEW_REPORT",
+		"AWS delivery: ready",
+		"S3 delivery policy: ready",
+		"Previous month: 2026-06 missing data partition, manifest",
+		"Next action: request or complete previous-month billing data backfill, then rerun preflight.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("selectable backfill output = %q, want %q", text, want)
+		}
+	}
+	for _, forbidden := range []string{
+		"repair S3 delivery policy",
+		"Policy: source_account_condition_missing",
+		"Fix delivery permission",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("selectable backfill output contains forbidden value %q: %s", forbidden, text)
+		}
+	}
+	assertGuidedOutputSafe(t, text)
+}
+
+func TestWriteBlockedCUR2CandidateExplainsOverwriteWithoutBlamingParquetOrDaily(t *testing.T) {
+	item := classifiedCUR2Candidate{
+		Candidate: cur2Candidate{Ref: "cur2-overwrite00001"},
+		Result: workflow.Result{
+			Status: workflow.RunStatusBlocked,
+			Code:   "aws_cur2_output_settings_blocked",
+			Plan: &workflow.ExecutionPlan{Checks: []workflow.PlanCheck{
+				cur2PlanCheck(workflow.CheckWarn, "aws_cur2_time_granularity_not_preferred",
+					workflow.PlanEvidence{Key: "time_granularity", Value: "DAILY"}),
+				cur2PlanCheck(workflow.CheckPass, "aws_cur2_output_format_supported",
+					workflow.PlanEvidence{Key: "output_format", Value: "PARQUET"},
+					workflow.PlanEvidence{Key: "matilda_format_support", Value: "supported"}),
+				cur2PlanCheck(workflow.CheckPass, "aws_cur2_compression_supported",
+					workflow.PlanEvidence{Key: "compression", Value: "PARQUET"}),
+				cur2PlanCheck(workflow.CheckFail, "aws_cur2_output_settings_blocked",
+					workflow.PlanEvidence{Key: "overwrite", Value: "OVERWRITE_REPORT"}),
+			}},
+		},
+	}
+	var output strings.Builder
+
+	writeNonReadyCUR2Candidate(&output, item)
+
+	text := output.String()
+	for _, want := range []string{
+		"cur2-overwrite00001",
+		"Readiness: not ready",
+		"Support code: aws_cur2_output_settings_blocked",
+		"Export: PARQUET / PARQUET, DAILY, OVERWRITE_REPORT",
+		"Blocker: overwrite file versioning is not verified for this Matilda path.",
+		"Next action: confirm Matilda support for OVERWRITE_REPORT, or select a CREATE_NEW_REPORT CUR 2.0 export.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("overwrite output = %q, want %q", text, want)
+		}
+	}
+	for _, forbidden := range []string{
+		"PARQUET output is not supported",
+		"daily granularity is not supported",
+		"use a CUR 2.0 export with CREATE_NEW_REPORT",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("overwrite output contains forbidden value %q: %s", forbidden, text)
+		}
+	}
+	assertGuidedOutputSafe(t, text)
+}
+
+func TestWriteSelectableCUR2CandidateShowsEvidenceDerivedDeliveryAndPolicyStatuses(t *testing.T) {
+	item := classifiedCUR2Candidate{
+		Candidate: cur2Candidate{Ref: "cur2-progress000001"},
+		Result: workflow.Result{
+			Status: workflow.StatusReady,
+			Code:   "aws_cur2_delivery_not_started",
+			Plan: &workflow.ExecutionPlan{Checks: []workflow.PlanCheck{
+				cur2PlanCheck(workflow.CheckPass, "aws_cur2_output_format_ready",
+					workflow.PlanEvidence{Key: "output_format", Value: "TEXT_OR_CSV"}),
+				cur2PlanCheck(workflow.CheckWarn, "aws_cur2_delivery_not_started"),
+				cur2PlanCheck(workflow.CheckPass, "aws_s3_delivery_policy_ready"),
+				cur2PlanCheck(workflow.CheckPass, "aws_cur2_previous_month_ready",
+					workflow.PlanEvidence{Key: "previous_billing_period", Value: "2026-06"}),
+			}},
+		},
+	}
+	var output strings.Builder
+
+	writeSelectableCUR2Candidate(&output, item)
+
+	text := output.String()
+	for _, want := range []string{
+		"Readiness: ready",
+		"Support code: aws_cur2_delivery_not_started",
+		"Export: TEXT_OR_CSV / unverified",
+		"AWS delivery: in progress",
+		"S3 delivery policy: ready",
+		"Next action: continue with this CUR 2.0 export.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("evidence status output = %q, want %q", text, want)
+		}
+	}
+	if strings.Contains(text, "Previous month:") {
+		t.Fatalf("evidence status output should not show missing previous-month text when previous month is ready: %s", text)
+	}
+	if strings.Contains(text, "Readiness: ready (aws_cur2_delivery_not_started)") {
+		t.Fatalf("evidence status output combines readiness and support code: %s", text)
+	}
+	assertGuidedOutputSafe(t, text)
+}
+
+func TestWriteNonReadyCUR2CandidateShowsDeliveryNotStartedStatus(t *testing.T) {
+	item := classifiedCUR2Candidate{
+		Candidate: cur2Candidate{Ref: "cur2-nodelivery0001"},
+		Result: workflow.Result{
+			Status: workflow.RunStatusBlocked,
+			Code:   "aws_cur2_delivery_not_started",
+			Plan: &workflow.ExecutionPlan{Checks: []workflow.PlanCheck{
+				cur2PlanCheck(workflow.CheckFail, "aws_cur2_delivery_not_started"),
+			}},
+		},
+	}
+	var output strings.Builder
+
+	writeNonReadyCUR2Candidate(&output, item)
+
+	text := output.String()
+	for _, want := range []string{
+		"Readiness: not ready",
+		"Support code: aws_cur2_delivery_not_started",
+		"AWS delivery: not started",
+		"Next action: review the direct preflight result and rerun after remediation.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("delivery-not-started output = %q, want %q", text, want)
+		}
+	}
+	assertGuidedOutputSafe(t, text)
+}
+
+func TestWriteAWSBillingSummaryFactsSkipsResultsWithoutCUR2PlanFacts(t *testing.T) {
+	tests := []struct {
+		name   string
+		result workflow.Result
+	}{
+		{name: "nil plan"},
+		{
+			name: "unrelated plan",
+			result: workflow.Result{Plan: &workflow.ExecutionPlan{Checks: []workflow.PlanCheck{{
+				ID:     "aws_config_missing_credentials",
+				Status: workflow.CheckFail,
+				Evidence: []workflow.PlanEvidence{
+					{Key: "code", Value: "aws_config_missing_credentials"},
+				},
+			}}}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var output strings.Builder
+
+			writeAWSBillingSummaryFacts(&output, tt.result)
+
+			if output.String() != "" {
+				t.Fatalf("summary facts output = %q, want empty", output.String())
+			}
+		})
+	}
+}
+
+func TestSummaryCUR2ReadinessAndNextActionUsesRepairablePolicyResult(t *testing.T) {
+	item := classifiedCUR2Candidate{
+		Candidate: cur2Candidate{Ref: "cur2-summaryrepair01"},
+		Result: workflow.Result{
+			Status: workflow.RunStatusBlocked,
+			Code:   "aws_s3_delivery_policy_missing",
+			Plan: &workflow.ExecutionPlan{Checks: []workflow.PlanCheck{{
+				ID:     "aws_s3_delivery_policy_missing",
+				Status: workflow.CheckFail,
+				Evidence: []workflow.PlanEvidence{
+					{Key: "policy_gap", Value: "service_principal_missing"},
+				},
+			}}},
+		},
+	}
+
+	readiness, nextAction := summaryCUR2ReadinessAndNextAction(item)
+
+	if readiness != "repair required" {
+		t.Fatalf("readiness = %q, want repair required", readiness)
+	}
+	if !strings.Contains(nextAction, "the AWS Data Exports service principal") {
+		t.Fatalf("next action = %q, want service-principal remediation", nextAction)
 	}
 }
 
@@ -253,7 +851,41 @@ func TestSafeCandidateLabelValueRejectsSensitiveIdentifierShapesWithoutOverblock
 	}
 }
 
-func TestRunAWSBillingStopsWhenNoCUR2CandidateIsSelectable(t *testing.T) {
+func cur2PlanCheck(status workflow.CheckStatus, code string, evidence ...workflow.PlanEvidence) workflow.PlanCheck {
+	return workflow.PlanCheck{
+		ID:            code,
+		Status:        status,
+		Title:         "AWS CUR 2.0 test check",
+		Message:       "AWS CUR 2.0 test check.",
+		Evidence:      evidence,
+		SourceHandles: guidedTestSourceHandles(),
+	}
+}
+
+func TestPlanCheckCodePrefersSemanticIDAndFallsBackToLegacyEvidence(t *testing.T) {
+	withID := workflow.PlanCheck{
+		ID: "aws_s3_delivery_policy_ready",
+		Evidence: []workflow.PlanEvidence{
+			{Key: "code", Value: "aws_s3_delivery_policy_missing"},
+		},
+	}
+	if got := planCheckCode(withID); got != "aws_s3_delivery_policy_ready" {
+		t.Fatalf("planCheckCode with ID = %q, want aws_s3_delivery_policy_ready", got)
+	}
+
+	legacy := workflow.PlanCheck{Evidence: []workflow.PlanEvidence{
+		{Key: "code", Value: "aws_cur2_delivery_not_started"},
+	}}
+	if got := planCheckCode(legacy); got != "aws_cur2_delivery_not_started" {
+		t.Fatalf("planCheckCode legacy fallback = %q, want aws_cur2_delivery_not_started", got)
+	}
+
+	if got := planCheckCode(workflow.PlanCheck{}); got != "" {
+		t.Fatalf("planCheckCode empty check = %q, want empty string", got)
+	}
+}
+
+func TestRunAWSBillingShowsRepairableCUR2CandidatesWhenNoneReady(t *testing.T) {
 	registry := testRegistry(t, workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
 		exportRef := ""
 		if options.Selectors != nil && options.Selectors.AWS != nil {
@@ -263,10 +895,24 @@ func TestRunAWSBillingStopsWhenNoCUR2CandidateIsSelectable(t *testing.T) {
 		case "":
 			return guidedCapabilityReport(got, workflow.RunStatusBlocked, "aws_cur2_export_ambiguous", []workflow.PlanEvidence{
 				{Key: "candidate_1_export_ref", Value: "cur2-cccccccccccccccc"},
+				{Key: "candidate_1_output_format", Value: "TEXT_OR_CSV"},
+				{Key: "candidate_1_compression", Value: "GZIP"},
+				{Key: "candidate_1_time_granularity", Value: "MONTHLY"},
 				{Key: "candidate_2_export_ref", Value: "cur2-dddddddddddddddd"},
+				{Key: "candidate_2_output_format", Value: "PARQUET"},
+				{Key: "candidate_2_compression", Value: "PARQUET"},
+				{Key: "candidate_2_time_granularity", Value: "DAILY"},
 			})
 		case "cur2-cccccccccccccccc":
-			return guidedCapabilityReport(got, workflow.RunStatusBlocked, "aws_cur2_output_settings_blocked", nil)
+			return guidedCapabilityReport(got, workflow.RunStatusBlocked, "aws_s3_delivery_policy_missing", []workflow.PlanEvidence{
+				{Key: "output_format", Value: "TEXT_OR_CSV"},
+				{Key: "compression", Value: "GZIP"},
+				{Key: "time_granularity", Value: "MONTHLY"},
+				{Key: "previous_billing_period", Value: "2026-06"},
+				{Key: "missing_previous_month_component", Value: "data_partition"},
+				{Key: "missing_previous_month_component", Value: "manifest"},
+				{Key: "policy_gap", Value: "source_account_condition_missing"},
+			})
 		case "cur2-dddddddddddddddd":
 			return guidedCapabilityReport(got, workflow.RunStatusFailed, "aws_data_exports_transient", nil)
 		default:
@@ -289,16 +935,145 @@ func TestRunAWSBillingStopsWhenNoCUR2CandidateIsSelectable(t *testing.T) {
 	if strings.Contains(output, "Select AWS CUR 2.0 export") {
 		t.Fatalf("output prompted even though no candidate was selectable: %s", output)
 	}
+	if strings.Contains(output, "No selectable CUR 2.0 export candidate was found.") {
+		t.Fatalf("output used ambiguous no-selectable wording for repairable candidates: %s", output)
+	}
 	for _, want := range []string{
-		"No selectable CUR 2.0 export candidate was found.",
-		"cur2-cccccccccccccccc blocked: aws_cur2_output_settings_blocked",
-		"cur2-dddddddddddddddd blocked: aws_data_exports_transient",
+		"No AWS CUR 2.0 export is ready yet.",
+		"Repairable CUR 2.0 export candidates",
+		"cur2-cccccccccccccccc",
+		"Readiness: repair required",
+		"Support code: aws_s3_delivery_policy_missing",
+		"Export: TEXT_OR_CSV / GZIP, MONTHLY",
+		"S3 delivery policy: action needed",
+		"Previous month: 2026-06 missing data partition, manifest",
+		"Blocker: S3 delivery policy does not satisfy the expected aws:SourceAccount condition.",
+		"Next action: update the S3 delivery policy to include the expected aws:SourceAccount condition, then rerun preflight.",
+		"Other CUR 2.0 candidates",
+		"cur2-dddddddddddddddd",
+		"Readiness: not ready",
+		"Support code: aws_data_exports_transient",
+		"Export: PARQUET / PARQUET, DAILY",
+		"Next action: retry preflight after the transient AWS Data Exports issue clears.",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("output = %q, want to contain %q", output, want)
 		}
 	}
+	if strings.Contains(output, "source_account_condition_missing") {
+		t.Fatalf("output exposed raw policy gap enum: %s", output)
+	}
+	if strings.Contains(output, "data_partition") {
+		t.Fatalf("output exposed raw previous-month component enum: %s", output)
+	}
 	assertGuidedOutputSafe(t, output)
+}
+
+func TestWriteBlockedClassificationsUsesSafeFactsAndNextAction(t *testing.T) {
+	classified := []classifiedCUR2Candidate{
+		{
+			Candidate: cur2Candidate{Ref: "cur2-ready0000000000", Output: "TEXT_OR_CSV", Compression: "GZIP"},
+			Result:    workflow.Result{Status: workflow.StatusReady, Code: "aws_cur2_preflight_ready"},
+		},
+		{
+			Candidate: cur2Candidate{Ref: "cur2-overwrite00001", Output: "PARQUET", Compression: "PARQUET"},
+			Result: workflow.Result{
+				Status: workflow.RunStatusBlocked,
+				Code:   "aws_cur2_output_settings_blocked",
+				Plan: &workflow.ExecutionPlan{Checks: []workflow.PlanCheck{{
+					Evidence: []workflow.PlanEvidence{
+						{Key: "time_granularity", Value: "DAILY"},
+						{Key: "overwrite", Value: "OVERWRITE_REPORT"},
+						{Key: "policy_gap", Value: "arn:aws:s3:::private-bucket/policy"},
+					},
+				}}},
+			},
+		},
+	}
+	var output strings.Builder
+
+	writeBlockedClassifications(&output, classified)
+
+	text := output.String()
+	for _, want := range []string{
+		"cur2-overwrite00001",
+		"Readiness: not ready",
+		"Support code: aws_cur2_output_settings_blocked",
+		"Export: PARQUET / PARQUET, DAILY, OVERWRITE_REPORT",
+		"Blocker: overwrite file versioning is not verified for this Matilda path.",
+		"Next action: confirm Matilda support for OVERWRITE_REPORT, or select a CREATE_NEW_REPORT CUR 2.0 export.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("blocked classification output = %q, want %q", text, want)
+		}
+	}
+	for _, forbidden := range []string{
+		"cur2-ready0000000000",
+		"not ready: aws_cur2_output_settings_blocked",
+		"arn:aws",
+		"private-bucket",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("blocked classification output contains forbidden value %q: %s", forbidden, text)
+		}
+	}
+	assertGuidedOutputSafe(t, text)
+}
+
+func TestNonReadyCUR2NextActionExplainsOutputSettingsWithoutOverwriteFact(t *testing.T) {
+	item := classifiedCUR2Candidate{
+		Candidate: cur2Candidate{Ref: "cur2-outputsettings1", Output: "JSON"},
+		Result:    workflow.Result{Status: workflow.RunStatusBlocked, Code: "aws_cur2_output_settings_blocked"},
+	}
+
+	got := nonReadyCUR2NextAction(item)
+
+	const want = "review the CUR 2.0 output settings and rerun after they match a Matilda-supported AWS-standard shape."
+	if got != want {
+		t.Fatalf("nonReadyCUR2NextAction() = %q, want %q", got, want)
+	}
+	assertGuidedOutputSafe(t, got)
+}
+
+func TestNonReadyCUR2NextActionUsesGenericFallbackForUnknownCode(t *testing.T) {
+	item := classifiedCUR2Candidate{
+		Candidate: cur2Candidate{Ref: "cur2-unknown0000001"},
+		Result:    workflow.Result{Status: workflow.RunStatusBlocked, Code: "aws_cur2_unknown_blocker"},
+	}
+
+	got := nonReadyCUR2NextAction(item)
+
+	const want = "review the direct preflight result and rerun after remediation."
+	if got != want {
+		t.Fatalf("nonReadyCUR2NextAction() = %q, want %q", got, want)
+	}
+	assertGuidedOutputSafe(t, got)
+}
+
+func TestSelectableCUR2ReadinessAndNextActionUseSafeFallbacks(t *testing.T) {
+	manual := classifiedCUR2Candidate{
+		Candidate: cur2Candidate{Ref: "cur2-manualgeneric1"},
+		Result:    workflow.Result{Status: workflow.RunStatusManualSteps, Code: "aws_cur2_manual_generic"},
+	}
+	unknown := classifiedCUR2Candidate{
+		Candidate: cur2Candidate{Ref: "cur2-unknownstatus01"},
+		Result:    workflow.Result{Status: workflow.RunStatusBlocked, Code: "aws_cur2_unknown_status"},
+	}
+
+	if got, want := selectableCUR2Readiness(manual), "manual step required"; got != want {
+		t.Fatalf("selectableCUR2Readiness(manual) = %q, want %q", got, want)
+	}
+	if got, want := selectableCUR2NextAction(manual), "complete the manual step shown by preflight, then rerun preflight."; got != want {
+		t.Fatalf("selectableCUR2NextAction(manual) = %q, want %q", got, want)
+	}
+	if got, want := selectableCUR2Readiness(unknown), "selected"; got != want {
+		t.Fatalf("selectableCUR2Readiness(unknown) = %q, want %q", got, want)
+	}
+	if got, want := selectableCUR2NextAction(unknown), "review the direct preflight result and rerun after remediation."; got != want {
+		t.Fatalf("selectableCUR2NextAction(unknown) = %q, want %q", got, want)
+	}
+	assertGuidedOutputSafe(t, selectableCUR2NextAction(manual))
+	assertGuidedOutputSafe(t, selectableCUR2NextAction(unknown))
 }
 
 func TestRunAWSBillingAmbiguousWithoutSafeCandidateRefsShowsOriginalSummary(t *testing.T) {
@@ -328,8 +1103,16 @@ func TestRunAWSBillingAmbiguousWithoutSafeCandidateRefsShowsOriginalSummary(t *t
 	if strings.Contains(output, "Classifying") || strings.Contains(output, "cur2-1234") || strings.Contains(output, "cur2-ABCDEF1234567890") {
 		t.Fatalf("output should not classify or display unsafe refs: %s", output)
 	}
-	if !strings.Contains(output, "Result: blocked (aws_cur2_export_ambiguous)") {
-		t.Fatalf("output = %q, want original ambiguous summary", output)
+	for _, want := range []string{
+		"Result: blocked",
+		"Support code: aws_cur2_export_ambiguous",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output = %q, want ambiguous summary value %q", output, want)
+		}
+	}
+	if strings.Contains(output, "Result: blocked (aws_cur2_export_ambiguous)") {
+		t.Fatalf("output uses old status/code summary format: %s", output)
 	}
 	assertGuidedOutputSafe(t, output)
 }

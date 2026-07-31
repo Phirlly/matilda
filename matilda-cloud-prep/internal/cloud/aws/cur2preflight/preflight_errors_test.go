@@ -152,13 +152,6 @@ func TestPreflightClassifiesAdditionalQueryAndShapeFailures(t *testing.T) {
 			code: "aws_cur2_query_unverified",
 		},
 		{
-			name: "missing table configuration",
-			mutate: func(client *fakeClient) {
-				client.export.TableConfigurations = map[string]map[string]string{}
-			},
-			code: "aws_cur2_export_invalid_shape",
-		},
-		{
 			name: "unrecognized include resources",
 			mutate: func(client *fakeClient) {
 				client.export.TableConfigurations["COST_AND_USAGE_REPORT"]["INCLUDE_RESOURCES"] = "MAYBE"
@@ -183,6 +176,13 @@ func TestPreflightClassifiesAdditionalQueryAndShapeFailures(t *testing.T) {
 			name: "unhealthy export",
 			mutate: func(client *fakeClient) {
 				client.export.HealthStatus = "UNHEALTHY"
+			},
+			code: "aws_cur2_export_invalid_shape",
+		},
+		{
+			name: "missing export health fails closed",
+			mutate: func(client *fakeClient) {
+				client.export.HealthStatus = ""
 			},
 			code: "aws_cur2_export_invalid_shape",
 		},
@@ -225,12 +225,12 @@ func TestPreflightClassifiesAdditionalS3AndDeliveryEdges(t *testing.T) {
 			wantStatus: workflow.RunStatusBlocked,
 		},
 		{
-			name: "invalid bucket policy json",
+			name: "invalid bucket policy json warns when previous month is present",
 			mutate: func(client *fakeClient) {
 				client.bucketPolicy = "{not-json"
 			},
 			code:       "aws_s3_delivery_policy_missing",
-			wantStatus: workflow.RunStatusBlocked,
+			wantStatus: workflow.StatusReady,
 		},
 		{
 			name: "old export with no executions blocks",
@@ -459,11 +459,116 @@ func TestPolicyAcceptsArrayActionAndBucketWideResource(t *testing.T) {
 	assertNoUnsafeAWSOutput(t, result)
 }
 
+func TestPolicyAcceptsParentPrefixWildcardResource(t *testing.T) {
+	client := baselineClient()
+	client.bucketPolicy = bucketPolicy(policySpec{
+		Service:       "bcm-data-exports.amazonaws.com",
+		SourceAccount: client.export.SourceAccount,
+		SourceARN:     client.export.SourceARN,
+		Action:        "s3:PutObject",
+		Resource:      "arn:aws:s3:::matilda-cur2-billing/matilda/*",
+	})
+	client.objectPages = []ObjectPage{{Keys: []string{"matilda/cur2/matilda-cur2/data/BILLING_PERIOD=2026-07/part-000.gz"}}}
+
+	result := runPreflight(t, client)
+
+	if result.Status != workflow.RunStatusManualSteps {
+		t.Fatalf("Status = %q, want %q; code=%q", result.Status, workflow.RunStatusManualSteps, result.Code)
+	}
+	if result.Code != "aws_backfill_manual_step_required" {
+		t.Fatalf("Code = %q, want aws_backfill_manual_step_required", result.Code)
+	}
+	assertNoCheckEvidenceKey(t, result, "policy_gap")
+	assertNoUnsafeAWSOutput(t, result)
+}
+
+func TestPolicyRejectsWildcardThatOnlyMatchesSyntheticProbeObject(t *testing.T) {
+	client := baselineClient()
+	client.bucketPolicy = bucketPolicy(policySpec{
+		Service:       "bcm-data-exports.amazonaws.com",
+		SourceAccount: client.export.SourceAccount,
+		SourceARN:     client.export.SourceARN,
+		Action:        "s3:PutObject",
+		Resource:      "arn:aws:s3:::matilda-cur2-billing/matilda/cur2/__matilda-preflight-*",
+	})
+	client.objectPages = []ObjectPage{{Keys: []string{"matilda/cur2/matilda-cur2/data/BILLING_PERIOD=2026-07/part-000.gz"}}}
+
+	result := runPreflight(t, client)
+
+	assertBlockedCode(t, result, "aws_s3_delivery_policy_missing")
+	assertCheckEvidence(t, result, "policy_gap", "put_object_resource_not_covered")
+	assertNoUnsafeAWSOutput(t, result)
+}
+
 func TestPreviousMonthMatcherRejectsIncompleteDestination(t *testing.T) {
 	export := baselineClient().export
 	export.Destination.Prefix = ""
 
 	if matchesPreviousMonthDataKey("matilda/cur2/matilda-cur2/data/BILLING_PERIOD=2026-06/part.gz", export, "2026-06") {
 		t.Fatal("previous-month matcher accepted key with incomplete destination prefix")
+	}
+	if matchesPreviousMonthManifestKey("matilda/cur2/matilda-cur2/metadata/BILLING_PERIOD=2026-06/Manifest.json", export, "2026-06") {
+		t.Fatal("previous-month manifest matcher accepted key with incomplete destination prefix")
+	}
+}
+
+func TestPreviousMonthDataMatcherRejectsFolderMarkers(t *testing.T) {
+	export := baselineClient().export
+	prefix := previousMonthDataPrefix(export, "2026-06")
+
+	if matchesPreviousMonthDataKey(prefix, export, "2026-06") {
+		t.Fatal("previous-month data matcher accepted partition folder marker")
+	}
+	if matchesPreviousMonthDataKey(prefix+"execution/", export, "2026-06") {
+		t.Fatal("previous-month data matcher accepted execution folder marker")
+	}
+	if !matchesPreviousMonthDataKey(prefix+"execution/part.gz", export, "2026-06") {
+		t.Fatal("previous-month data matcher rejected file below partition")
+	}
+}
+
+func TestPreviousMonthManifestMatcherAcceptsAWSManifestPaths(t *testing.T) {
+	export := baselineClient().export
+
+	tests := []struct {
+		name string
+		key  string
+		want bool
+	}{
+		{
+			name: "latest manifest",
+			key:  "matilda/cur2/matilda-cur2/metadata/BILLING_PERIOD=2026-06/Manifest.json",
+			want: true,
+		},
+		{
+			name: "export-named manifest",
+			key:  "matilda/cur2/matilda-cur2/metadata/BILLING_PERIOD=2026-06/matilda-cur2-Manifest.json",
+			want: true,
+		},
+		{
+			name: "execution manifest",
+			key:  "matilda/cur2/matilda-cur2/metadata/BILLING_PERIOD=2026-06/2026-06-15T00-00Z-execution/Manifest.json",
+			want: true,
+		},
+		{
+			name: "data file is not manifest",
+			key:  "matilda/cur2/matilda-cur2/data/BILLING_PERIOD=2026-06/part.gz",
+		},
+		{
+			name: "wrong period manifest",
+			key:  "matilda/cur2/matilda-cur2/metadata/BILLING_PERIOD=2026-05/Manifest.json",
+		},
+		{
+			name: "wrong export manifest",
+			key:  "matilda/cur2/other-export/metadata/BILLING_PERIOD=2026-06/Manifest.json",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := matchesPreviousMonthManifestKey(tt.key, export, "2026-06"); got != tt.want {
+				t.Fatalf("matchesPreviousMonthManifestKey(%q) = %v, want %v", tt.key, got, tt.want)
+			}
+		})
 	}
 }

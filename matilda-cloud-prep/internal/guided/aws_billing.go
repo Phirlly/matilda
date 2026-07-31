@@ -298,7 +298,21 @@ func safeAWSCredentialSource(source billingguide.CredentialSource) (billingguide
 }
 
 func writeAWSBillingSummary(stdout io.Writer, source billingguide.CredentialSource, result workflow.Result) {
-	fmt.Fprintf(stdout, "Result: %s (%s)\n", result.Status, result.Code)
+	writeAWSBillingSummaryWithFacts(stdout, source, result, true)
+}
+
+func writeAWSBillingSummaryWithoutFacts(stdout io.Writer, source billingguide.CredentialSource, result workflow.Result) {
+	writeAWSBillingSummaryWithFacts(stdout, source, result, false)
+}
+
+func writeAWSBillingSummaryWithFacts(stdout io.Writer, source billingguide.CredentialSource, result workflow.Result, includeFacts bool) {
+	fmt.Fprintf(stdout, "Result: %s\n", result.Status)
+	if code := safeCandidateLabelValue(result.Code); code != "" {
+		fmt.Fprintf(stdout, "Support code: %s\n", code)
+	}
+	if includeFacts {
+		writeAWSBillingSummaryFacts(stdout, result)
+	}
 	if result.Message != "" {
 		fmt.Fprintln(stdout, result.Message)
 	}

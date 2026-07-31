@@ -4,14 +4,22 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/workflow"
 )
 
 const cur2TableName = "COST_AND_USAGE_REPORT"
 
+const (
+	matildaProductNameField = "product_product_name"
+	cur2ProductMapColumn    = "product"
+	cur2ProductNameSelector = "product.product_name"
+)
+
 func requiredCUR2Columns() []string {
 	return []string{
 		"line_item_product_code",
-		"product_product_name",
+		matildaProductNameField,
 		"line_item_operation",
 		"line_item_line_item_description",
 		"line_item_line_item_type",
@@ -56,24 +64,35 @@ func validateCUR2Query(statement string, tableColumns []string) checkFinding {
 	}
 
 	outputs := map[string]bool{}
+	logicalFieldSources := map[string]string{}
 	schemaColumns := tableColumnSet(tableColumns)
 	for _, item := range strings.Split(selected, ",") {
 		source, output, ok := parseSelectedColumn(item, schemaColumns)
 		if !ok {
 			return failFinding("aws_cur2_query_unverified", "CUR 2.0 query fields", "CUR 2.0 query contains unsupported selected field syntax.")
 		}
-		if source != output {
+		if source != output && !isProductNameMapAlias(source, output) {
 			return failFinding("aws_cur2_query_unverified", "CUR 2.0 query fields", "CUR 2.0 selected fields must keep the same output name for this preflight path.")
 		}
 		outputs[output] = true
+		if source == cur2ProductMapColumn && output == cur2ProductMapColumn {
+			logicalFieldSources[matildaProductNameField] = matildaProductNameField + "<-" + cur2ProductMapColumn
+		}
+		if isProductNameMapAlias(source, output) {
+			logicalFieldSources[matildaProductNameField] = matildaProductNameField + "<-" + cur2ProductNameSelector
+		}
 	}
 
 	missing := missingRequiredColumns(outputs)
 	if len(missing) > 0 {
-		return failFinding("aws_cur2_required_fields_missing", "CUR 2.0 required fields", "CUR 2.0 query is missing required Matilda billing fields.")
+		return withEvidence(failFinding("aws_cur2_required_fields_missing", "CUR 2.0 required fields", "CUR 2.0 query is missing required Matilda billing fields."), missingRequiredFieldEvidence(missing)...)
 	}
 
-	return passFinding("aws_cur2_query_valid", "CUR 2.0 query fields", "CUR 2.0 query selects the required billing fields from COST_AND_USAGE_REPORT.")
+	finding := passFinding("aws_cur2_query_valid", "CUR 2.0 query fields", "CUR 2.0 query selects or maps the required billing fields from COST_AND_USAGE_REPORT.")
+	if source := logicalFieldSources[matildaProductNameField]; source != "" {
+		finding = withEvidence(finding, workflow.PlanEvidence{Key: "logical_field_source", Value: source})
+	}
+	return finding
 }
 
 func referencesCUR2QuerySource(statement string) bool {
@@ -99,19 +118,25 @@ func parseSelectFrom(query string) (string, string, bool) {
 
 func parseSelectedColumn(item string, schemaColumns map[string]bool) (source string, output string, ok bool) {
 	trimmed := strings.TrimSpace(item)
-	if trimmed == "" || strings.ContainsAny(trimmed, "().*") {
+	if trimmed == "" || strings.ContainsAny(trimmed, "()*") {
 		return "", "", false
 	}
 
 	fields := strings.Fields(trimmed)
 	switch len(fields) {
 	case 1:
-		if !schemaColumns[fields[0]] {
+		if strings.Contains(fields[0], ".") || !schemaColumns[fields[0]] {
 			return "", "", false
 		}
 		return fields[0], fields[0], true
 	case 3:
 		if !strings.EqualFold(fields[1], "AS") {
+			return "", "", false
+		}
+		if isProductNameMapAlias(fields[0], fields[2]) && schemaColumns[cur2ProductMapColumn] {
+			return fields[0], fields[2], true
+		}
+		if strings.Contains(fields[0], ".") || strings.Contains(fields[2], ".") {
 			return "", "", false
 		}
 		if !schemaColumns[fields[0]] || !schemaColumns[fields[2]] {
@@ -129,14 +154,21 @@ func validateTableColumns(columns []string) checkFinding {
 		available[column] = true
 	}
 	if missing := missingRequiredColumns(available); len(missing) > 0 {
-		return failFinding("aws_cur2_required_fields_missing", "CUR 2.0 table columns", "COST_AND_USAGE_REPORT metadata is missing required billing fields.")
+		return withEvidence(failFinding("aws_cur2_required_fields_missing", "CUR 2.0 table columns", "COST_AND_USAGE_REPORT metadata is missing required billing fields."), missingRequiredFieldEvidence(missing)...)
 	}
-	return passFinding("aws_cur2_table_ready", "CUR 2.0 table columns", "COST_AND_USAGE_REPORT metadata includes required billing fields.")
+	finding := passFinding("aws_cur2_table_ready", "CUR 2.0 table columns", "COST_AND_USAGE_REPORT metadata includes required physical billing fields or AWS-standard logical field sources.")
+	if source := productNameLogicalFieldSource(available); source != "" {
+		finding = withEvidence(finding, workflow.PlanEvidence{Key: "logical_field_source", Value: source})
+	}
+	return finding
 }
 
 func missingRequiredColumns(available map[string]bool) []string {
 	missing := []string{}
 	for _, required := range requiredCUR2Columns() {
+		if required == matildaProductNameField && productNameLogicalFieldSource(available) != "" {
+			continue
+		}
 		if !available[required] {
 			missing = append(missing, required)
 		}
@@ -150,6 +182,31 @@ func tableColumnSet(columns []string) map[string]bool {
 		available[column] = true
 	}
 	return available
+}
+
+func missingRequiredFieldEvidence(fields []string) []workflow.PlanEvidence {
+	evidence := make([]workflow.PlanEvidence, 0, len(fields))
+	for _, field := range fields {
+		evidence = append(evidence, workflow.PlanEvidence{Key: "missing_required_field", Value: field})
+	}
+	return evidence
+}
+
+func productNameLogicalFieldSource(available map[string]bool) string {
+	switch {
+	case available[matildaProductNameField]:
+		return ""
+	case available[cur2ProductNameSelector]:
+		return matildaProductNameField + "<-" + cur2ProductNameSelector
+	case available[cur2ProductMapColumn]:
+		return matildaProductNameField + "<-" + cur2ProductMapColumn
+	default:
+		return ""
+	}
+}
+
+func isProductNameMapAlias(source string, output string) bool {
+	return source == cur2ProductNameSelector && output == matildaProductNameField
 }
 
 var selectFromPattern = regexp.MustCompile(`(?is)^\s*select\s+(.+?)\s+from\s+(.+?)\s*$`)

@@ -62,6 +62,85 @@ func TestRunAWSBillingAutoSelectsSingleVerifiedSourceAndRunsPreflight(t *testing
 	assertGuidedOutputSafe(t, output)
 }
 
+func TestRunAWSBillingSummarySeparatesReadinessFromSupportCode(t *testing.T) {
+	registry := testRegistry(t, workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+		return guidedCapabilityReport(got, workflow.StatusReady, "aws_cur2_delivery_not_started", nil)
+	}))
+	guide := &fakeAWSBillingGuide{
+		sources: []billingguide.CredentialSource{{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}},
+		verified: map[string]billingguide.VerifiedIdentity{
+			"profile:default": {
+				Source:       billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"},
+				AccountLabel: "account-ending-9012",
+				CallerRef:    "sha256:abcdef123456",
+				Region:       "us-east-1",
+			},
+		},
+	}
+
+	output, err := runGuidedWithConfig("1\n1\ny\n", Config{Registry: registry, AWSBilling: guide})
+
+	if err != nil {
+		t.Fatalf("RunWithConfig returned error: %v", err)
+	}
+	for _, want := range []string{
+		"Result: ready",
+		"Support code: aws_cur2_delivery_not_started",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output = %q, want to contain %q", output, want)
+		}
+	}
+	if strings.Contains(output, "Result: ready (aws_cur2_delivery_not_started)") {
+		t.Fatalf("output combines readiness and support code: %s", output)
+	}
+	assertGuidedOutputSafe(t, output)
+}
+
+func TestRunAWSBillingSummaryRendersPlanFactsAndDynamicNextAction(t *testing.T) {
+	registry := testRegistry(t, workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+		return guidedCapabilityReport(got, workflow.RunStatusManualSteps, "aws_backfill_manual_step_required", []workflow.PlanEvidence{
+			{Key: "output_format", Value: "TEXT_OR_CSV"},
+			{Key: "compression", Value: "GZIP"},
+			{Key: "time_granularity", Value: "DAILY"},
+			{Key: "overwrite", Value: "CREATE_NEW_REPORT"},
+			{Key: "previous_billing_period", Value: "2026-06"},
+			{Key: "missing_previous_month_component", Value: "data_partition"},
+			{Key: "missing_previous_month_component", Value: "manifest"},
+		})
+	}))
+	guide := &fakeAWSBillingGuide{
+		sources: []billingguide.CredentialSource{{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}},
+		verified: map[string]billingguide.VerifiedIdentity{
+			"profile:default": {
+				Source:       billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"},
+				AccountLabel: "account-ending-9012",
+				CallerRef:    "sha256:abcdef123456",
+				Region:       "us-east-1",
+			},
+		},
+	}
+
+	output, err := runGuidedWithConfig("1\n1\ny\n", Config{Registry: registry, AWSBilling: guide})
+
+	if err != nil {
+		t.Fatalf("RunWithConfig returned error: %v", err)
+	}
+	for _, want := range []string{
+		"Result: ready_with_manual_steps",
+		"Support code: aws_backfill_manual_step_required",
+		"Readiness: manual step required",
+		"Export: TEXT_OR_CSV / GZIP, DAILY, CREATE_NEW_REPORT",
+		"Previous month: 2026-06 missing data partition, manifest",
+		"Next action: request or complete previous-month billing data backfill, then rerun preflight.",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output = %q, want to contain %q", output, want)
+		}
+	}
+	assertGuidedOutputSafe(t, output)
+}
+
 func TestRunAWSBillingUsesEnvironmentCredentialSourceSafely(t *testing.T) {
 	var gotOptions workflow.ExecutionOptions
 	registry := testRegistry(t, workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
@@ -753,6 +832,7 @@ func guidedCapabilityReport(request workflow.Request, status workflow.RunStatus,
 		support = workflow.SupportBlocked
 	}
 	check := workflow.PlanCheck{
+		ID:      code,
 		Status:  checkStatus,
 		Title:   "AWS CUR 2.0 preflight",
 		Message: "AWS CUR 2.0 preflight test result.",
@@ -848,6 +928,9 @@ func assertGuidedOutputSafe(t *testing.T, output string) {
 	for _, forbidden := range []string{
 		"arn:aws",
 		"123456789012",
+		"matilda-cur2-billing",
+		"matilda/cur2/private-prefix",
+		"BILLING_PERIOD=2026-06/part-000.gz",
 		"AKIA",
 		"access_key",
 		"secret_key",

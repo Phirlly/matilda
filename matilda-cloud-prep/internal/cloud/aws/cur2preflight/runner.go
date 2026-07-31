@@ -117,11 +117,7 @@ func (runner Runner) Run(ctx context.Context, request workflow.Request, options 
 		export.SourceAccount = identity.AccountID
 	}
 
-	tableConfig := export.TableConfigurations[cur2TableName]
-	if tableConfig == nil {
-		state.add(failFinding("aws_cur2_export_invalid_shape", "CUR 2.0 table configuration", "AWS export is missing COST_AND_USAGE_REPORT table configuration."))
-		return state.report("verified", identitySummary(accountEvidence, callerEvidence))
-	}
+	tableConfig := cur2TableConfiguration(export)
 	table, err := client.GetTable(ctx, cur2TableName, tableConfig)
 	if err != nil {
 		state.add(failFinding(providerErrorCode(err, "aws_cur2_table_unavailable"), "CUR 2.0 table availability", "COST_AND_USAGE_REPORT table metadata could not be inspected."))
@@ -138,11 +134,10 @@ func (runner Runner) Run(ctx context.Context, request workflow.Request, options 
 	if queryFinding.Status == workflow.CheckFail {
 		return state.report("verified", identitySummary(accountEvidence, callerEvidence))
 	}
-	for _, finding := range validateExportShape(export) {
-		state.add(finding)
-		if finding.Status == workflow.CheckFail {
-			return state.report("verified", identitySummary(accountEvidence, callerEvidence))
-		}
+	shapeFindings := validateExportShape(export, table.Properties)
+	state.add(shapeFindings...)
+	if hasFailedFinding(shapeFindings) {
+		return state.report("verified", identitySummary(accountEvidence, callerEvidence))
 	}
 
 	bucketAccess, err := client.HeadBucket(ctx, export.Destination.Bucket)
@@ -162,16 +157,7 @@ func (runner Runner) Run(ctx context.Context, request workflow.Request, options 
 	}
 	state.add(passFinding("aws_s3_bucket_reachable", "AWS S3 bucket reachability", "S3 destination bucket is reachable through read-only preflight."))
 
-	policy, err := client.GetBucketPolicy(ctx, export.Destination.Bucket)
-	if err != nil {
-		state.add(failFinding(providerErrorCode(err, "aws_s3_bucket_policy_inaccessible"), "AWS S3 bucket policy visibility", "S3 bucket policy could not be inspected."))
-		return state.report("verified", identitySummary(accountEvidence, callerEvidence))
-	}
-	policyFinding := validateBucketPolicy(policy, export.SourceAccount, export.SourceARN, export.Destination)
-	state.add(policyFinding)
-	if policyFinding.Status == workflow.CheckFail {
-		return state.report("verified", identitySummary(accountEvidence, callerEvidence))
-	}
+	policyFinding := inspectBucketPolicy(ctx, client, export)
 
 	for _, finding := range runner.deliveryFindings(ctx, client, export) {
 		state.add(finding)
@@ -183,6 +169,11 @@ func (runner Runner) Run(ctx context.Context, request workflow.Request, options 
 	period := previousBillingPeriod(runner.now)
 	partitionFinding := runner.previousMonthFinding(ctx, client, export, period)
 	state.add(partitionFinding)
+	if partitionFinding.Status == workflow.CheckFail {
+		return state.report("verified", identitySummary(accountEvidence, callerEvidence))
+	}
+
+	state.add(policyFindingAfterCurrentDataProof(policyFinding, partitionFinding))
 
 	return state.report("verified", identitySummary(accountEvidence, callerEvidence))
 }
@@ -351,7 +342,7 @@ func cur2ExportRefWithLength(exportARN string, length int) string {
 }
 
 func candidateEvidence(candidates []Export, refs []string) []workflow.PlanEvidence {
-	evidence := make([]workflow.PlanEvidence, 0, len(candidates)*4)
+	evidence := make([]workflow.PlanEvidence, 0, len(candidates)*6)
 	for index, candidate := range candidates {
 		prefix := fmt.Sprintf("candidate_%d", index+1)
 		evidence = append(evidence, workflow.PlanEvidence{Key: prefix + "_export_ref", Value: refs[index]})
@@ -361,11 +352,26 @@ func candidateEvidence(candidates []Export, refs []string) []workflow.PlanEviden
 		if output := safeEvidenceValue(candidate.Destination.Output.Format); output != "" {
 			evidence = append(evidence, workflow.PlanEvidence{Key: prefix + "_output_format", Value: output})
 		}
+		if compression := safeEvidenceValue(candidate.Destination.Output.Compression); compression != "" {
+			evidence = append(evidence, workflow.PlanEvidence{Key: prefix + "_compression", Value: compression})
+		}
+		if granularity := safeEvidenceValue(normalizedTableProperty(cur2TableConfiguration(candidate), "TIME_GRANULARITY")); granularity != "" {
+			evidence = append(evidence, workflow.PlanEvidence{Key: prefix + "_time_granularity", Value: granularity})
+		}
 		if region := safeEvidenceValue(candidate.Destination.Region); region != "" {
 			evidence = append(evidence, workflow.PlanEvidence{Key: prefix + "_destination_region", Value: region})
 		}
 	}
 	return evidence
+}
+
+func hasFailedFinding(findings []checkFinding) bool {
+	for _, finding := range findings {
+		if finding.Status == workflow.CheckFail {
+			return true
+		}
+	}
+	return false
 }
 
 func safeEvidenceValue(value string) string {
@@ -540,43 +546,128 @@ func dataExportsPaginationError() error {
 	return NewProviderError("aws_data_exports_pagination_unbounded", "AWS Data Exports pagination did not converge within the bounded preflight inspection window.")
 }
 
-func (runner Runner) previousMonthFinding(ctx context.Context, client Client, export Export, period string) checkFinding {
-	token := ""
-	for pageNumber := 0; pageNumber < maxListObjectPages; pageNumber++ {
-		page, err := client.ListObjects(ctx, export.Destination.Bucket, export.Destination.Prefix, token, 1000)
-		if err != nil {
-			return failFinding(providerErrorCode(err, "aws_s3_bucket_inaccessible"), "AWS previous-month billing partition", "S3 previous-month billing partition could not be listed.")
-		}
-		for _, key := range page.Keys {
-			if matchesPreviousMonthDataKey(key, export, period) {
-				return withEvidence(passFinding("aws_cur2_previous_month_ready", "AWS previous-month billing partition", "Previous-month CUR 2.0 billing partition is present."),
-					workflow.PlanEvidence{Key: "previous_billing_period", Value: period},
-				)
-			}
-		}
-		if page.NextToken == "" {
-			token = ""
-			break
-		}
-		token = page.NextToken
+func inspectBucketPolicy(ctx context.Context, client Client, export Export) checkFinding {
+	policy, err := client.GetBucketPolicy(ctx, export.Destination.Bucket)
+	if err != nil {
+		return failFinding(providerErrorCode(err, "aws_s3_bucket_policy_inaccessible"), "AWS S3 bucket policy visibility", "S3 bucket policy could not be inspected.")
 	}
-	if token != "" {
-		return failFinding("aws_cur2_previous_month_missing", "AWS previous-month billing partition", "Bounded S3 pagination ended before previous-month partition availability could be proven.")
+	return validateBucketPolicy(policy, export.SourceAccount, export.SourceARN, export.Destination)
+}
+
+func policyFindingAfterCurrentDataProof(policyFinding checkFinding, previousMonthFinding checkFinding) checkFinding {
+	if policyFinding.Status != workflow.CheckFail || previousMonthFinding.Code != "aws_cur2_previous_month_ready" {
+		return policyFinding
+	}
+	policyFinding.Status = workflow.CheckWarn
+	policyFinding.TopLevel = true
+	policyFinding.ManualAction = false
+	switch policyFinding.Code {
+	case "aws_s3_bucket_policy_inaccessible":
+		policyFinding.Message = "Previous-month CUR 2.0 billing data and manifest are present, but the S3 bucket policy could not be inspected. Future AWS Data Exports delivery or backfill readiness is not proven."
+	case "aws_s3_delivery_policy_missing":
+		policyFinding.Message = "Previous-month CUR 2.0 billing data and manifest are present, but the S3 bucket policy does not prove future AWS Data Exports delivery or backfill readiness."
+	default:
+		policyFinding.Message = "Previous-month CUR 2.0 billing data and manifest are present, but future AWS Data Exports delivery or backfill readiness is not proven."
+	}
+	return policyFinding
+}
+
+func (runner Runner) previousMonthFinding(ctx context.Context, client Client, export Export, period string) checkFinding {
+	dataPrefix := previousMonthDataPrefix(export, period)
+	manifestPrefix := previousMonthManifestPrefix(export, period)
+
+	dataFound, dataIncomplete, err := listPrefixHasMatchingObject(ctx, client, export.Destination.Bucket, dataPrefix, func(key string) bool {
+		return matchesPreviousMonthDataKey(key, export, period)
+	})
+	if err != nil {
+		return failFinding(providerErrorCode(err, "aws_s3_bucket_inaccessible"), "AWS previous-month billing data", "S3 previous-month billing data could not be listed.")
+	}
+	if dataIncomplete {
+		return failFinding("aws_cur2_previous_month_missing", "AWS previous-month billing data", "Bounded S3 pagination ended before previous-month billing data availability could be proven.")
 	}
 
-	return withEvidence(manualFinding("aws_backfill_manual_step_required", "AWS previous-month billing partition", "Previous-month CUR 2.0 billing partition is missing and may require AWS support backfill."),
-		workflow.PlanEvidence{Key: "previous_billing_period", Value: period},
+	manifestFound, manifestIncomplete, err := listPrefixHasMatchingObject(ctx, client, export.Destination.Bucket, manifestPrefix, func(key string) bool {
+		return matchesPreviousMonthManifestKey(key, export, period)
+	})
+	if err != nil {
+		return failFinding(providerErrorCode(err, "aws_s3_bucket_inaccessible"), "AWS previous-month billing data", "S3 previous-month billing data could not be listed.")
+	}
+	if manifestIncomplete {
+		return failFinding("aws_cur2_previous_month_missing", "AWS previous-month billing data", "Bounded S3 pagination ended before previous-month billing data availability could be proven.")
+	}
+	if dataFound && manifestFound {
+		return withEvidence(passFinding("aws_cur2_previous_month_ready", "AWS previous-month billing data", "Previous-month CUR 2.0 billing partition and manifest are present."),
+			workflow.PlanEvidence{Key: "previous_billing_period", Value: period},
+		)
+	}
+
+	evidence := []workflow.PlanEvidence{{Key: "previous_billing_period", Value: period}}
+	if !dataFound {
+		evidence = append(evidence, workflow.PlanEvidence{Key: "missing_previous_month_component", Value: "data_partition"})
+	}
+	if !manifestFound {
+		evidence = append(evidence, workflow.PlanEvidence{Key: "missing_previous_month_component", Value: "manifest"})
+	}
+	return withEvidence(manualFinding("aws_backfill_manual_step_required", "AWS previous-month billing data", "Previous-month CUR 2.0 billing data or manifest is missing and may require AWS support backfill."),
+		evidence...,
 	)
 }
 
-func matchesPreviousMonthDataKey(key string, export Export, period string) bool {
+func listPrefixHasMatchingObject(ctx context.Context, client Client, bucket string, prefix string, matches func(string) bool) (bool, bool, error) {
+	if strings.TrimSpace(prefix) == "" {
+		return false, false, nil
+	}
+	token := ""
+	for pageNumber := 0; pageNumber < maxListObjectPages; pageNumber++ {
+		page, err := client.ListObjects(ctx, bucket, prefix, token, 1000)
+		if err != nil {
+			return false, false, err
+		}
+		for _, key := range page.Keys {
+			if matches(key) {
+				return true, false, nil
+			}
+		}
+		if page.NextToken == "" {
+			return false, false, nil
+		}
+		token = page.NextToken
+	}
+	return false, true, nil
+}
+
+func previousMonthDataPrefix(export Export, period string) string {
+	return previousMonthPrefix(export, period, "data")
+}
+
+func previousMonthManifestPrefix(export Export, period string) string {
+	return previousMonthPrefix(export, period, "metadata")
+}
+
+func previousMonthPrefix(export Export, period string, kind string) string {
 	prefix := strings.Trim(strings.TrimSpace(export.Destination.Prefix), "/")
 	name := strings.Trim(strings.TrimSpace(export.Name), "/")
-	if prefix == "" || name == "" {
+	if prefix == "" || name == "" || period == "" || kind == "" {
+		return ""
+	}
+	return prefix + "/" + name + "/" + kind + "/BILLING_PERIOD=" + period + "/"
+}
+
+func matchesPreviousMonthDataKey(key string, export Export, period string) bool {
+	expected := previousMonthDataPrefix(export, period)
+	if expected == "" || !strings.HasPrefix(key, expected) {
 		return false
 	}
-	expected := prefix + "/" + name + "/data/BILLING_PERIOD=" + period + "/"
-	return strings.HasPrefix(key, expected)
+	remainder := strings.TrimPrefix(key, expected)
+	return remainder != "" && !strings.HasSuffix(remainder, "/")
+}
+
+func matchesPreviousMonthManifestKey(key string, export Export, period string) bool {
+	expected := previousMonthManifestPrefix(export, period)
+	if expected == "" || !strings.HasPrefix(key, expected) {
+		return false
+	}
+	return strings.HasPrefix(key, expected) && strings.HasSuffix(key, "Manifest.json")
 }
 
 func providerErrorCode(err error, fallback string) string {
@@ -692,7 +783,7 @@ func (state *runState) report(identityStatus string, identitySummary string) wor
 		Status:        status,
 		SupportStatus: supportStatusFor(status),
 		Code:          code,
-		Message:       messageFor(code),
+		Message:       messageFor(status, code),
 		Mutated:       false,
 		SourceHandles: state.handles,
 		PlanInput: &workflow.ExecutionPlanInput{
@@ -739,14 +830,30 @@ func supportStatusFor(status workflow.RunStatus) workflow.SupportStatus {
 	return workflow.SupportSupported
 }
 
-func messageFor(code string) string {
+func messageFor(status workflow.RunStatus, code string) string {
 	switch code {
 	case "aws_cur2_preflight_ready":
 		return "AWS CUR 2.0 billing preflight is ready."
+	case "aws_cur2_time_granularity_not_preferred":
+		return "AWS CUR 2.0 billing preflight is ready with a non-preferred time granularity."
+	case "aws_cur2_time_granularity_unverified":
+		return "AWS CUR 2.0 billing preflight is ready, but time granularity could not be confirmed."
 	case "aws_cur2_delivery_not_started":
 		return "AWS CUR 2.0 billing preflight is ready, but export delivery is not complete yet."
 	case "aws_backfill_manual_step_required":
 		return "AWS CUR 2.0 billing preflight requires previous-month billing backfill or manual remediation."
+	case "aws_cur2_previous_month_missing":
+		return "AWS CUR 2.0 billing preflight could not prove previous-month billing data availability."
+	case "aws_s3_delivery_policy_missing":
+		if status == workflow.StatusReady {
+			return "AWS CUR 2.0 billing preflight is ready for current previous-month data, but S3 bucket policy does not prove future AWS Data Exports delivery."
+		}
+		return "AWS CUR 2.0 billing preflight found an S3 bucket policy blocker for AWS Data Exports delivery."
+	case "aws_s3_bucket_policy_inaccessible":
+		if status == workflow.StatusReady {
+			return "AWS CUR 2.0 billing preflight is ready for current previous-month data, but S3 bucket policy could not be inspected for future AWS Data Exports delivery."
+		}
+		return "AWS CUR 2.0 billing preflight could not inspect the S3 bucket policy needed for AWS Data Exports delivery."
 	default:
 		return "AWS CUR 2.0 billing preflight found a blocker."
 	}
@@ -809,6 +916,7 @@ func (state *runState) checks() []workflow.PlanCheck {
 			evidence = []workflow.PlanEvidence{{Key: "code", Value: finding.Code}}
 		}
 		checks = append(checks, workflow.PlanCheck{
+			ID:            finding.Code,
 			Status:        finding.Status,
 			Title:         finding.Title,
 			Message:       finding.Message,
@@ -818,6 +926,7 @@ func (state *runState) checks() []workflow.PlanCheck {
 	}
 	if len(checks) == 0 {
 		checks = append(checks, workflow.PlanCheck{
+			ID:            "aws_provider_capability_blocked",
 			Status:        workflow.CheckFail,
 			Title:         "AWS CUR 2.0 preflight",
 			Message:       "AWS CUR 2.0 preflight did not produce checks.",
