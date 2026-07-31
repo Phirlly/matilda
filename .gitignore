@@ -17,6 +17,7 @@ matilda-cloud-prep/PLAN.md
 matilda-cloud-prep/docs/
 matilda-cloud-prep/.env
 matilda-cloud-prep/.env.local
+matilda-cloud-prep/.DS_Store
 matilda-cloud-prep/.matilda
 matilda-cloud-prep/.matilda/
 matilda-cloud-prep/.gocache

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -43,6 +44,7 @@ func TestPreflightReadyUsesCUR2AndSafeEvidence(t *testing.T) {
 	assertCheckEvidence(t, result, "caller_ref", "sha256:")
 	assertCheckEvidence(t, result, "cur_version", "CUR2.0")
 	assertCheckEvidence(t, result, "previous_billing_period", "2026-06")
+	assertPlanCheckID(t, result, "aws_s3_delivery_policy_ready")
 	assertSourceHandle(t, result, "docs/references/aws/aws-sdk-go-v2-readonly-adapter.md")
 
 	for _, call := range []string{
@@ -264,6 +266,8 @@ func TestPreflightAmbiguousCUR2ExportsReturnsSafeCandidateRefs(t *testing.T) {
 	secondExport.SourceARN = secondARN
 	secondExport.HealthStatus = "WARNING"
 	secondExport.Destination.Output.Format = "PARQUET"
+	secondExport.Destination.Output.Compression = "PARQUET"
+	secondExport.TableConfigurations["COST_AND_USAGE_REPORT"]["TIME_GRANULARITY"] = "DAILY"
 	secondExport.Destination.Region = "us-west-2"
 	client.exportsByARN = map[string]Export{
 		client.export.ExportARN: client.export,
@@ -274,10 +278,13 @@ func TestPreflightAmbiguousCUR2ExportsReturnsSafeCandidateRefs(t *testing.T) {
 
 	assertBlockedCode(t, result, "aws_cur2_export_ambiguous")
 	assertGroupedCandidateEvidence(t, result, 1, cur2ExportRef(client.export.ExportARN), "HEALTHY", "TEXT_OR_CSV", "us-east-1")
+	assertCheckEvidence(t, result, "candidate_1_compression", "GZIP")
 	assertGroupedCandidateEvidence(t, result, 2, cur2ExportRef(secondARN), "WARNING", "PARQUET", "us-west-2")
+	assertCheckEvidence(t, result, "candidate_2_compression", "PARQUET")
 	assertNoCheckEvidenceKey(t, result, "candidate_export_ref")
 	assertNoCheckEvidenceKey(t, result, "candidate_health")
 	assertNoCheckEvidenceKey(t, result, "candidate_output_format")
+	assertNoCheckEvidenceKey(t, result, "candidate_compression")
 	assertNoCheckEvidenceKey(t, result, "candidate_destination_region")
 	assertNoUnsafeAWSOutput(t, result)
 }
@@ -426,7 +433,10 @@ func TestPreflightSelectsCUR2ExportByRef(t *testing.T) {
 		Resource:      "arn:aws:s3:::matilda-cur2-billing/finance/cur2/*",
 	})
 	client.objectPages = []ObjectPage{{
-		Keys: []string{"finance/cur2/finance-cur2/data/BILLING_PERIOD=2026-06/part-000.gz"},
+		Keys: []string{
+			"finance/cur2/finance-cur2/data/BILLING_PERIOD=2026-06/part-000.gz",
+			"finance/cur2/finance-cur2/metadata/BILLING_PERIOD=2026-06/Manifest.json",
+		},
 	}}
 
 	result := runPreflightWithOptions(t, client, workflow.ExecutionOptions{
@@ -559,6 +569,34 @@ func TestPreflightRejectsUnverifiedQueries(t *testing.T) {
 	}
 }
 
+func TestPreflightAcceptsAWSStandardProductMapForMatildaProductName(t *testing.T) {
+	client := baselineClient()
+	client.table.Columns = append(requiredCUR2ColumnsWithout("product_product_name"), "product")
+	client.export.QueryStatement = "SELECT " + strings.Join(append(requiredCUR2ColumnsWithout("product_product_name"), "product"), ", ") + " FROM COST_AND_USAGE_REPORT"
+
+	result := runPreflight(t, client)
+
+	if result.Status != workflow.StatusReady {
+		t.Fatalf("Status = %q, want %q; code=%q", result.Status, workflow.StatusReady, result.Code)
+	}
+	assertCheckEvidence(t, result, "logical_field_source", "product_product_name<-product")
+	assertNoUnsafeAWSOutput(t, result)
+}
+
+func TestPreflightAcceptsAWSStandardProductNameMapAlias(t *testing.T) {
+	client := baselineClient()
+	client.table.Columns = append(requiredCUR2ColumnsWithout("product_product_name"), "product")
+	client.export.QueryStatement = "SELECT " + strings.Join(requiredCUR2ColumnsWithout("product_product_name"), ", ") + ", product.product_name AS product_product_name FROM COST_AND_USAGE_REPORT"
+
+	result := runPreflight(t, client)
+
+	if result.Status != workflow.StatusReady {
+		t.Fatalf("Status = %q, want %q; code=%q", result.Status, workflow.StatusReady, result.Code)
+	}
+	assertCheckEvidence(t, result, "logical_field_source", "product_product_name<-product.product_name")
+	assertNoUnsafeAWSOutput(t, result)
+}
+
 func TestPreflightAcceptsAWSStandardMultilineCUR2Query(t *testing.T) {
 	client := baselineClient()
 	client.table.Columns = append(client.table.Columns, "line_item_resource_id")
@@ -641,6 +679,42 @@ func TestPreflightValidatesExtraCUR2ColumnsAgainstTableSchema(t *testing.T) {
 	}
 }
 
+func TestPreflightReportsMissingRequiredFieldEvidence(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*fakeClient)
+		field  string
+	}{
+		{
+			name: "table column missing",
+			mutate: func(client *fakeClient) {
+				client.table.Columns = requiredCUR2ColumnsWithout("line_item_product_code")
+			},
+			field: "line_item_product_code",
+		},
+		{
+			name: "query field missing",
+			mutate: func(client *fakeClient) {
+				client.export.QueryStatement = "SELECT " + strings.Join(requiredCUR2ColumnsWithout("line_item_usage_amount"), ", ") + " FROM COST_AND_USAGE_REPORT"
+			},
+			field: "line_item_usage_amount",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := baselineClient()
+			tt.mutate(client)
+
+			result := runPreflight(t, client)
+
+			assertBlockedCode(t, result, "aws_cur2_required_fields_missing")
+			assertCheckEvidence(t, result, "missing_required_field", tt.field)
+			assertNoUnsafeAWSOutput(t, result)
+		})
+	}
+}
+
 func TestPreflightRequestsTableSchemaAfterSelectedExportConfiguration(t *testing.T) {
 	client := baselineClient()
 
@@ -657,6 +731,114 @@ func TestPreflightRequestsTableSchemaAfterSelectedExportConfiguration(t *testing
 	}
 }
 
+func TestPreflightAcceptsCUR2ExportWithOmittedTableConfiguration(t *testing.T) {
+	client := baselineClient()
+	client.export.TableConfigurations = nil
+	client.table.Properties = map[string]string{
+		"TIME_GRANULARITY":  "MONTHLY",
+		"INCLUDE_RESOURCES": "FALSE",
+	}
+
+	result := runPreflight(t, client)
+
+	if result.Status != workflow.StatusReady {
+		t.Fatalf("Status = %q, want %q; code=%q", result.Status, workflow.StatusReady, result.Code)
+	}
+	if result.Code != "aws_cur2_preflight_ready" {
+		t.Fatalf("Code = %q, want aws_cur2_preflight_ready", result.Code)
+	}
+	if len(client.lastTableProperties) != 0 {
+		t.Fatalf("GetTable table properties = %#v, want empty AWS-default request", client.lastTableProperties)
+	}
+	assertPlanCheckMessage(t, result, "CUR 2.0 table configuration", "AWS export omits COST_AND_USAGE_REPORT table configuration. AWS table-property defaults are used for read-only validation.")
+	assertPlanCheckMessage(t, result, "CUR 2.0 time granularity", "CUR 2.0 export uses monthly time granularity.")
+	assertNoUnsafeAWSOutput(t, result)
+}
+
+func TestPreflightWarnsWhenDefaultedCUR2GranularityCannotBeConfirmed(t *testing.T) {
+	client := baselineClient()
+	client.export.TableConfigurations = map[string]map[string]string{}
+	client.table.Properties = nil
+
+	result := runPreflight(t, client)
+
+	if result.Status != workflow.StatusReady {
+		t.Fatalf("Status = %q, want %q; code=%q", result.Status, workflow.StatusReady, result.Code)
+	}
+	if result.Code != "aws_cur2_time_granularity_unverified" {
+		t.Fatalf("Code = %q, want aws_cur2_time_granularity_unverified", result.Code)
+	}
+	if len(client.lastTableProperties) != 0 {
+		t.Fatalf("GetTable table properties = %#v, want empty AWS-default request", client.lastTableProperties)
+	}
+	assertPlanCheckMessage(t, result, "CUR 2.0 time granularity", "CUR 2.0 time granularity could not be confirmed from the export or returned table metadata. AWS table properties are optional and defaulted, so this is a warning, not an invalid CUR 2.0 export.")
+	assertNoUnsafeAWSOutput(t, result)
+}
+
+func TestPreflightWarnsForValidNonPreferredCUR2Granularity(t *testing.T) {
+	tests := []struct {
+		name        string
+		granularity string
+		wantMessage string
+	}{
+		{
+			name:        "daily granularity",
+			granularity: "DAILY",
+			wantMessage: "CUR 2.0 export uses daily time granularity. This is valid AWS CUR 2.0, but monthly is preferred for Matilda Rapid Assessment - Billing Based.",
+		},
+		{
+			name:        "hourly granularity",
+			granularity: "HOURLY",
+			wantMessage: "CUR 2.0 export uses hourly time granularity. This is valid AWS CUR 2.0, but monthly is preferred and hourly exports can increase file volume.",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := baselineClient()
+			client.export.TableConfigurations["COST_AND_USAGE_REPORT"]["TIME_GRANULARITY"] = tt.granularity
+
+			result := runPreflight(t, client)
+
+			if result.Status != workflow.StatusReady {
+				t.Fatalf("Status = %q, want %q; code=%q", result.Status, workflow.StatusReady, result.Code)
+			}
+			if result.Code != "aws_cur2_time_granularity_not_preferred" {
+				t.Fatalf("Code = %q, want aws_cur2_time_granularity_not_preferred", result.Code)
+			}
+			assertPlanCheckMessage(t, result, "CUR 2.0 time granularity", tt.wantMessage)
+			assertNoUnsafeAWSOutput(t, result)
+		})
+	}
+}
+
+func TestPreflightAcceptsMatildaSupportedParquetCUR2Output(t *testing.T) {
+	client := baselineClient()
+	client.export.Destination.Output.Format = "PARQUET"
+	client.export.Destination.Output.Compression = "PARQUET"
+	client.objectPages = []ObjectPage{{
+		Keys: []string{
+			"matilda/cur2/matilda-cur2/data/BILLING_PERIOD=2026-06/part-000.snappy.parquet",
+			"matilda/cur2/matilda-cur2/metadata/BILLING_PERIOD=2026-06/Manifest.json",
+		},
+	}}
+
+	result := runPreflight(t, client)
+
+	if result.Status != workflow.StatusReady {
+		t.Fatalf("Status = %q, want %q; code=%q", result.Status, workflow.StatusReady, result.Code)
+	}
+	if result.Code != "aws_cur2_preflight_ready" {
+		t.Fatalf("Code = %q, want aws_cur2_preflight_ready", result.Code)
+	}
+	assertPlanCheckMessage(t, result, "CUR 2.0 output format", "CUR 2.0 export uses PARQUET output. AWS supports PARQUET and Matilda can use it for this path.")
+	assertPlanCheckMessage(t, result, "CUR 2.0 compression", "CUR 2.0 export uses PARQUET compression for the supported PARQUET output shape.")
+	assertCheckEvidence(t, result, "output_format", "PARQUET")
+	assertCheckEvidence(t, result, "compression", "PARQUET")
+	assertCheckEvidence(t, result, "matilda_format_support", "supported")
+	assertNoUnsafeAWSOutput(t, result)
+}
+
 func TestPreflightBlocksOutputSettingDeviations(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -664,22 +846,38 @@ func TestPreflightBlocksOutputSettingDeviations(t *testing.T) {
 		code   string
 	}{
 		{
-			name: "daily granularity",
+			name: "unknown granularity",
 			mutate: func(export *Export) {
-				export.TableConfigurations["COST_AND_USAGE_REPORT"]["TIME_GRANULARITY"] = "DAILY"
+				export.TableConfigurations["COST_AND_USAGE_REPORT"]["TIME_GRANULARITY"] = "WEEKLY"
 			},
 			code: "aws_cur2_output_settings_blocked",
 		},
 		{
-			name: "parquet format",
+			name: "unknown format",
+			mutate: func(export *Export) {
+				export.Destination.Output.Format = "JSON"
+			},
+			code: "aws_cur2_output_settings_blocked",
+		},
+		{
+			name: "unknown compression",
+			mutate: func(export *Export) {
+				export.Destination.Output.Compression = "ZIP"
+			},
+			code: "aws_cur2_output_settings_blocked",
+		},
+		{
+			name: "mismatched parquet format with gzip compression",
 			mutate: func(export *Export) {
 				export.Destination.Output.Format = "PARQUET"
+				export.Destination.Output.Compression = "GZIP"
 			},
 			code: "aws_cur2_output_settings_blocked",
 		},
 		{
-			name: "parquet compression",
+			name: "mismatched text format with parquet compression",
 			mutate: func(export *Export) {
+				export.Destination.Output.Format = "TEXT_OR_CSV"
 				export.Destination.Output.Compression = "PARQUET"
 			},
 			code: "aws_cur2_output_settings_blocked",
@@ -733,6 +931,8 @@ func TestPreflightClassifiesS3PolicyAndPreviousMonthFailures(t *testing.T) {
 		mutate     func(*fakeClient)
 		code       string
 		wantStatus workflow.RunStatus
+		evidence   string
+		wantListed bool
 	}{
 		{
 			name: "head bucket forbidden is ambiguous",
@@ -751,7 +951,7 @@ func TestPreflightClassifiesS3PolicyAndPreviousMonthFailures(t *testing.T) {
 			wantStatus: workflow.RunStatusBlocked,
 		},
 		{
-			name: "missing data exports principal",
+			name: "missing data exports principal warns when previous month is present",
 			mutate: func(client *fakeClient) {
 				client.bucketPolicy = bucketPolicy(policySpec{
 					Service:       "s3.amazonaws.com",
@@ -762,10 +962,28 @@ func TestPreflightClassifiesS3PolicyAndPreviousMonthFailures(t *testing.T) {
 				})
 			},
 			code:       "aws_s3_delivery_policy_missing",
-			wantStatus: workflow.RunStatusBlocked,
+			wantStatus: workflow.StatusReady,
+			evidence:   "service_principal_missing",
+			wantListed: true,
 		},
 		{
-			name: "missing source account",
+			name: "padded data exports principal warns when previous month is present",
+			mutate: func(client *fakeClient) {
+				client.bucketPolicy = bucketPolicy(policySpec{
+					Service:       " bcm-data-exports.amazonaws.com ",
+					SourceAccount: client.export.SourceAccount,
+					SourceARN:     client.export.SourceARN,
+					Action:        "s3:PutObject",
+					Resource:      "arn:aws:s3:::matilda-cur2-billing/matilda/cur2/*",
+				})
+			},
+			code:       "aws_s3_delivery_policy_missing",
+			wantStatus: workflow.StatusReady,
+			evidence:   "service_principal_missing",
+			wantListed: true,
+		},
+		{
+			name: "missing source account warns when previous month is present",
 			mutate: func(client *fakeClient) {
 				client.bucketPolicy = bucketPolicy(policySpec{
 					Service:   "bcm-data-exports.amazonaws.com",
@@ -775,10 +993,12 @@ func TestPreflightClassifiesS3PolicyAndPreviousMonthFailures(t *testing.T) {
 				})
 			},
 			code:       "aws_s3_delivery_policy_missing",
-			wantStatus: workflow.RunStatusBlocked,
+			wantStatus: workflow.StatusReady,
+			evidence:   "source_account_condition_missing",
+			wantListed: true,
 		},
 		{
-			name: "missing source arn",
+			name: "missing source arn warns when previous month is present",
 			mutate: func(client *fakeClient) {
 				client.bucketPolicy = bucketPolicy(policySpec{
 					Service:       "bcm-data-exports.amazonaws.com",
@@ -788,10 +1008,12 @@ func TestPreflightClassifiesS3PolicyAndPreviousMonthFailures(t *testing.T) {
 				})
 			},
 			code:       "aws_s3_delivery_policy_missing",
-			wantStatus: workflow.RunStatusBlocked,
+			wantStatus: workflow.StatusReady,
+			evidence:   "source_arn_condition_missing",
+			wantListed: true,
 		},
 		{
-			name: "wrong source account",
+			name: "wrong source account warns when previous month is present",
 			mutate: func(client *fakeClient) {
 				client.bucketPolicy = bucketPolicy(policySpec{
 					Service:       "bcm-data-exports.amazonaws.com",
@@ -802,10 +1024,12 @@ func TestPreflightClassifiesS3PolicyAndPreviousMonthFailures(t *testing.T) {
 				})
 			},
 			code:       "aws_s3_delivery_policy_missing",
-			wantStatus: workflow.RunStatusBlocked,
+			wantStatus: workflow.StatusReady,
+			evidence:   "source_account_condition_missing",
+			wantListed: true,
 		},
 		{
-			name: "wrong source arn",
+			name: "wrong source arn warns when previous month is present",
 			mutate: func(client *fakeClient) {
 				client.bucketPolicy = bucketPolicy(policySpec{
 					Service:       "bcm-data-exports.amazonaws.com",
@@ -816,10 +1040,12 @@ func TestPreflightClassifiesS3PolicyAndPreviousMonthFailures(t *testing.T) {
 				})
 			},
 			code:       "aws_s3_delivery_policy_missing",
-			wantStatus: workflow.RunStatusBlocked,
+			wantStatus: workflow.StatusReady,
+			evidence:   "source_arn_condition_missing",
+			wantListed: true,
 		},
 		{
-			name: "missing put object action",
+			name: "missing put object action warns when previous month is present",
 			mutate: func(client *fakeClient) {
 				client.bucketPolicy = bucketPolicy(policySpec{
 					Service:       "bcm-data-exports.amazonaws.com",
@@ -830,10 +1056,60 @@ func TestPreflightClassifiesS3PolicyAndPreviousMonthFailures(t *testing.T) {
 				})
 			},
 			code:       "aws_s3_delivery_policy_missing",
-			wantStatus: workflow.RunStatusBlocked,
+			wantStatus: workflow.StatusReady,
+			evidence:   "put_object_action_missing",
+			wantListed: true,
 		},
 		{
-			name: "wrong policy resource",
+			name: "padded put object action warns when previous month is present",
+			mutate: func(client *fakeClient) {
+				client.bucketPolicy = bucketPolicy(policySpec{
+					Service:       "bcm-data-exports.amazonaws.com",
+					SourceAccount: client.export.SourceAccount,
+					SourceARN:     client.export.SourceARN,
+					Action:        " s3:PutObject ",
+					Resource:      "arn:aws:s3:::matilda-cur2-billing/matilda/cur2/*",
+				})
+			},
+			code:       "aws_s3_delivery_policy_missing",
+			wantStatus: workflow.StatusReady,
+			evidence:   "put_object_action_missing",
+			wantListed: true,
+		},
+		{
+			name: "wildcard s3 action warns as missing put object action when previous month is present",
+			mutate: func(client *fakeClient) {
+				client.bucketPolicy = bucketPolicy(policySpec{
+					Service:       "bcm-data-exports.amazonaws.com",
+					SourceAccount: client.export.SourceAccount,
+					SourceARN:     client.export.SourceARN,
+					Action:        "s3:*",
+					Resource:      "arn:aws:s3:::matilda-cur2-billing/matilda/cur2/*",
+				})
+			},
+			code:       "aws_s3_delivery_policy_missing",
+			wantStatus: workflow.StatusReady,
+			evidence:   "put_object_action_missing",
+			wantListed: true,
+		},
+		{
+			name: "global wildcard action warns as missing put object action when previous month is present",
+			mutate: func(client *fakeClient) {
+				client.bucketPolicy = bucketPolicy(policySpec{
+					Service:       "bcm-data-exports.amazonaws.com",
+					SourceAccount: client.export.SourceAccount,
+					SourceARN:     client.export.SourceARN,
+					Action:        "*",
+					Resource:      "arn:aws:s3:::matilda-cur2-billing/matilda/cur2/*",
+				})
+			},
+			code:       "aws_s3_delivery_policy_missing",
+			wantStatus: workflow.StatusReady,
+			evidence:   "put_object_action_missing",
+			wantListed: true,
+		},
+		{
+			name: "wrong policy resource warns when previous month is present",
 			mutate: func(client *fakeClient) {
 				client.bucketPolicy = bucketPolicy(policySpec{
 					Service:       "bcm-data-exports.amazonaws.com",
@@ -844,10 +1120,60 @@ func TestPreflightClassifiesS3PolicyAndPreviousMonthFailures(t *testing.T) {
 				})
 			},
 			code:       "aws_s3_delivery_policy_missing",
-			wantStatus: workflow.RunStatusBlocked,
+			wantStatus: workflow.StatusReady,
+			evidence:   "put_object_resource_not_covered",
+			wantListed: true,
 		},
 		{
-			name: "negated source account condition does not prove allow",
+			name: "padded policy resource warns when previous month is present",
+			mutate: func(client *fakeClient) {
+				client.bucketPolicy = bucketPolicy(policySpec{
+					Service:       "bcm-data-exports.amazonaws.com",
+					SourceAccount: client.export.SourceAccount,
+					SourceARN:     client.export.SourceARN,
+					Action:        "s3:PutObject",
+					Resource:      " arn:aws:s3:::matilda-cur2-billing/matilda/cur2/* ",
+				})
+			},
+			code:       "aws_s3_delivery_policy_missing",
+			wantStatus: workflow.StatusReady,
+			evidence:   "put_object_resource_not_covered",
+			wantListed: true,
+		},
+		{
+			name: "global bucket wildcard resource warns when previous month is present",
+			mutate: func(client *fakeClient) {
+				client.bucketPolicy = bucketPolicy(policySpec{
+					Service:       "bcm-data-exports.amazonaws.com",
+					SourceAccount: client.export.SourceAccount,
+					SourceARN:     client.export.SourceARN,
+					Action:        "s3:PutObject",
+					Resource:      "arn:aws:s3:::*",
+				})
+			},
+			code:       "aws_s3_delivery_policy_missing",
+			wantStatus: workflow.StatusReady,
+			evidence:   "put_object_resource_not_covered",
+			wantListed: true,
+		},
+		{
+			name: "bucket name wildcard resource warns when previous month is present",
+			mutate: func(client *fakeClient) {
+				client.bucketPolicy = bucketPolicy(policySpec{
+					Service:       "bcm-data-exports.amazonaws.com",
+					SourceAccount: client.export.SourceAccount,
+					SourceARN:     client.export.SourceARN,
+					Action:        "s3:PutObject",
+					Resource:      "arn:aws:s3:::matilda-cur2-*/*",
+				})
+			},
+			code:       "aws_s3_delivery_policy_missing",
+			wantStatus: workflow.StatusReady,
+			evidence:   "put_object_resource_not_covered",
+			wantListed: true,
+		},
+		{
+			name: "negated source account condition warns when previous month is present",
 			mutate: func(client *fakeClient) {
 				client.bucketPolicy = bucketPolicyWithConditionOperators(policySpec{
 					Service:       "bcm-data-exports.amazonaws.com",
@@ -858,10 +1184,12 @@ func TestPreflightClassifiesS3PolicyAndPreviousMonthFailures(t *testing.T) {
 				}, "StringNotEquals", "ArnLike")
 			},
 			code:       "aws_s3_delivery_policy_missing",
-			wantStatus: workflow.RunStatusBlocked,
+			wantStatus: workflow.StatusReady,
+			evidence:   "source_account_condition_missing",
+			wantListed: true,
 		},
 		{
-			name: "negated source arn condition does not prove allow",
+			name: "negated source arn condition warns when previous month is present",
 			mutate: func(client *fakeClient) {
 				client.bucketPolicy = bucketPolicyWithConditionOperators(policySpec{
 					Service:       "bcm-data-exports.amazonaws.com",
@@ -872,7 +1200,9 @@ func TestPreflightClassifiesS3PolicyAndPreviousMonthFailures(t *testing.T) {
 				}, "StringEquals", "ArnNotLike")
 			},
 			code:       "aws_s3_delivery_policy_missing",
-			wantStatus: workflow.RunStatusBlocked,
+			wantStatus: workflow.StatusReady,
+			evidence:   "source_arn_condition_missing",
+			wantListed: true,
 		},
 		{
 			name: "documented bucket policy shape",
@@ -887,6 +1217,7 @@ func TestPreflightClassifiesS3PolicyAndPreviousMonthFailures(t *testing.T) {
 			},
 			code:       "aws_cur2_preflight_ready",
 			wantStatus: workflow.StatusReady,
+			wantListed: true,
 		},
 		{
 			name: "documented bucket policy with condition value lists",
@@ -895,9 +1226,180 @@ func TestPreflightClassifiesS3PolicyAndPreviousMonthFailures(t *testing.T) {
 			},
 			code:       "aws_cur2_preflight_ready",
 			wantStatus: workflow.StatusReady,
+			wantListed: true,
 		},
 		{
-			name: "global source arn wildcard does not prove allow",
+			name: "exact stringlike source account condition is accepted",
+			mutate: func(client *fakeClient) {
+				client.bucketPolicy = bucketPolicyWithConditionOperators(policySpec{
+					Service:       "bcm-data-exports.amazonaws.com",
+					SourceAccount: client.export.SourceAccount,
+					SourceARN:     client.export.SourceARN,
+					Action:        "s3:PutObject",
+					Resource:      "arn:aws:s3:::matilda-cur2-billing/matilda/cur2/*",
+				}, "StringLike", "ArnLike")
+			},
+			code:       "aws_cur2_preflight_ready",
+			wantStatus: workflow.StatusReady,
+			wantListed: true,
+		},
+		{
+			name: "exact stringlike source account reaches backfill when previous month is missing",
+			mutate: func(client *fakeClient) {
+				client.bucketPolicy = bucketPolicyWithConditionOperators(policySpec{
+					Service:       "bcm-data-exports.amazonaws.com",
+					SourceAccount: client.export.SourceAccount,
+					SourceARN:     client.export.SourceARN,
+					Action:        "s3:PutObject",
+					Resource:      "arn:aws:s3:::matilda-cur2-billing/matilda/cur2/*",
+				}, "StringLike", "ArnLike")
+				client.objectPages = []ObjectPage{{Keys: []string{"matilda/cur2/matilda-cur2/data/BILLING_PERIOD=2026-07/part-000.gz"}}}
+			},
+			code:       "aws_backfill_manual_step_required",
+			wantStatus: workflow.RunStatusManualSteps,
+			wantListed: true,
+		},
+		{
+			name: "wildcard stringlike source account warns when previous month is present",
+			mutate: func(client *fakeClient) {
+				client.bucketPolicy = bucketPolicyWithConditionOperators(policySpec{
+					Service:       "bcm-data-exports.amazonaws.com",
+					SourceAccount: "1234567890*",
+					SourceARN:     client.export.SourceARN,
+					Action:        "s3:PutObject",
+					Resource:      "arn:aws:s3:::matilda-cur2-billing/matilda/cur2/*",
+				}, "StringLike", "ArnLike")
+			},
+			code:       "aws_s3_delivery_policy_missing",
+			wantStatus: workflow.StatusReady,
+			evidence:   "source_account_condition_missing",
+			wantListed: true,
+		},
+		{
+			name: "question stringlike source account warns when previous month is present",
+			mutate: func(client *fakeClient) {
+				client.bucketPolicy = bucketPolicyWithConditionOperators(policySpec{
+					Service:       "bcm-data-exports.amazonaws.com",
+					SourceAccount: "12345678901?",
+					SourceARN:     client.export.SourceARN,
+					Action:        "s3:PutObject",
+					Resource:      "arn:aws:s3:::matilda-cur2-billing/matilda/cur2/*",
+				}, "StringLike", "ArnLike")
+			},
+			code:       "aws_s3_delivery_policy_missing",
+			wantStatus: workflow.StatusReady,
+			evidence:   "source_account_condition_missing",
+			wantListed: true,
+		},
+		{
+			name: "wrong stringlike source account warns when previous month is present",
+			mutate: func(client *fakeClient) {
+				client.bucketPolicy = bucketPolicyWithConditionOperators(policySpec{
+					Service:       "bcm-data-exports.amazonaws.com",
+					SourceAccount: "999999999999",
+					SourceARN:     client.export.SourceARN,
+					Action:        "s3:PutObject",
+					Resource:      "arn:aws:s3:::matilda-cur2-billing/matilda/cur2/*",
+				}, "StringLike", "ArnLike")
+			},
+			code:       "aws_s3_delivery_policy_missing",
+			wantStatus: workflow.StatusReady,
+			evidence:   "source_account_condition_missing",
+			wantListed: true,
+		},
+		{
+			name: "whitespace stringequals source account warns when previous month is present",
+			mutate: func(client *fakeClient) {
+				client.bucketPolicy = bucketPolicy(policySpec{
+					Service:       "bcm-data-exports.amazonaws.com",
+					SourceAccount: " " + client.export.SourceAccount + " ",
+					SourceARN:     client.export.SourceARN,
+					Action:        "s3:PutObject",
+					Resource:      "arn:aws:s3:::matilda-cur2-billing/matilda/cur2/*",
+				})
+			},
+			code:       "aws_s3_delivery_policy_missing",
+			wantStatus: workflow.StatusReady,
+			evidence:   "source_account_condition_missing",
+			wantListed: true,
+		},
+		{
+			name: "whitespace stringlike source account warns when previous month is present",
+			mutate: func(client *fakeClient) {
+				client.bucketPolicy = bucketPolicyWithConditionOperators(policySpec{
+					Service:       "bcm-data-exports.amazonaws.com",
+					SourceAccount: " " + client.export.SourceAccount + " ",
+					SourceARN:     client.export.SourceARN,
+					Action:        "s3:PutObject",
+					Resource:      "arn:aws:s3:::matilda-cur2-billing/matilda/cur2/*",
+				}, "StringLike", "ArnLike")
+			},
+			code:       "aws_s3_delivery_policy_missing",
+			wantStatus: workflow.StatusReady,
+			evidence:   "source_account_condition_missing",
+			wantListed: true,
+		},
+		{
+			name: "stringlike source account condition value lists accept exact non wildcard match",
+			mutate: func(client *fakeClient) {
+				client.bucketPolicy = bucketPolicyWithStringLikeSourceAccountValueList(client)
+			},
+			code:       "aws_cur2_preflight_ready",
+			wantStatus: workflow.StatusReady,
+			wantListed: true,
+		},
+		{
+			name: "stringlike source account value list warns for mixed wildcard when previous month is present",
+			mutate: func(client *fakeClient) {
+				client.bucketPolicy = bucketPolicyWithStringLikeSourceAccountValues(client, client.export.SourceAccount, "1234567890*")
+			},
+			code:       "aws_s3_delivery_policy_missing",
+			wantStatus: workflow.StatusReady,
+			evidence:   "source_account_condition_missing",
+			wantListed: true,
+		},
+		{
+			name: "stringlike source account value list warns for padded account when previous month is present",
+			mutate: func(client *fakeClient) {
+				client.bucketPolicy = bucketPolicyWithStringLikeSourceAccountValues(client, client.export.SourceAccount, " "+client.export.SourceAccount+" ")
+			},
+			code:       "aws_s3_delivery_policy_missing",
+			wantStatus: workflow.StatusReady,
+			evidence:   "source_account_condition_missing",
+			wantListed: true,
+		},
+		{
+			name: "stringlike source account value list warns for mixed wrong account when previous month is present",
+			mutate: func(client *fakeClient) {
+				client.bucketPolicy = bucketPolicyWithStringLikeSourceAccountValues(client, client.export.SourceAccount, "999999999999")
+			},
+			code:       "aws_s3_delivery_policy_missing",
+			wantStatus: workflow.StatusReady,
+			evidence:   "source_account_condition_missing",
+			wantListed: true,
+		},
+		{
+			name: "stringequals source account does not override wildcard stringlike and warns when previous month is present",
+			mutate: func(client *fakeClient) {
+				client.bucketPolicy = bucketPolicyWithStringEqualsAndStringLikeSourceAccounts(client, "1234567890*")
+			},
+			code:       "aws_s3_delivery_policy_missing",
+			wantStatus: workflow.StatusReady,
+			evidence:   "source_account_condition_missing",
+			wantListed: true,
+		},
+		{
+			name: "safe stringlike source account does not override wrong stringequals and warns when previous month is present",
+			mutate: func(client *fakeClient) {
+				client.bucketPolicy = bucketPolicyWithWrongStringEqualsAndStringLikeSourceAccounts(client, client.export.SourceAccount)
+			},
+			code:       "aws_s3_delivery_policy_missing",
+			wantStatus: workflow.StatusReady,
+			evidence:   "source_account_condition_missing",
+			wantListed: true,
+		},
+		{
+			name: "global source arn wildcard warns when previous month is present",
 			mutate: func(client *fakeClient) {
 				client.bucketPolicy = bucketPolicy(policySpec{
 					Service:       []string{"bcm-data-exports.amazonaws.com"},
@@ -908,10 +1410,28 @@ func TestPreflightClassifiesS3PolicyAndPreviousMonthFailures(t *testing.T) {
 				})
 			},
 			code:       "aws_s3_delivery_policy_missing",
-			wantStatus: workflow.RunStatusBlocked,
+			wantStatus: workflow.StatusReady,
+			evidence:   "source_arn_condition_missing",
+			wantListed: true,
 		},
 		{
-			name: "exact source arn operator does not accept wildcard",
+			name: "padded source arn warns when previous month is present",
+			mutate: func(client *fakeClient) {
+				client.bucketPolicy = bucketPolicy(policySpec{
+					Service:       "bcm-data-exports.amazonaws.com",
+					SourceAccount: client.export.SourceAccount,
+					SourceARN:     " " + client.export.SourceARN + " ",
+					Action:        "s3:PutObject",
+					Resource:      "arn:aws:s3:::matilda-cur2-billing/matilda/cur2/*",
+				})
+			},
+			code:       "aws_s3_delivery_policy_missing",
+			wantStatus: workflow.StatusReady,
+			evidence:   "source_arn_condition_missing",
+			wantListed: true,
+		},
+		{
+			name: "exact source arn operator warns when previous month is present",
 			mutate: func(client *fakeClient) {
 				client.bucketPolicy = bucketPolicyWithConditionOperators(policySpec{
 					Service:       "bcm-data-exports.amazonaws.com",
@@ -922,7 +1442,9 @@ func TestPreflightClassifiesS3PolicyAndPreviousMonthFailures(t *testing.T) {
 				}, "StringEquals", "StringEquals")
 			},
 			code:       "aws_s3_delivery_policy_missing",
-			wantStatus: workflow.RunStatusBlocked,
+			wantStatus: workflow.StatusReady,
+			evidence:   "source_arn_condition_missing",
+			wantListed: true,
 		},
 		{
 			name: "later valid statement can satisfy policy",
@@ -946,14 +1468,16 @@ func TestPreflightClassifiesS3PolicyAndPreviousMonthFailures(t *testing.T) {
 			},
 			code:       "aws_cur2_preflight_ready",
 			wantStatus: workflow.StatusReady,
+			wantListed: true,
 		},
 		{
-			name: "policy inaccessible",
+			name: "policy inaccessible warns when previous month is present",
 			mutate: func(client *fakeClient) {
 				client.bucketPolicyErr = NewProviderError("aws_s3_bucket_policy_inaccessible", "bucket policy cannot be inspected.")
 			},
 			code:       "aws_s3_bucket_policy_inaccessible",
-			wantStatus: workflow.RunStatusBlocked,
+			wantStatus: workflow.StatusReady,
+			wantListed: true,
 		},
 		{
 			name: "previous month missing requires manual backfill",
@@ -962,6 +1486,57 @@ func TestPreflightClassifiesS3PolicyAndPreviousMonthFailures(t *testing.T) {
 			},
 			code:       "aws_backfill_manual_step_required",
 			wantStatus: workflow.RunStatusManualSteps,
+			wantListed: true,
+		},
+		{
+			name: "previous month manifest missing requires manual backfill",
+			mutate: func(client *fakeClient) {
+				client.objectPages = []ObjectPage{{Keys: []string{"matilda/cur2/matilda-cur2/data/BILLING_PERIOD=2026-06/part-000.gz"}}}
+			},
+			code:       "aws_backfill_manual_step_required",
+			wantStatus: workflow.RunStatusManualSteps,
+			wantListed: true,
+		},
+		{
+			name: "missing source account blocks when previous month is missing",
+			mutate: func(client *fakeClient) {
+				client.bucketPolicy = bucketPolicy(policySpec{
+					Service:   "bcm-data-exports.amazonaws.com",
+					SourceARN: client.export.SourceARN,
+					Action:    "s3:PutObject",
+					Resource:  "arn:aws:s3:::matilda-cur2-billing/matilda/cur2/*",
+				})
+				client.objectPages = []ObjectPage{{Keys: []string{"matilda/cur2/matilda-cur2/data/BILLING_PERIOD=2026-07/part-000.gz"}}}
+			},
+			code:       "aws_s3_delivery_policy_missing",
+			wantStatus: workflow.RunStatusBlocked,
+			evidence:   "source_account_condition_missing",
+			wantListed: true,
+		},
+		{
+			name: "policy inaccessible blocks when previous month is missing",
+			mutate: func(client *fakeClient) {
+				client.bucketPolicyErr = NewProviderError("aws_s3_bucket_policy_inaccessible", "bucket policy cannot be inspected.")
+				client.objectPages = []ObjectPage{{Keys: []string{"matilda/cur2/matilda-cur2/data/BILLING_PERIOD=2026-07/part-000.gz"}}}
+			},
+			code:       "aws_s3_bucket_policy_inaccessible",
+			wantStatus: workflow.RunStatusBlocked,
+			wantListed: true,
+		},
+		{
+			name: "list objects failure blocks before policy severity",
+			mutate: func(client *fakeClient) {
+				client.bucketPolicy = bucketPolicy(policySpec{
+					Service:   "bcm-data-exports.amazonaws.com",
+					SourceARN: client.export.SourceARN,
+					Action:    "s3:PutObject",
+					Resource:  "arn:aws:s3:::matilda-cur2-billing/matilda/cur2/*",
+				})
+				client.objectErr = NewProviderError("aws_s3_bucket_inaccessible", "object list denied.")
+			},
+			code:       "aws_s3_bucket_inaccessible",
+			wantStatus: workflow.RunStatusBlocked,
+			wantListed: true,
 		},
 	}
 
@@ -977,6 +1552,15 @@ func TestPreflightClassifiesS3PolicyAndPreviousMonthFailures(t *testing.T) {
 			}
 			if result.Code != tt.code {
 				t.Fatalf("Code = %q, want %q", result.Code, tt.code)
+			}
+			if tt.evidence != "" {
+				assertCheckEvidence(t, result, "policy_gap", tt.evidence)
+			}
+			if tt.wantStatus == workflow.StatusReady && (tt.code == "aws_s3_delivery_policy_missing" || tt.code == "aws_s3_bucket_policy_inaccessible") {
+				assertPlanCheckStatus(t, result, tt.code, workflow.CheckWarn)
+			}
+			if tt.wantListed && client.calls["ListObjects"] == 0 {
+				t.Fatal("ListObjects should run before policy severity is finalized")
 			}
 			assertNoUnsafeAWSOutput(t, result)
 		})
@@ -1115,7 +1699,10 @@ func TestPreflightHandlesListPagination(t *testing.T) {
 			NextToken: "next-object-page",
 		},
 		{
-			Keys: []string{"matilda/cur2/matilda-cur2/data/BILLING_PERIOD=2026-06/part-000.gz"},
+			Keys: []string{
+				"matilda/cur2/matilda-cur2/data/BILLING_PERIOD=2026-06/part-000.gz",
+				"matilda/cur2/matilda-cur2/metadata/BILLING_PERIOD=2026-06/Manifest.json",
+			},
 		},
 	}
 
@@ -1127,9 +1714,43 @@ func TestPreflightHandlesListPagination(t *testing.T) {
 	if client.calls["ListExports"] != 2 {
 		t.Fatalf("ListExports calls = %d, want 2", client.calls["ListExports"])
 	}
-	if client.calls["ListObjects"] != 2 {
-		t.Fatalf("ListObjects calls = %d, want 2", client.calls["ListObjects"])
+	if client.calls["ListObjects"] != 4 {
+		t.Fatalf("ListObjects calls = %d, want 4", client.calls["ListObjects"])
 	}
+	assertNoUnsafeAWSOutput(t, result)
+}
+
+func TestPreflightListsExactPreviousMonthPrefixes(t *testing.T) {
+	client := baselineClient()
+
+	result := runPreflight(t, client)
+
+	if result.Status != workflow.StatusReady {
+		t.Fatalf("Status = %q, want %q; code=%q", result.Status, workflow.StatusReady, result.Code)
+	}
+	assertObjectListPrefix(t, client, 0, previousMonthDataPrefix(client.export, "2026-06"))
+	assertObjectListPrefix(t, client, 1, previousMonthManifestPrefix(client.export, "2026-06"))
+	assertNoUnsafeAWSOutput(t, result)
+}
+
+func TestPreflightDoesNotTreatPreviousMonthFolderMarkerAsData(t *testing.T) {
+	client := baselineClient()
+	dataPrefix := previousMonthDataPrefix(client.export, "2026-06")
+	manifestPrefix := previousMonthManifestPrefix(client.export, "2026-06")
+	client.objectPages = []ObjectPage{{Keys: []string{
+		dataPrefix,
+		manifestPrefix + "Manifest.json",
+	}}}
+
+	result := runPreflight(t, client)
+
+	if result.Status != workflow.RunStatusManualSteps {
+		t.Fatalf("Status = %q, want %q; code=%q", result.Status, workflow.RunStatusManualSteps, result.Code)
+	}
+	if result.Code != "aws_backfill_manual_step_required" {
+		t.Fatalf("Code = %q, want aws_backfill_manual_step_required", result.Code)
+	}
+	assertCheckEvidence(t, result, "missing_previous_month_component", "data_partition")
 	assertNoUnsafeAWSOutput(t, result)
 }
 
@@ -1161,7 +1782,10 @@ func TestPreflightRequiresSpecificPreviousMonthExportPath(t *testing.T) {
 		},
 		{
 			name: "billing period under export data path",
-			keys: []string{"matilda/cur2/matilda-cur2/data/BILLING_PERIOD=2026-06/part-000.gz"},
+			keys: []string{
+				"matilda/cur2/matilda-cur2/data/BILLING_PERIOD=2026-06/part-000.gz",
+				"matilda/cur2/matilda-cur2/metadata/BILLING_PERIOD=2026-06/Manifest.json",
+			},
 			code: "aws_cur2_preflight_ready",
 		},
 		{
@@ -1205,6 +1829,9 @@ func TestPreflightClassifiesBoundedPaginationIncomplete(t *testing.T) {
 	result := runPreflight(t, client)
 
 	assertBlockedCode(t, result, "aws_cur2_previous_month_missing")
+	if result.Message != "AWS CUR 2.0 billing preflight could not prove previous-month billing data availability." {
+		t.Fatalf("Message = %q, want specific previous-month blocker message", result.Message)
+	}
 	assertNoUnsafeAWSOutput(t, result)
 }
 
@@ -1266,6 +1893,37 @@ func assertPlanCheckMessage(t *testing.T, result workflow.Result, title string, 
 	t.Fatalf("did not find plan check titled %q", title)
 }
 
+func assertPlanCheckID(t *testing.T, result workflow.Result, id string) {
+	t.Helper()
+
+	if result.Plan == nil {
+		t.Fatal("result.Plan is nil")
+	}
+	for _, check := range result.Plan.Checks {
+		if check.ID == id {
+			return
+		}
+	}
+	t.Fatalf("did not find plan check id %q", id)
+}
+
+func assertPlanCheckStatus(t *testing.T, result workflow.Result, id string, status workflow.CheckStatus) {
+	t.Helper()
+
+	if result.Plan == nil {
+		t.Fatal("result.Plan is nil")
+	}
+	for _, check := range result.Plan.Checks {
+		if check.ID == id {
+			if check.Status != status {
+				t.Fatalf("check %q status = %q, want %q", id, check.Status, status)
+			}
+			return
+		}
+	}
+	t.Fatalf("did not find plan check id %q", id)
+}
+
 func assertNoUnsafeAWSOutput(t *testing.T, result workflow.Result) {
 	t.Helper()
 
@@ -1277,6 +1935,11 @@ func assertNoUnsafeAWSOutput(t *testing.T, result workflow.Result) {
 	for _, forbidden := range []string{
 		"arn:aws",
 		"/Users/",
+		"matilda-cur2-billing",
+		"matilda/cur2/matilda-cur2/data/BILLING_PERIOD=2026-06/",
+		"matilda/cur2/matilda-cur2/metadata/BILLING_PERIOD=2026-06/",
+		"matilda/cur2/matilda-cur2/data/BILLING_PERIOD=2026-06/part-000.gz",
+		"matilda/cur2/matilda-cur2/metadata/BILLING_PERIOD=2026-06/Manifest.json",
 		"AKIA",
 		"access_key",
 		"secret_key",
@@ -1321,6 +1984,17 @@ func assertGroupedCandidateEvidence(t *testing.T, result workflow.Result, index 
 	assertCheckEvidence(t, result, prefix+"_destination_region", region)
 	if !strings.HasPrefix(exportRef, "cur2-") {
 		t.Fatalf("candidate %d export ref = %q, want cur2- prefix", index, exportRef)
+	}
+}
+
+func assertObjectListPrefix(t *testing.T, client *fakeClient, index int, want string) {
+	t.Helper()
+
+	if index >= len(client.objectRequests) {
+		t.Fatalf("object list request %d missing from %#v", index, client.objectRequests)
+	}
+	if got := client.objectRequests[index].prefix; got != want {
+		t.Fatalf("object list request %d prefix = %q, want %q", index, got, want)
 	}
 }
 
@@ -1378,10 +2052,18 @@ type fakeClient struct {
 	executionErr         error
 	getExecutionErr      error
 	objectPages          []ObjectPage
+	objectRequests       []objectListRequest
 	objectErr            error
 	lastTableProperties  map[string]string
 	getTableAfterExport  bool
 	calls                map[string]int
+}
+
+type objectListRequest struct {
+	bucket  string
+	prefix  string
+	token   string
+	maxKeys int32
 }
 
 func (f *fakeClient) CheckConfiguration(context.Context) (Configuration, error) {
@@ -1475,11 +2157,14 @@ func (f *fakeClient) GetExecution(_ context.Context, exportARN string, execution
 
 func (f *fakeClient) ListObjects(_ context.Context, bucket string, prefix string, token string, maxKeys int32) (ObjectPage, error) {
 	f.record("ListObjects")
-	index := f.calls["ListObjects"] - 1
+	f.objectRequests = append(f.objectRequests, objectListRequest{bucket: bucket, prefix: prefix, token: token, maxKeys: maxKeys})
+	index := pageIndex(token)
 	if index >= len(f.objectPages) {
 		return ObjectPage{}, nil
 	}
-	return f.objectPages[index], f.objectErr
+	page := f.objectPages[index]
+	page.Keys = filterKeysByPrefix(page.Keys, prefix)
+	return page, f.objectErr
 }
 
 func (f *fakeClient) record(call string) {
@@ -1493,10 +2178,26 @@ func pageIndex(token string) int {
 	if token == "" {
 		return 0
 	}
+	lastDash := strings.LastIndex(token, "-")
+	if lastDash >= 0 && lastDash+1 < len(token) {
+		if index, err := strconv.Atoi(token[lastDash+1:]); err == nil && index > 0 {
+			return index
+		}
+	}
 	if strings.Contains(token, "next") {
 		return 1
 	}
 	return 0
+}
+
+func filterKeysByPrefix(keys []string, prefix string) []string {
+	filtered := []string{}
+	for _, key := range keys {
+		if strings.HasPrefix(key, prefix) {
+			filtered = append(filtered, key)
+		}
+	}
+	return filtered
 }
 
 func baselineClient() *fakeClient {
@@ -1553,7 +2254,10 @@ func baselineClient() *fakeClient {
 		}},
 		execution: Execution{ID: "execution-1", Status: "DELIVERY_SUCCESS", StatusObservedAt: fixedNow().Add(-2 * time.Hour)},
 		objectPages: []ObjectPage{{
-			Keys: []string{"matilda/cur2/matilda-cur2/data/BILLING_PERIOD=2026-06/part-000.gz"},
+			Keys: []string{
+				"matilda/cur2/matilda-cur2/data/BILLING_PERIOD=2026-06/part-000.gz",
+				"matilda/cur2/matilda-cur2/metadata/BILLING_PERIOD=2026-06/Manifest.json",
+			},
 		}},
 		calls: map[string]int{},
 	}
@@ -1603,10 +2307,16 @@ func bucketPolicy(spec policySpec) string {
 func bucketPolicyWithConditionOperators(spec policySpec, accountOperator string, arnOperator string) string {
 	conditions := map[string]map[string]string{}
 	if spec.SourceAccount != "" {
-		conditions[accountOperator] = map[string]string{"aws:SourceAccount": spec.SourceAccount}
+		if conditions[accountOperator] == nil {
+			conditions[accountOperator] = map[string]string{}
+		}
+		conditions[accountOperator]["aws:SourceAccount"] = spec.SourceAccount
 	}
 	if spec.SourceARN != "" {
-		conditions[arnOperator] = map[string]string{"aws:SourceArn": spec.SourceARN}
+		if conditions[arnOperator] == nil {
+			conditions[arnOperator] = map[string]string{}
+		}
+		conditions[arnOperator]["aws:SourceArn"] = spec.SourceARN
 	}
 
 	policy := policyDocument(statementFor(spec, conditions))
@@ -1637,6 +2347,69 @@ func bucketPolicyWithConditionValueLists(client *fakeClient) string {
 				},
 			},
 		},
+	})
+
+	encoded, err := json.Marshal(policy)
+	if err != nil {
+		panic(err)
+	}
+	return string(encoded)
+}
+
+func bucketPolicyWithStringLikeSourceAccountValueList(client *fakeClient) string {
+	return bucketPolicyWithStringLikeSourceAccountValues(client, client.export.SourceAccount, client.export.SourceAccount)
+}
+
+func bucketPolicyWithStringLikeSourceAccountValues(client *fakeClient, sourceAccounts ...string) string {
+	return bucketPolicyWithSourceAccountConditions(client, map[string]any{
+		"StringLike": map[string]any{
+			"aws:SourceAccount": sourceAccounts,
+		},
+	})
+}
+
+func bucketPolicyWithStringEqualsAndStringLikeSourceAccounts(client *fakeClient, sourceAccounts ...string) string {
+	return bucketPolicyWithSourceAccountConditions(client, map[string]any{
+		"StringEquals": map[string]any{
+			"aws:SourceAccount": client.export.SourceAccount,
+		},
+		"StringLike": map[string]any{
+			"aws:SourceAccount": sourceAccounts,
+		},
+	})
+}
+
+func bucketPolicyWithWrongStringEqualsAndStringLikeSourceAccounts(client *fakeClient, sourceAccounts ...string) string {
+	return bucketPolicyWithSourceAccountConditions(client, map[string]any{
+		"StringEquals": map[string]any{
+			"aws:SourceAccount": "999999999999",
+		},
+		"StringLike": map[string]any{
+			"aws:SourceAccount": sourceAccounts,
+		},
+	})
+}
+
+func bucketPolicyWithSourceAccountConditions(client *fakeClient, accountConditions map[string]any) string {
+	conditions := map[string]any{}
+	for key, value := range accountConditions {
+		conditions[key] = value
+	}
+	conditions["ArnLike"] = map[string]any{
+		"aws:SourceArn": []string{
+			"arn:aws:bcm-data-exports:us-east-1:123456789012:export/other",
+			"arn:aws:bcm-data-exports:us-east-1:123456789012:export/*",
+		},
+	}
+
+	policy := policyDocument(map[string]any{
+		"Effect": "Allow",
+		"Principal": map[string]any{
+			"Service": []string{"bcm-data-exports.amazonaws.com"},
+		},
+		"Action":    []string{"s3:PutObject"},
+		"Resource":  []string{"arn:aws:s3:::matilda-cur2-billing/*"},
+		"Condition": conditions,
 	})
 
 	encoded, err := json.Marshal(policy)

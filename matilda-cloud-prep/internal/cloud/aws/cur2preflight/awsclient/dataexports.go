@@ -49,7 +49,10 @@ func (client *Client) GetTable(ctx context.Context, name string, properties map[
 	if output == nil {
 		return cur2preflight.Table{}, providerError("aws_cur2_table_unavailable")
 	}
-	table := cur2preflight.Table{Name: aws.ToString(output.TableName)}
+	table := cur2preflight.Table{
+		Name:       aws.ToString(output.TableName),
+		Properties: copyStringMap(output.TableProperties),
+	}
 	for _, column := range output.Schema {
 		if name := aws.ToString(column.Name); name != "" {
 			table.Columns = append(table.Columns, name)

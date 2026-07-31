@@ -28,6 +28,10 @@ func TestIdentityAndDataExportsMapping(t *testing.T) {
 		},
 		getTableOutput: &awsbcm.GetTableOutput{
 			TableName: aws.String("COST_AND_USAGE_REPORT"),
+			TableProperties: map[string]string{
+				"TIME_GRANULARITY":  "MONTHLY",
+				"INCLUDE_RESOURCES": "FALSE",
+			},
 			Schema: []bcmtypes.Column{
 				{Name: aws.String("line_item_usage_amount")},
 				{Name: aws.String("line_item_unblended_cost")},
@@ -129,6 +133,9 @@ func TestIdentityAndDataExportsMapping(t *testing.T) {
 	}
 	if !reflect.DeepEqual(table.Columns, []string{"line_item_usage_amount", "line_item_unblended_cost"}) {
 		t.Fatalf("table columns = %#v", table.Columns)
+	}
+	if !reflect.DeepEqual(table.Properties, map[string]string{"TIME_GRANULARITY": "MONTHLY", "INCLUDE_RESOURCES": "FALSE"}) {
+		t.Fatalf("table properties = %#v", table.Properties)
 	}
 
 	exports, err := client.ListExports(context.Background(), "export-input-token")
