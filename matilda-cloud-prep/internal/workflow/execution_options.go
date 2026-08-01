@@ -21,6 +21,7 @@ type ExecutionOptions struct {
 	InterfaceMode  InterfaceMode       `json:"interface_mode"`
 	TimeoutSeconds int                 `json:"timeout_seconds"`
 	Selectors      *ExecutionSelectors `json:"selectors,omitempty"`
+	Approvals      []ExecutionApproval `json:"approvals,omitempty"`
 }
 
 type ExecutionSelectors struct {
@@ -32,6 +33,17 @@ type AWSExecutionSelectors struct {
 	Region        string `json:"region,omitempty"`
 	CUR2ExportRef string `json:"cur2_export_ref,omitempty"`
 }
+
+type ExecutionApproval struct {
+	OperationID string `json:"operation_id"`
+	Intent      string `json:"intent"`
+	Confirmed   bool   `json:"confirmed"`
+}
+
+const (
+	AWSBackfillSupportCaseOperationID        = "aws.billing.cur2.previous_month_backfill_support_case"
+	ApprovalIntentRequestBackfillSupportCase = "request_backfill_support_case"
+)
 
 var (
 	cur2ExportRefPattern      = regexp.MustCompile(`^cur2-[a-f0-9]+$`)
@@ -77,7 +89,46 @@ func NormalizeExecutionOptions(input ExecutionOptions) (ExecutionOptions, error)
 		return ExecutionOptions{}, err
 	}
 	input.Selectors = selectors
+	approvals, err := normalizeExecutionApprovals(input.Approvals)
+	if err != nil {
+		return ExecutionOptions{}, err
+	}
+	input.Approvals = approvals
 	return input, nil
+}
+
+func NormalizeExecutionOptionsForRequest(request Request, input ExecutionOptions) (ExecutionOptions, error) {
+	options, err := NormalizeExecutionOptions(input)
+	if err != nil {
+		return ExecutionOptions{}, err
+	}
+	if options.Selectors != nil && options.Selectors.AWS != nil && !requestAllowsAWSBillingSelectors(request) {
+		return ExecutionOptions{}, fmt.Errorf("AWS selector flags are supported only for matilda-prep rapid-assessment billing aws preflight or apply-prereqs")
+	}
+	if len(options.Approvals) > 0 && !requestAllowsAWSBackfillApproval(request) {
+		return ExecutionOptions{}, fmt.Errorf("AWS backfill support case approval is supported only for matilda-prep rapid-assessment billing aws apply-prereqs")
+	}
+	for _, approval := range options.Approvals {
+		if approval.OperationID != AWSBackfillSupportCaseOperationID ||
+			approval.Intent != ApprovalIntentRequestBackfillSupportCase {
+			return ExecutionOptions{}, fmt.Errorf("approval is not recognized for this implementation slice")
+		}
+		if !approval.Confirmed {
+			return ExecutionOptions{}, fmt.Errorf("approval must be explicitly confirmed")
+		}
+	}
+	return options, nil
+}
+
+func HasAWSBackfillSupportCaseApproval(options ExecutionOptions) bool {
+	for _, approval := range options.Approvals {
+		if approval.OperationID == AWSBackfillSupportCaseOperationID &&
+			approval.Intent == ApprovalIntentRequestBackfillSupportCase &&
+			approval.Confirmed {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeExecutionSelectors(input *ExecutionSelectors) (*ExecutionSelectors, error) {
@@ -95,6 +146,34 @@ func normalizeExecutionSelectors(input *ExecutionSelectors) (*ExecutionSelectors
 	}
 	if normalized.AWS == nil {
 		return nil, nil
+	}
+	return normalized, nil
+}
+
+func normalizeExecutionApprovals(input []ExecutionApproval) ([]ExecutionApproval, error) {
+	if len(input) == 0 {
+		return nil, nil
+	}
+	normalized := make([]ExecutionApproval, 0, len(input))
+	for index, approval := range input {
+		approval.OperationID = strings.TrimSpace(approval.OperationID)
+		approval.Intent = strings.TrimSpace(approval.Intent)
+		if approval.OperationID == "" {
+			return nil, fmt.Errorf("approval %d operation_id is required", index)
+		}
+		if approval.Intent == "" {
+			return nil, fmt.Errorf("approval %d intent is required", index)
+		}
+		if err := ensureSafeText("execution_options approval", approval.OperationID, approval.Intent); err != nil {
+			return nil, fmt.Errorf("approval %d: %w", index, err)
+		}
+		if approval.OperationID != AWSBackfillSupportCaseOperationID {
+			return nil, fmt.Errorf("approval %d operation_id is unsupported", index)
+		}
+		if approval.Intent != ApprovalIntentRequestBackfillSupportCase {
+			return nil, fmt.Errorf("approval %d intent is unsupported", index)
+		}
+		normalized = append(normalized, approval)
 	}
 	return normalized, nil
 }
@@ -159,4 +238,18 @@ func pathLikeSelectorValue(value string) bool {
 
 func sensitiveIdentifierLikeSelectorValue(value string) bool {
 	return awsAccountIDLikePattern.MatchString(value) || awsAccessKeyIDLikePattern.MatchString(value)
+}
+
+func requestAllowsAWSBillingSelectors(request Request) bool {
+	return request.Goal == "rapid-assessment" &&
+		request.CollectionPath == "billing" &&
+		request.Provider == "aws" &&
+		(request.Action == "preflight" || request.Action == "apply-prereqs")
+}
+
+func requestAllowsAWSBackfillApproval(request Request) bool {
+	return request.Goal == "rapid-assessment" &&
+		request.CollectionPath == "billing" &&
+		request.Provider == "aws" &&
+		request.Action == "apply-prereqs"
 }

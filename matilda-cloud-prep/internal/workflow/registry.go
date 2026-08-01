@@ -50,7 +50,7 @@ func (registry Registry) ExecuteContext(ctx context.Context, request Request, re
 	options := DefaultExecutionOptions()
 	if len(requestedOptions) > 0 {
 		var err error
-		options, err = NormalizeExecutionOptions(requestedOptions[0])
+		options, err = NormalizeExecutionOptionsForRequest(request, requestedOptions[0])
 		if err != nil {
 			return executionOptionsInvalidResult(request, options, err)
 		}

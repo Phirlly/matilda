@@ -161,6 +161,16 @@ func TestNoArgumentsReturnUsageError(t *testing.T) {
 	}
 }
 
+func TestDirectCommandParserRejectsEmptyInput(t *testing.T) {
+	_, _, _, err := parseDirectCommand(nil)
+	if err == nil {
+		t.Fatal("parseDirectCommand accepted empty input")
+	}
+	if !strings.Contains(err.Error(), "usage: expected matilda-prep rapid-assessment or deep-discovery command") {
+		t.Fatalf("error = %q, want direct command usage", err)
+	}
+}
+
 func TestStartRejectsUnexpectedArguments(t *testing.T) {
 	code, stdout, stderr := runCLI("start", "gcp")
 
@@ -336,11 +346,86 @@ func TestAWSBillingPreflightFlagsReachRunnerAndJSON(t *testing.T) {
 	}
 }
 
-func TestAWSSelectorFlagsAreScopedToAWSBillingPreflight(t *testing.T) {
+func TestAWSBillingApplyPrereqsFlagsReachRunnerAndJSON(t *testing.T) {
+	request := workflow.Request{
+		Goal:           assessment.RapidAssessment,
+		CollectionPath: assessment.CollectionBilling,
+		Provider:       assessment.ProviderAWS,
+		Action:         assessment.ActionApplyPrereqs,
+	}
+	var gotOptions workflow.ExecutionOptions
+	registry, err := workflow.NewRegistry(workflow.Capability{
+		Request: request,
+		Runner: workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+			gotOptions = options
+			return cliCapabilityReport(got, workflow.RunStatusManualSteps, workflow.SupportGuided, "aws_backfill_support_case_approval_required")
+		}),
+	})
+	if err != nil {
+		t.Fatalf("NewRegistry returned error: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := RunWithRegistry([]string{
+		"rapid-assessment", "billing", "aws", "apply-prereqs",
+		"--profile", "default",
+		"--region", "us-west-2",
+		"--export-ref", "cur2-1234abcd5678ef90",
+		"--request-backfill",
+		"--confirm-create-support-case",
+	}, strings.NewReader(""), &stdout, &stderr, registry)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr: %s", code, stderr.String())
+	}
+	if stderr.String() != "" {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	if gotOptions.Selectors == nil || gotOptions.Selectors.AWS == nil {
+		t.Fatalf("runner AWS selectors missing: %#v", gotOptions)
+	}
+	if gotOptions.Selectors.AWS.Profile != "default" ||
+		gotOptions.Selectors.AWS.Region != "us-west-2" ||
+		gotOptions.Selectors.AWS.CUR2ExportRef != "cur2-1234abcd5678ef90" {
+		t.Fatalf("runner AWS selectors = %#v, want supplied selector values", gotOptions.Selectors.AWS)
+	}
+	if len(gotOptions.Approvals) != 1 {
+		t.Fatalf("runner approvals length = %d, want 1", len(gotOptions.Approvals))
+	}
+	if gotOptions.Approvals[0].OperationID != workflow.AWSBackfillSupportCaseOperationID ||
+		gotOptions.Approvals[0].Intent != workflow.ApprovalIntentRequestBackfillSupportCase ||
+		!gotOptions.Approvals[0].Confirmed {
+		t.Fatalf("runner approval = %#v, want scoped AWS backfill support case approval", gotOptions.Approvals[0])
+	}
+
+	doc := decodeJSON(t, stdout.String())
+	executionOptions, ok := doc["execution_options"].(map[string]any)
+	if !ok {
+		t.Fatalf("execution_options missing or wrong type in %s", stdout.String())
+	}
+	approvals, ok := executionOptions["approvals"].([]any)
+	if !ok || len(approvals) != 1 {
+		t.Fatalf("execution_options.approvals = %#v, want one approval", executionOptions["approvals"])
+	}
+	approval, ok := approvals[0].(map[string]any)
+	if !ok {
+		t.Fatalf("approval has wrong type: %#v", approvals[0])
+	}
+	if approval["operation_id"] != workflow.AWSBackfillSupportCaseOperationID ||
+		approval["intent"] != workflow.ApprovalIntentRequestBackfillSupportCase ||
+		approval["confirmed"] != true {
+		t.Fatalf("approval = %#v, want scoped AWS backfill support case approval", approval)
+	}
+}
+
+func TestAWSSelectorFlagsAreScopedToAWSBillingPreflightAndApplyPrereqs(t *testing.T) {
 	tests := [][]string{
 		{"rapid-assessment", "api", "aws", "preflight", "--profile", "default"},
 		{"rapid-assessment", "billing", "gcp", "preflight", "--region", "us-west-2"},
 		{"deep-discovery", "aws", "preflight", "--export-ref", "cur2-1234abcd5678ef90"},
+		{"rapid-assessment", "billing", "aws", "validate", "--profile", "default"},
+		{"rapid-assessment", "billing", "aws", "package", "--profile", "default"},
 	}
 
 	for _, args := range tests {
@@ -353,8 +438,53 @@ func TestAWSSelectorFlagsAreScopedToAWSBillingPreflight(t *testing.T) {
 			if stdout != "" {
 				t.Fatalf("stdout = %q, want empty", stdout)
 			}
-			if !strings.Contains(stderr, "AWS selector flags are supported only for matilda-prep rapid-assessment billing aws preflight") {
+			if !strings.Contains(stderr, "AWS selector flags are supported only for matilda-prep rapid-assessment billing aws preflight or apply-prereqs") {
 				t.Fatalf("stderr = %q, want AWS selector scope message", stderr)
+			}
+		})
+	}
+}
+
+func TestAWSBackfillApprovalFlagsAreScopedToAWSBillingApplyPrereqs(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "approval rejected on preflight",
+			args: []string{"rapid-assessment", "billing", "aws", "preflight", "--request-backfill", "--confirm-create-support-case"},
+			want: "AWS backfill approval flags are supported only for matilda-prep rapid-assessment billing aws apply-prereqs",
+		},
+		{
+			name: "approval rejected on non aws provider",
+			args: []string{"rapid-assessment", "billing", "gcp", "apply-prereqs", "--request-backfill", "--confirm-create-support-case"},
+			want: "AWS backfill approval flags are supported only for matilda-prep rapid-assessment billing aws apply-prereqs",
+		},
+		{
+			name: "partial approval request flag",
+			args: []string{"rapid-assessment", "billing", "aws", "apply-prereqs", "--request-backfill"},
+			want: "AWS backfill support case approval requires both --request-backfill and --confirm-create-support-case",
+		},
+		{
+			name: "partial approval confirm flag",
+			args: []string{"rapid-assessment", "billing", "aws", "apply-prereqs", "--confirm-create-support-case"},
+			want: "AWS backfill support case approval requires both --request-backfill and --confirm-create-support-case",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			code, stdout, stderr := runCLI(tt.args...)
+
+			if code != 2 {
+				t.Fatalf("exit code = %d, want 2", code)
+			}
+			if stdout != "" {
+				t.Fatalf("stdout = %q, want empty", stdout)
+			}
+			if !strings.Contains(stderr, tt.want) {
+				t.Fatalf("stderr = %q, want %q", stderr, tt.want)
 			}
 		})
 	}
@@ -385,6 +515,11 @@ func TestDirectFlagValidationFailsBeforeExecution(t *testing.T) {
 			name: "unsafe timeout value",
 			args: []string{"rapid-assessment", "billing", "aws", "preflight", "--timeout", "/private/tmp/timeout"},
 			want: "invalid timeout value",
+		},
+		{
+			name: "invalid boolean flag",
+			args: []string{"rapid-assessment", "billing", "aws", "apply-prereqs", "--request-backfill=maybe", "--confirm-create-support-case"},
+			want: "invalid command flags",
 		},
 		{
 			name: "short timeout",

@@ -113,6 +113,221 @@ func TestExecutionOptionsNormalizeDirectAWSSelectors(t *testing.T) {
 	}
 }
 
+func TestExecutionOptionsNormalizeScopedBackfillApprovalForAWSBillingApplyPrereqs(t *testing.T) {
+	request := Request{
+		Goal:           assessment.RapidAssessment,
+		CollectionPath: assessment.CollectionBilling,
+		Provider:       assessment.ProviderAWS,
+		Action:         assessment.ActionApplyPrereqs,
+	}
+
+	options, err := NormalizeExecutionOptionsForRequest(request, ExecutionOptions{
+		InterfaceMode: InterfaceModeDirect,
+		Approvals: []ExecutionApproval{{
+			OperationID: AWSBackfillSupportCaseOperationID,
+			Intent:      ApprovalIntentRequestBackfillSupportCase,
+			Confirmed:   true,
+		}},
+		Selectors: &ExecutionSelectors{
+			AWS: &AWSExecutionSelectors{
+				Profile:       "default",
+				Region:        "us-west-2",
+				CUR2ExportRef: "cur2-1234abcd5678ef90",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NormalizeExecutionOptionsForRequest returned error: %v", err)
+	}
+	if len(options.Approvals) != 1 {
+		t.Fatalf("Approvals length = %d, want 1", len(options.Approvals))
+	}
+	approval := options.Approvals[0]
+	if approval.OperationID != AWSBackfillSupportCaseOperationID ||
+		approval.Intent != ApprovalIntentRequestBackfillSupportCase ||
+		!approval.Confirmed {
+		t.Fatalf("approval = %#v, want scoped AWS backfill support case approval", approval)
+	}
+}
+
+func TestExecutionOptionsBackfillApprovalHelper(t *testing.T) {
+	if HasAWSBackfillSupportCaseApproval(ExecutionOptions{}) {
+		t.Fatal("HasAWSBackfillSupportCaseApproval returned true for empty options")
+	}
+	if !HasAWSBackfillSupportCaseApproval(ExecutionOptions{
+		Approvals: []ExecutionApproval{{
+			OperationID: AWSBackfillSupportCaseOperationID,
+			Intent:      ApprovalIntentRequestBackfillSupportCase,
+			Confirmed:   true,
+		}},
+	}) {
+		t.Fatal("HasAWSBackfillSupportCaseApproval returned false for confirmed backfill approval")
+	}
+	if HasAWSBackfillSupportCaseApproval(ExecutionOptions{
+		Approvals: []ExecutionApproval{{
+			OperationID: AWSBackfillSupportCaseOperationID,
+			Intent:      ApprovalIntentRequestBackfillSupportCase,
+		}},
+	}) {
+		t.Fatal("HasAWSBackfillSupportCaseApproval returned true for unconfirmed approval")
+	}
+}
+
+func TestExecutionOptionsRejectInvalidApprovals(t *testing.T) {
+	tests := []struct {
+		name   string
+		option ExecutionOptions
+		want   string
+	}{
+		{
+			name: "missing operation id",
+			option: ExecutionOptions{Approvals: []ExecutionApproval{{
+				Intent:    ApprovalIntentRequestBackfillSupportCase,
+				Confirmed: true,
+			}}},
+			want: "operation_id",
+		},
+		{
+			name: "missing intent",
+			option: ExecutionOptions{Approvals: []ExecutionApproval{{
+				OperationID: AWSBackfillSupportCaseOperationID,
+				Confirmed:   true,
+			}}},
+			want: "intent",
+		},
+		{
+			name: "unsupported operation",
+			option: ExecutionOptions{Approvals: []ExecutionApproval{{
+				OperationID: "aws.billing.unsupported",
+				Intent:      ApprovalIntentRequestBackfillSupportCase,
+				Confirmed:   true,
+			}}},
+			want: "unsupported",
+		},
+		{
+			name: "unsafe operation",
+			option: ExecutionOptions{Approvals: []ExecutionApproval{{
+				OperationID: "arn:aws:support:::case/example",
+				Intent:      ApprovalIntentRequestBackfillSupportCase,
+				Confirmed:   true,
+			}}},
+			want: "unsafe",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := NormalizeExecutionOptions(tt.option)
+			if err == nil {
+				t.Fatal("NormalizeExecutionOptions accepted invalid approval")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %q, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestExecutionOptionsRequestAwareValidationScopesAWSSelectorsAndApprovals(t *testing.T) {
+	tests := []struct {
+		name    string
+		request Request
+		option  ExecutionOptions
+		wantErr string
+	}{
+		{
+			name: "selector allowed on aws billing preflight",
+			request: Request{
+				Goal:           assessment.RapidAssessment,
+				CollectionPath: assessment.CollectionBilling,
+				Provider:       assessment.ProviderAWS,
+				Action:         assessment.ActionPreflight,
+			},
+			option: ExecutionOptions{Selectors: &ExecutionSelectors{AWS: &AWSExecutionSelectors{Profile: "default"}}},
+		},
+		{
+			name: "selector allowed on aws billing apply prereqs",
+			request: Request{
+				Goal:           assessment.RapidAssessment,
+				CollectionPath: assessment.CollectionBilling,
+				Provider:       assessment.ProviderAWS,
+				Action:         assessment.ActionApplyPrereqs,
+			},
+			option: ExecutionOptions{Selectors: &ExecutionSelectors{AWS: &AWSExecutionSelectors{Profile: "default"}}},
+		},
+		{
+			name: "selector rejected on aws billing validate",
+			request: Request{
+				Goal:           assessment.RapidAssessment,
+				CollectionPath: assessment.CollectionBilling,
+				Provider:       assessment.ProviderAWS,
+				Action:         assessment.ActionValidate,
+			},
+			option:  ExecutionOptions{Selectors: &ExecutionSelectors{AWS: &AWSExecutionSelectors{Profile: "default"}}},
+			wantErr: "AWS selector",
+		},
+		{
+			name: "selector rejected on aws api preflight",
+			request: Request{
+				Goal:           assessment.RapidAssessment,
+				CollectionPath: assessment.CollectionAPI,
+				Provider:       assessment.ProviderAWS,
+				Action:         assessment.ActionPreflight,
+			},
+			option:  ExecutionOptions{Selectors: &ExecutionSelectors{AWS: &AWSExecutionSelectors{Profile: "default"}}},
+			wantErr: "AWS selector",
+		},
+		{
+			name: "approval rejected on aws billing preflight",
+			request: Request{
+				Goal:           assessment.RapidAssessment,
+				CollectionPath: assessment.CollectionBilling,
+				Provider:       assessment.ProviderAWS,
+				Action:         assessment.ActionPreflight,
+			},
+			option: ExecutionOptions{Approvals: []ExecutionApproval{{
+				OperationID: AWSBackfillSupportCaseOperationID,
+				Intent:      ApprovalIntentRequestBackfillSupportCase,
+				Confirmed:   true,
+			}}},
+			wantErr: "approval",
+		},
+		{
+			name: "approval rejected on non aws provider",
+			request: Request{
+				Goal:           assessment.RapidAssessment,
+				CollectionPath: assessment.CollectionBilling,
+				Provider:       assessment.ProviderGCP,
+				Action:         assessment.ActionApplyPrereqs,
+			},
+			option: ExecutionOptions{Approvals: []ExecutionApproval{{
+				OperationID: AWSBackfillSupportCaseOperationID,
+				Intent:      ApprovalIntentRequestBackfillSupportCase,
+				Confirmed:   true,
+			}}},
+			wantErr: "approval",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := NormalizeExecutionOptionsForRequest(tt.request, tt.option)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("NormalizeExecutionOptionsForRequest returned error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("NormalizeExecutionOptionsForRequest accepted invalid scoped options")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error = %q, want %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestExecutionOptionsRejectUnsafeSelectorValues(t *testing.T) {
 	tests := []struct {
 		name   string
