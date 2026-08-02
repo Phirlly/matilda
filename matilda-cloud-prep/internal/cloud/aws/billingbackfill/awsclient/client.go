@@ -96,6 +96,9 @@ func (client *Client) DescribeServices(ctx context.Context, request billingbackf
 	if err != nil {
 		return nil, classifySupportError(err)
 	}
+	if output == nil {
+		return nil, billingbackfill.NewProviderError("aws_support_api_unavailable", "AWS Support DescribeServices response was empty.")
+	}
 	services := make([]billingbackfill.SupportService, 0, len(output.Services))
 	for _, service := range output.Services {
 		categories := make([]billingbackfill.SupportCategory, 0, len(service.Categories))
@@ -124,6 +127,9 @@ func (client *Client) DescribeSeverityLevels(ctx context.Context, request billin
 	if err != nil {
 		return nil, classifySupportError(err)
 	}
+	if output == nil {
+		return nil, billingbackfill.NewProviderError("aws_support_api_unavailable", "AWS Support DescribeSeverityLevels response was empty.")
+	}
 	levels := make([]billingbackfill.SupportSeverity, 0, len(output.SeverityLevels))
 	for _, level := range output.SeverityLevels {
 		levels = append(levels, billingbackfill.SupportSeverity{
@@ -146,6 +152,9 @@ func (client *Client) DescribeCreateCaseOptions(ctx context.Context, request bil
 	})
 	if err != nil {
 		return billingbackfill.SupportCreateCaseOptions{}, classifySupportError(err)
+	}
+	if output == nil {
+		return billingbackfill.SupportCreateCaseOptions{}, billingbackfill.NewProviderError("aws_support_api_unavailable", "AWS Support DescribeCreateCaseOptions response was empty.")
 	}
 	return billingbackfill.SupportCreateCaseOptions{
 		Available: strings.EqualFold(aws.ToString(output.LanguageAvailability), "available") && len(output.CommunicationTypes) > 0,
@@ -178,6 +187,9 @@ func (client *Client) DescribeCases(ctx context.Context, request billingbackfill
 		if err != nil {
 			return nil, classifySupportError(err)
 		}
+		if output == nil {
+			return nil, billingbackfill.NewProviderError("aws_support_describe_cases_failed", "AWS Support DescribeCases response was empty.")
+		}
 		cases = append(cases, mapSupportCases(output.Cases)...)
 		if output.NextToken == nil || aws.ToString(output.NextToken) == "" {
 			return cases, nil
@@ -202,6 +214,12 @@ func (client *Client) CreateCase(ctx context.Context, request billingbackfill.Cr
 	})
 	if err != nil {
 		return billingbackfill.CreateCaseResult{}, classifySupportError(err)
+	}
+	if output == nil {
+		return billingbackfill.CreateCaseResult{}, billingbackfill.NewProviderError("aws_support_create_case_response_incomplete", "AWS Support CreateCase response was empty.")
+	}
+	if strings.TrimSpace(aws.ToString(output.CaseId)) == "" {
+		return billingbackfill.CreateCaseResult{}, billingbackfill.NewProviderError("aws_support_create_case_response_incomplete", "AWS Support CreateCase response did not include a case ID.")
 	}
 	return billingbackfill.CreateCaseResult{CaseID: aws.ToString(output.CaseId)}, nil
 }

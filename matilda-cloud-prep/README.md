@@ -142,13 +142,51 @@ for repeatable runs:
 
 ```bash
 matilda-prep rapid-assessment billing aws preflight --profile default --region us-east-1
-matilda-prep rapid-assessment billing aws preflight --export-ref cur2-1234abcd5678ef90
+matilda-prep rapid-assessment billing aws preflight --export-ref cur2-abcdefghijklmnop
 matilda-prep rapid-assessment billing aws preflight --timeout 5m
 ```
 
 If more than one CUR 2.0 export is discovered, preflight fails closed and
 returns safe generated export refs. Rerun with `--export-ref` to choose one.
-Raw AWS export ARNs are not printed as user-facing selectors.
+Generated refs use `cur2-` plus lowercase `a` through `p` characters. Raw AWS
+export ARNs are not printed as user-facing selectors.
+
+AWS Rapid Assessment - Billing Based `apply-prereqs` uses explicit operations.
+Without an operation flag, it returns guidance only.
+
+```bash
+matilda-prep rapid-assessment billing aws apply-prereqs --request-backfill
+matilda-prep rapid-assessment billing aws apply-prereqs --create-cur2-export
+```
+
+Cloud changes are two-step. First run the operation to review the generated
+plan. Then rerun with the returned plan ID and only the step IDs from that
+current plan that you approve.
+
+```bash
+matilda-prep rapid-assessment billing aws apply-prereqs \
+  --request-backfill \
+  --confirm-create-support-case \
+  --approve-plan plan_abcdefghijklmnop \
+  --approve-step aws.billing.cur2.previous_month_backfill_support_case
+```
+
+Creating a new AWS CUR 2.0 export uses the same plan-bound pattern:
+
+```bash
+matilda-prep rapid-assessment billing aws apply-prereqs \
+  --create-cur2-export \
+  --approve-plan plan_abcdefghijklmnop \
+  --approve-step <plan-step-id>
+```
+
+Repeat `--approve-step` for each mutating step ID returned by the current
+plan.
+
+`--request-backfill` by itself is plan-only. It does not create an AWS Support
+case unless the confirmation and plan-bound approval flags are also supplied.
+`--create-cur2-export` does not use `--export-ref`; it creates or reuses the
+Matilda-managed CUR 2.0 setup plan for the connected AWS account.
 
 ## Implementation Direction
 

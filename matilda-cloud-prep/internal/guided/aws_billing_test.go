@@ -141,6 +141,116 @@ func TestRunAWSBillingSummaryRendersPlanFactsAndDynamicNextAction(t *testing.T) 
 	assertGuidedOutputSafe(t, output)
 }
 
+func TestRunAWSBillingSummaryRendersBlockedPolicyAccessAsNonReady(t *testing.T) {
+	registry := testRegistry(t, workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+		return guidedCapabilityReport(got, workflow.RunStatusBlocked, "aws_s3_bucket_policy_inaccessible", []workflow.PlanEvidence{
+			{Key: "output_format", Value: "TEXT_OR_CSV"},
+			{Key: "compression", Value: "GZIP"},
+			{Key: "time_granularity", Value: "MONTHLY"},
+			{Key: "previous_billing_period", Value: "2026-06"},
+			{Key: "missing_previous_month_component", Value: "manifest"},
+		})
+	}))
+	guide := &fakeAWSBillingGuide{
+		sources: []billingguide.CredentialSource{{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}},
+		verified: map[string]billingguide.VerifiedIdentity{
+			"profile:default": {
+				Source:       billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"},
+				AccountLabel: "account-ending-9012",
+				CallerRef:    "sha256:abcdef123456",
+				Region:       "us-east-1",
+			},
+		},
+	}
+
+	output, err := runGuidedWithConfig("1\n1\ny\n", Config{Registry: registry, AWSBilling: guide})
+
+	if err != nil {
+		t.Fatalf("RunWithConfig returned error: %v", err)
+	}
+	for _, want := range []string{
+		"Result: blocked",
+		"Support code: aws_s3_bucket_policy_inaccessible",
+		"Readiness: not ready",
+		"S3 delivery policy: not inspected",
+		"Previous month: 2026-06 missing manifest",
+		"Next action: grant read access to inspect the S3 bucket policy, then rerun preflight.",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output = %q, want to contain %q", output, want)
+		}
+	}
+	if strings.Contains(output, "Readiness: repair required") {
+		t.Fatalf("summary used stale repairable wording for inaccessible policy: %s", output)
+	}
+	assertGuidedOutputSafe(t, output)
+}
+
+func TestWriteAWSBillingSummaryShowsBackfillApplyPrereqsCommand(t *testing.T) {
+	var output bytes.Buffer
+	result := workflow.Result{
+		Status:  workflow.RunStatusManualSteps,
+		Code:    "aws_backfill_manual_step_required",
+		Message: "AWS CUR 2.0 billing preflight requires previous-month billing backfill or manual remediation.",
+		ExecutionOptions: workflow.ExecutionOptions{
+			Selectors: &workflow.ExecutionSelectors{
+				AWS: &workflow.AWSExecutionSelectors{
+					CUR2ExportRef: "cur2-abcdefghijklmnop",
+				},
+			},
+		},
+	}
+
+	writeAWSBillingSummary(&output, billingguide.CredentialSource{
+		Kind:    billingguide.CredentialSourceProfile,
+		Profile: "default",
+		Region:  "us-east-1",
+	}, result)
+
+	got := output.String()
+	for _, want := range []string{
+		"Next command:",
+		"matilda-prep rapid-assessment billing aws apply-prereqs --profile default --region us-east-1 --export-ref cur2-abcdefghijklmnop --request-backfill",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("output = %q, want to contain %q", got, want)
+		}
+	}
+	if strings.Contains(got, "Reproduce with:") || strings.Contains(got, "rapid-assessment billing aws preflight") {
+		t.Fatalf("backfill summary printed preflight reproduction instead of next command: %s", got)
+	}
+	assertGuidedOutputSafe(t, got)
+}
+
+func TestWriteAWSBillingSummaryShowsCreateCUR2ExportCommandWhenNoCURExists(t *testing.T) {
+	var output bytes.Buffer
+	result := workflow.Result{
+		Status:  workflow.RunStatusBlocked,
+		Code:    "aws_cur2_export_not_found",
+		Message: "No AWS CUR 2.0 export was found.",
+	}
+
+	writeAWSBillingSummary(&output, billingguide.CredentialSource{
+		Kind:    billingguide.CredentialSourceProfile,
+		Profile: "default",
+		Region:  "us-east-1",
+	}, result)
+
+	got := output.String()
+	for _, want := range []string{
+		"Next command:",
+		"matilda-prep rapid-assessment billing aws apply-prereqs --profile default --region us-east-1 --create-cur2-export",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("output = %q, want to contain %q", got, want)
+		}
+	}
+	if strings.Contains(got, "--export-ref") || strings.Contains(got, "rapid-assessment billing aws preflight") {
+		t.Fatalf("no-CUR summary printed wrong follow-up command: %s", got)
+	}
+	assertGuidedOutputSafe(t, got)
+}
+
 func TestRunAWSBillingUsesEnvironmentCredentialSourceSafely(t *testing.T) {
 	var gotOptions workflow.ExecutionOptions
 	registry := testRegistry(t, workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
@@ -795,7 +905,7 @@ func TestDirectAWSBillingCommandShellQuotesUnsafeSelectorCharacters(t *testing.T
 			Profile: "prod;date",
 			Region:  "us-east-1",
 		},
-		"cur2-1234abcd5678ef90",
+		"cur2-abcdefghijklmnop",
 	)
 
 	if !strings.Contains(command, "--profile 'prod;date'") {

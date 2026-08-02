@@ -10,8 +10,10 @@ import (
 const dataExportsServicePrincipal = "bcm-data-exports.amazonaws.com"
 
 type bucketPolicyDocument struct {
-	Statement []bucketPolicyStatement `json:"Statement"`
+	Statement rawBucketPolicyStatements `json:"Statement"`
 }
+
+type rawBucketPolicyStatements []json.RawMessage
 
 type bucketPolicyStatement struct {
 	Effect    string                `json:"Effect"`
@@ -28,6 +30,24 @@ type bucketPolicyPrincipal struct {
 type stringList []string
 type conditionMap map[string]map[string]stringList
 
+func (statements *rawBucketPolicyStatements) UnmarshalJSON(data []byte) error {
+	trimmed := strings.TrimSpace(string(data))
+	if strings.HasPrefix(trimmed, "{") {
+		var single json.RawMessage
+		if err := json.Unmarshal(data, &single); err != nil {
+			return err
+		}
+		*statements = []json.RawMessage{single}
+		return nil
+	}
+	var many []json.RawMessage
+	if err := json.Unmarshal(data, &many); err != nil {
+		return err
+	}
+	*statements = many
+	return nil
+}
+
 func (values *stringList) UnmarshalJSON(data []byte) error {
 	var single string
 	if err := json.Unmarshal(data, &single); err == nil {
@@ -43,14 +63,18 @@ func (values *stringList) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-func validateBucketPolicy(policy string, sourceAccount string, sourceARN string, destination S3Destination) checkFinding {
+func validateBucketPolicy(policy string, sourceAccount string, sourceARN string, export Export) checkFinding {
 	var document bucketPolicyDocument
 	if err := json.Unmarshal([]byte(policy), &document); err != nil {
 		return withEvidence(failFinding("aws_s3_delivery_policy_missing", "AWS Data Exports S3 delivery policy", "S3 bucket policy could not be parsed safely."), policyGapEvidence("policy_unparseable"))
 	}
 
 	gaps := newPolicyGaps()
-	for _, statement := range document.Statement {
+	for _, raw := range document.Statement {
+		var statement bucketPolicyStatement
+		if err := json.Unmarshal(raw, &statement); err != nil {
+			continue
+		}
 		if statement.Effect != "Allow" {
 			continue
 		}
@@ -62,7 +86,7 @@ func validateBucketPolicy(policy string, sourceAccount string, sourceARN string,
 
 		hasWriteAction := includesS3Write(statement.Action)
 		gaps.observe("put_object_action_missing", hasWriteAction)
-		hasCoveredResource := resourceCoversDestination(statement.Resource, destination)
+		hasCoveredResource := resourceCoversDestination(statement.Resource, export, arnPartition(sourceARN))
 		gaps.observe("put_object_resource_not_covered", hasCoveredResource)
 		hasSourceAccount := sourceAccountConditionMatches(statement.Condition, sourceAccount)
 		gaps.observe("source_account_condition_missing", hasSourceAccount)
@@ -150,20 +174,25 @@ func includesS3Write(actions []string) bool {
 	return false
 }
 
-func resourceCoversDestination(resources []string, destination S3Destination) bool {
-	bucket := strings.TrimSpace(destination.Bucket)
-	prefix := strings.Trim(strings.TrimSpace(destination.Prefix), "/")
-	if bucket == "" || prefix == "" {
+func resourceCoversDestination(resources []string, export Export, partition string) bool {
+	bucket := strings.TrimSpace(export.Destination.Bucket)
+	prefix := strings.Trim(strings.TrimSpace(export.Destination.Prefix), "/")
+	exportName := strings.Trim(strings.TrimSpace(export.Name), "/")
+	partition = strings.TrimSpace(partition)
+	if bucket == "" || prefix == "" || partition == "" {
 		return false
 	}
 
-	expectedPrefix := "arn:aws:s3:::" + bucket + "/" + prefix + "/"
+	expectedPrefix := "arn:" + partition + ":s3:::" + bucket + "/" + prefix + "/"
 	expectedPrefixWildcard := expectedPrefix + "*"
-	expectedBucketWildcard := "arn:aws:s3:::" + bucket + "/*"
-	destinationProbes := []string{
-		expectedPrefix + "*",
-		expectedPrefix + "export-name/data/BILLING_PERIOD=2000-01/part-00001.csv.gz",
-		expectedPrefix + "export-name/metadata/BILLING_PERIOD=2000-01/Manifest.json",
+	expectedBucketWildcard := "arn:" + partition + ":s3:::" + bucket + "/*"
+	destinationProbes := []string{}
+	if exportName != "" {
+		exportPrefix := expectedPrefix + exportName + "/"
+		destinationProbes = []string{
+			exportPrefix + "data/BILLING_PERIOD=2000-01/part-00001.csv.gz",
+			exportPrefix + "metadata/BILLING_PERIOD=2000-01/Manifest.json",
+		}
 	}
 
 	for _, resource := range resources {
@@ -171,18 +200,19 @@ func resourceCoversDestination(resources []string, destination S3Destination) bo
 		case expectedPrefixWildcard, expectedBucketWildcard:
 			return true
 		}
-		if s3ResourceWildcardCovers(resource, bucket, destinationProbes) {
+		if s3ResourceWildcardCovers(resource, bucket, partition, destinationProbes) {
 			return true
 		}
 	}
 	return false
 }
 
-func s3ResourceWildcardCovers(pattern string, bucket string, objectARNs []string) bool {
-	if !strings.HasPrefix(pattern, "arn:aws:s3:::") || !strings.Contains(pattern, "*") {
+func s3ResourceWildcardCovers(pattern string, bucket string, partition string, objectARNs []string) bool {
+	expectedBucketPrefix := "arn:" + partition + ":s3:::" + bucket + "/"
+	if len(objectARNs) == 0 || !strings.HasPrefix(pattern, "arn:"+partition+":s3:::") || !strings.Contains(pattern, "*") {
 		return false
 	}
-	if !strings.HasPrefix(pattern, "arn:aws:s3:::"+bucket+"/") {
+	if !strings.HasPrefix(pattern, expectedBucketPrefix) {
 		return false
 	}
 	for _, objectARN := range objectARNs {
@@ -221,6 +251,14 @@ func wildcardMatches(pattern string, value string) bool {
 		patternIndex++
 	}
 	return patternIndex == len(pattern)
+}
+
+func arnPartition(value string) string {
+	parts := strings.SplitN(value, ":", 3)
+	if len(parts) != 3 || parts[0] != "arn" {
+		return ""
+	}
+	return parts[1]
 }
 
 func sourceAccountConditionMatches(conditions conditionMap, expected string) bool {

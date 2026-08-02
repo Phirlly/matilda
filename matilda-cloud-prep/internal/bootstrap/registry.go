@@ -3,7 +3,10 @@ package bootstrap
 import (
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/cloud/aws/billingbackfill"
 	billingbackfillawsclient "github.com/Phirlly/matilda/matilda-cloud-prep/internal/cloud/aws/billingbackfill/awsclient"
+	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/cloud/aws/billingcur2setup"
+	billingcur2setupawsclient "github.com/Phirlly/matilda/matilda-cloud-prep/internal/cloud/aws/billingcur2setup/awsclient"
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/cloud/aws/billingguide"
+	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/cloud/aws/billingprereqs"
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/cloud/aws/cur2preflight"
 	cur2preflightawsclient "github.com/Phirlly/matilda/matilda-cloud-prep/internal/cloud/aws/cur2preflight/awsclient"
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/guided"
@@ -15,12 +18,15 @@ type RegistryConfig struct {
 	AWSBillingPreflightClientFactory func(workflow.ExecutionOptions) cur2preflight.Client
 	AWSBillingBackfillClient         billingbackfill.Client
 	AWSBillingBackfillClientFactory  func(workflow.ExecutionOptions) billingbackfill.Client
+	AWSBillingSetupClient            billingcur2setup.Client
+	AWSBillingSetupClientFactory     func(workflow.ExecutionOptions) billingcur2setup.Client
 }
 
 func DefaultRegistry() workflow.Registry {
 	return Registry(RegistryConfig{
 		AWSBillingPreflightClientFactory: defaultAWSBillingClientFactory(),
 		AWSBillingBackfillClientFactory:  defaultAWSBillingBackfillClientFactory(),
+		AWSBillingSetupClientFactory:     defaultAWSBillingSetupClientFactory(),
 	})
 }
 
@@ -43,10 +49,16 @@ func Registry(config RegistryConfig) workflow.Registry {
 			}),
 		},
 		workflow.Capability{
-			Request: billingbackfill.AWSBillingApplyPrereqsRequest(),
-			Runner: billingbackfill.NewRunner(billingbackfill.RunnerConfig{
-				Client:        config.AWSBillingBackfillClient,
-				ClientFactory: config.AWSBillingBackfillClientFactory,
+			Request: billingprereqs.AWSBillingApplyPrereqsRequest(),
+			Runner: billingprereqs.NewRunner(billingprereqs.RunnerConfig{
+				BackfillRunner: billingbackfill.NewRunner(billingbackfill.RunnerConfig{
+					Client:        config.AWSBillingBackfillClient,
+					ClientFactory: config.AWSBillingBackfillClientFactory,
+				}),
+				SetupRunner: billingcur2setup.NewRunner(billingcur2setup.RunnerConfig{
+					Client:        config.AWSBillingSetupClient,
+					ClientFactory: config.AWSBillingSetupClientFactory,
+				}),
 			}),
 		},
 	)
@@ -76,6 +88,19 @@ func defaultAWSBillingBackfillClientFactory() func(workflow.ExecutionOptions) bi
 			awsOptions = *options.Selectors.AWS
 		}
 		return billingbackfillawsclient.New(billingbackfillawsclient.Config{
+			Profile: awsOptions.Profile,
+			Region:  awsOptions.Region,
+		})
+	}
+}
+
+func defaultAWSBillingSetupClientFactory() func(workflow.ExecutionOptions) billingcur2setup.Client {
+	return func(options workflow.ExecutionOptions) billingcur2setup.Client {
+		awsOptions := workflow.AWSExecutionSelectors{}
+		if options.Selectors != nil && options.Selectors.AWS != nil {
+			awsOptions = *options.Selectors.AWS
+		}
+		return billingcur2setupawsclient.New(billingcur2setupawsclient.Config{
 			Profile: awsOptions.Profile,
 			Region:  awsOptions.Region,
 		})

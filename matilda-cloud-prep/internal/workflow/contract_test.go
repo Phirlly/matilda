@@ -46,6 +46,16 @@ func TestActionContractsHaveExpectedMutationLevels(t *testing.T) {
 }
 
 func TestNormalizedWorkflowTermsAreStable(t *testing.T) {
+	if got, want := CoverageStatuses(), []CoverageStatus{
+		CoverageUnknown,
+		CoverageOrganizationWide,
+		CoverageAccountOnly,
+		CoverageSingleAccount,
+		CoverageUnverified,
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("CoverageStatuses() = %#v, want %#v", got, want)
+	}
+
 	if got, want := PlanStepIntents(), []PlanStepIntent{
 		PlanStepReuse,
 		PlanStepRepair,
@@ -88,7 +98,7 @@ func TestExecutionOptionsNormalizeDirectAWSSelectors(t *testing.T) {
 			AWS: &AWSExecutionSelectors{
 				Profile:       "default",
 				Region:        "us-west-2",
-				CUR2ExportRef: "cur2-1234abcd5678ef90",
+				CUR2ExportRef: "cur2-abcdefghijklmnop",
 			},
 		},
 	})
@@ -108,8 +118,47 @@ func TestExecutionOptionsNormalizeDirectAWSSelectors(t *testing.T) {
 	if options.Selectors == nil || options.Selectors.AWS == nil {
 		t.Fatalf("AWS selectors missing after normalization: %#v", options.Selectors)
 	}
-	if options.Selectors.AWS.Profile != "default" || options.Selectors.AWS.Region != "us-west-2" || options.Selectors.AWS.CUR2ExportRef != "cur2-1234abcd5678ef90" {
+	if options.Selectors.AWS.Profile != "default" || options.Selectors.AWS.Region != "us-west-2" || options.Selectors.AWS.CUR2ExportRef != "cur2-abcdefghijklmnop" {
 		t.Fatalf("AWS selectors = %#v, want profile, region, and export ref", options.Selectors.AWS)
+	}
+}
+
+func TestExecutionOptionsNormalizeGeneratedCUR2ExportRef(t *testing.T) {
+	options, err := NormalizeExecutionOptions(ExecutionOptions{
+		Selectors: &ExecutionSelectors{
+			AWS: &AWSExecutionSelectors{
+				CUR2ExportRef: "cur2-abcdefghijklmnop",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NormalizeExecutionOptions returned error: %v", err)
+	}
+	if options.Selectors == nil || options.Selectors.AWS == nil || options.Selectors.AWS.CUR2ExportRef != "cur2-abcdefghijklmnop" {
+		t.Fatalf("AWS CUR2ExportRef = %#v, want generated ref", options.Selectors)
+	}
+}
+
+func TestDefaultExecutionOptionsAreSafeForDirectReadOnlyExecution(t *testing.T) {
+	options := DefaultExecutionOptions()
+
+	if options.SchemaVersion != ExecutionOptionsSchemaVersion {
+		t.Fatalf("SchemaVersion = %q, want %q", options.SchemaVersion, ExecutionOptionsSchemaVersion)
+	}
+	if options.InterfaceMode != InterfaceModeDirect {
+		t.Fatalf("InterfaceMode = %q, want %q", options.InterfaceMode, InterfaceModeDirect)
+	}
+	if options.TimeoutSeconds != DefaultExecutionTimeoutSeconds {
+		t.Fatalf("TimeoutSeconds = %d, want %d", options.TimeoutSeconds, DefaultExecutionTimeoutSeconds)
+	}
+	if options.AWSBillingOperation != "" {
+		t.Fatalf("AWSBillingOperation = %q, want empty default", options.AWSBillingOperation)
+	}
+	if options.Selectors != nil {
+		t.Fatalf("Selectors = %#v, want nil default", options.Selectors)
+	}
+	if len(options.Approvals) != 0 {
+		t.Fatalf("Approvals = %#v, want no default approvals", options.Approvals)
 	}
 }
 
@@ -122,17 +171,19 @@ func TestExecutionOptionsNormalizeScopedBackfillApprovalForAWSBillingApplyPrereq
 	}
 
 	options, err := NormalizeExecutionOptionsForRequest(request, ExecutionOptions{
-		InterfaceMode: InterfaceModeDirect,
+		InterfaceMode:       InterfaceModeDirect,
+		AWSBillingOperation: AWSBillingOperationRequestBackfill,
 		Approvals: []ExecutionApproval{{
 			OperationID: AWSBackfillSupportCaseOperationID,
 			Intent:      ApprovalIntentRequestBackfillSupportCase,
+			PlanID:      "plan_abcdefghijklmnop",
 			Confirmed:   true,
 		}},
 		Selectors: &ExecutionSelectors{
 			AWS: &AWSExecutionSelectors{
 				Profile:       "default",
 				Region:        "us-west-2",
-				CUR2ExportRef: "cur2-1234abcd5678ef90",
+				CUR2ExportRef: "cur2-abcdefghijklmnop",
 			},
 		},
 	})
@@ -145,31 +196,119 @@ func TestExecutionOptionsNormalizeScopedBackfillApprovalForAWSBillingApplyPrereq
 	approval := options.Approvals[0]
 	if approval.OperationID != AWSBackfillSupportCaseOperationID ||
 		approval.Intent != ApprovalIntentRequestBackfillSupportCase ||
+		approval.PlanID != "plan_abcdefghijklmnop" ||
 		!approval.Confirmed {
 		t.Fatalf("approval = %#v, want scoped AWS backfill support case approval", approval)
 	}
+	if !HasApprovedPlanStep(options, "plan_abcdefghijklmnop", AWSBackfillSupportCaseOperationID) {
+		t.Fatalf("HasApprovedPlanStep returned false for approved AWS backfill support case step: %#v", options.Approvals)
+	}
 }
 
-func TestExecutionOptionsBackfillApprovalHelper(t *testing.T) {
-	if HasAWSBackfillSupportCaseApproval(ExecutionOptions{}) {
-		t.Fatal("HasAWSBackfillSupportCaseApproval returned true for empty options")
+func TestExecutionOptionsNormalizeScopedCUR2CreateExportApprovalForAWSBillingApplyPrereqs(t *testing.T) {
+	request := Request{
+		Goal:           assessment.RapidAssessment,
+		CollectionPath: assessment.CollectionBilling,
+		Provider:       assessment.ProviderAWS,
+		Action:         assessment.ActionApplyPrereqs,
 	}
-	if !HasAWSBackfillSupportCaseApproval(ExecutionOptions{
+
+	options, err := NormalizeExecutionOptionsForRequest(request, ExecutionOptions{
+		InterfaceMode:       InterfaceModeDirect,
+		AWSBillingOperation: AWSBillingOperationCreateCUR2Export,
+		Approvals: []ExecutionApproval{
+			{
+				OperationID: AWSCUR2CreateBucketOperationID,
+				PlanID:      "plan_abcdefghijklmnop",
+				Confirmed:   true,
+			},
+			{
+				OperationID: AWSCUR2MergeBucketPolicyOperationID,
+				PlanID:      "plan_abcdefghijklmnop",
+				Confirmed:   true,
+			},
+			{
+				OperationID: AWSCUR2CreateExportOperationID,
+				PlanID:      "plan_abcdefghijklmnop",
+				Confirmed:   true,
+			},
+		},
+		Selectors: &ExecutionSelectors{
+			AWS: &AWSExecutionSelectors{
+				Profile: "default",
+				Region:  "us-west-2",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NormalizeExecutionOptionsForRequest returned error: %v", err)
+	}
+	if options.AWSBillingOperation != AWSBillingOperationCreateCUR2Export {
+		t.Fatalf("AWSBillingOperation = %q, want %q", options.AWSBillingOperation, AWSBillingOperationCreateCUR2Export)
+	}
+	if len(options.Approvals) != 3 {
+		t.Fatalf("Approvals length = %d, want 3", len(options.Approvals))
+	}
+	if !HasApprovedPlanStep(options, "plan_abcdefghijklmnop", AWSCUR2MergeBucketPolicyOperationID) {
+		t.Fatalf("HasApprovedPlanStep returned false for approved bucket policy merge step: %#v", options.Approvals)
+	}
+}
+
+func TestExecutionOptionsNormalizeTrimmedAWSBillingOperation(t *testing.T) {
+	options, err := NormalizeExecutionOptions(ExecutionOptions{
+		AWSBillingOperation: AWSBillingOperation(" create_cur2_export "),
+	})
+	if err != nil {
+		t.Fatalf("NormalizeExecutionOptions returned error: %v", err)
+	}
+	if options.AWSBillingOperation != AWSBillingOperationCreateCUR2Export {
+		t.Fatalf("AWSBillingOperation = %q, want %q", options.AWSBillingOperation, AWSBillingOperationCreateCUR2Export)
+	}
+}
+
+func TestExecutionOptionsBackfillApprovalUsesPlanStepBinding(t *testing.T) {
+	options := ExecutionOptions{
+		AWSBillingOperation: AWSBillingOperationRequestBackfill,
 		Approvals: []ExecutionApproval{{
 			OperationID: AWSBackfillSupportCaseOperationID,
 			Intent:      ApprovalIntentRequestBackfillSupportCase,
+			PlanID:      "plan_abcdefghijklmnop",
 			Confirmed:   true,
 		}},
-	}) {
-		t.Fatal("HasAWSBackfillSupportCaseApproval returned false for confirmed backfill approval")
 	}
-	if HasAWSBackfillSupportCaseApproval(ExecutionOptions{
+
+	if !HasApprovedPlanStep(options, "plan_abcdefghijklmnop", AWSBackfillSupportCaseOperationID) {
+		t.Fatal("HasApprovedPlanStep returned false for confirmed backfill plan step")
+	}
+	if HasApprovedPlanStep(options, "plan_ponmlkjihgfedcba", AWSBackfillSupportCaseOperationID) {
+		t.Fatal("HasApprovedPlanStep returned true for wrong backfill plan")
+	}
+	if HasApprovedPlanStep(options, "plan_abcdefghijklmnop", AWSCUR2CreateExportOperationID) {
+		t.Fatal("HasApprovedPlanStep returned true for wrong backfill operation")
+	}
+}
+
+func TestExecutionOptionsCUR2CreateApprovalHelpers(t *testing.T) {
+	options := ExecutionOptions{
+		AWSBillingOperation: AWSBillingOperationCreateCUR2Export,
 		Approvals: []ExecutionApproval{{
-			OperationID: AWSBackfillSupportCaseOperationID,
-			Intent:      ApprovalIntentRequestBackfillSupportCase,
+			OperationID: AWSCUR2CreateExportOperationID,
+			PlanID:      "plan_abcdefghijklmnop",
+			Confirmed:   true,
 		}},
-	}) {
-		t.Fatal("HasAWSBackfillSupportCaseApproval returned true for unconfirmed approval")
+	}
+
+	if !HasAWSBillingOperation(options, AWSBillingOperationCreateCUR2Export) {
+		t.Fatal("HasAWSBillingOperation returned false for create CUR 2.0 export")
+	}
+	if !HasApprovedPlanStep(options, "plan_abcdefghijklmnop", AWSCUR2CreateExportOperationID) {
+		t.Fatal("HasApprovedPlanStep returned false for confirmed plan step")
+	}
+	if HasApprovedPlanStep(options, "plan_ponmlkjihgfedcba", AWSCUR2CreateExportOperationID) {
+		t.Fatal("HasApprovedPlanStep returned true for wrong plan")
+	}
+	if HasApprovedPlanStep(options, "plan_abcdefghijklmnop", AWSCUR2CreateBucketOperationID) {
+		t.Fatal("HasApprovedPlanStep returned true for wrong operation")
 	}
 }
 
@@ -188,12 +327,49 @@ func TestExecutionOptionsRejectInvalidApprovals(t *testing.T) {
 			want: "operation_id",
 		},
 		{
-			name: "missing intent",
+			name: "missing intent for backfill approval",
 			option: ExecutionOptions{Approvals: []ExecutionApproval{{
 				OperationID: AWSBackfillSupportCaseOperationID,
+				PlanID:      "plan_abcdefghijklmnop",
 				Confirmed:   true,
 			}}},
 			want: "intent",
+		},
+		{
+			name: "missing plan id for backfill approval",
+			option: ExecutionOptions{
+				AWSBillingOperation: AWSBillingOperationRequestBackfill,
+				Approvals: []ExecutionApproval{{
+					OperationID: AWSBackfillSupportCaseOperationID,
+					Intent:      ApprovalIntentRequestBackfillSupportCase,
+					Confirmed:   true,
+				}},
+			},
+			want: "plan_id",
+		},
+		{
+			name: "invalid plan id format for backfill approval",
+			option: ExecutionOptions{
+				AWSBillingOperation: AWSBillingOperationRequestBackfill,
+				Approvals: []ExecutionApproval{{
+					OperationID: AWSBackfillSupportCaseOperationID,
+					Intent:      ApprovalIntentRequestBackfillSupportCase,
+					PlanID:      "plan_1234",
+					Confirmed:   true,
+				}},
+			},
+			want: "plan_id",
+		},
+		{
+			name: "missing plan id for plan-bound approval",
+			option: ExecutionOptions{
+				AWSBillingOperation: AWSBillingOperationCreateCUR2Export,
+				Approvals: []ExecutionApproval{{
+					OperationID: AWSCUR2CreateExportOperationID,
+					Confirmed:   true,
+				}},
+			},
+			want: "plan_id",
 		},
 		{
 			name: "unsupported operation",
@@ -213,6 +389,30 @@ func TestExecutionOptionsRejectInvalidApprovals(t *testing.T) {
 			}}},
 			want: "unsafe",
 		},
+		{
+			name: "raw arn plan id",
+			option: ExecutionOptions{
+				AWSBillingOperation: AWSBillingOperationCreateCUR2Export,
+				Approvals: []ExecutionApproval{{
+					OperationID: AWSCUR2CreateExportOperationID,
+					PlanID:      "arn:aws:support:::case/example",
+					Confirmed:   true,
+				}},
+			},
+			want: "unsafe",
+		},
+		{
+			name: "invalid plan id format",
+			option: ExecutionOptions{
+				AWSBillingOperation: AWSBillingOperationCreateCUR2Export,
+				Approvals: []ExecutionApproval{{
+					OperationID: AWSCUR2CreateExportOperationID,
+					PlanID:      "plan_1234",
+					Confirmed:   true,
+				}},
+			},
+			want: "plan_id",
+		},
 	}
 
 	for _, tt := range tests {
@@ -223,6 +423,86 @@ func TestExecutionOptionsRejectInvalidApprovals(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("error = %q, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestExecutionOptionsRejectAWSBillingOperationConflicts(t *testing.T) {
+	request := Request{
+		Goal:           assessment.RapidAssessment,
+		CollectionPath: assessment.CollectionBilling,
+		Provider:       assessment.ProviderAWS,
+		Action:         assessment.ActionApplyPrereqs,
+	}
+
+	tests := []struct {
+		name    string
+		option  ExecutionOptions
+		wantErr string
+	}{
+		{
+			name: "create cur2 rejected outside aws billing apply prereqs",
+			option: ExecutionOptions{
+				AWSBillingOperation: AWSBillingOperationCreateCUR2Export,
+			},
+		},
+		{
+			name: "operation conflict",
+			option: ExecutionOptions{
+				AWSBillingOperation: AWSBillingOperationConflict,
+			},
+			wantErr: "aws_billing_prereqs_operation_conflict",
+		},
+		{
+			name: "approval without matching operation intent",
+			option: ExecutionOptions{
+				Approvals: []ExecutionApproval{{
+					OperationID: AWSCUR2CreateExportOperationID,
+					PlanID:      "plan_abcdefghijklmnop",
+					Confirmed:   true,
+				}},
+			},
+			wantErr: "matching AWS billing operation",
+		},
+		{
+			name: "backfill approval without matching operation intent",
+			option: ExecutionOptions{
+				Approvals: []ExecutionApproval{{
+					OperationID: AWSBackfillSupportCaseOperationID,
+					Intent:      ApprovalIntentRequestBackfillSupportCase,
+					PlanID:      "plan_abcdefghijklmnop",
+					Confirmed:   true,
+				}},
+			},
+			wantErr: "matching AWS billing operation",
+		},
+		{
+			name: "unconfirmed scoped approval",
+			option: ExecutionOptions{
+				Approvals: []ExecutionApproval{{
+					OperationID: AWSBackfillSupportCaseOperationID,
+					Intent:      ApprovalIntentRequestBackfillSupportCase,
+					PlanID:      "plan_abcdefghijklmnop",
+				}},
+			},
+			wantErr: "confirmed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testRequest := request
+			if tt.name == "create cur2 rejected outside aws billing apply prereqs" {
+				testRequest.Action = assessment.ActionPreflight
+				tt.wantErr = "AWS billing operation"
+			}
+			_, err := NormalizeExecutionOptionsForRequest(testRequest, tt.option)
+			if err == nil {
+				t.Fatal("NormalizeExecutionOptionsForRequest accepted invalid AWS billing operation")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error = %q, want %q", err, tt.wantErr)
 			}
 		})
 	}
@@ -288,6 +568,7 @@ func TestExecutionOptionsRequestAwareValidationScopesAWSSelectorsAndApprovals(t 
 			option: ExecutionOptions{Approvals: []ExecutionApproval{{
 				OperationID: AWSBackfillSupportCaseOperationID,
 				Intent:      ApprovalIntentRequestBackfillSupportCase,
+				PlanID:      "plan_abcdefghijklmnop",
 				Confirmed:   true,
 			}}},
 			wantErr: "approval",
@@ -303,6 +584,7 @@ func TestExecutionOptionsRequestAwareValidationScopesAWSSelectorsAndApprovals(t 
 			option: ExecutionOptions{Approvals: []ExecutionApproval{{
 				OperationID: AWSBackfillSupportCaseOperationID,
 				Intent:      ApprovalIntentRequestBackfillSupportCase,
+				PlanID:      "plan_abcdefghijklmnop",
 				Confirmed:   true,
 			}}},
 			wantErr: "approval",

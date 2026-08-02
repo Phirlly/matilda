@@ -14,7 +14,7 @@ import (
 
 func TestRunnerRequiresApprovalBeforeCreatingSupportCase(t *testing.T) {
 	client := baselineBackfillClient()
-	result := runBackfill(t, client, workflow.DefaultExecutionOptions())
+	result := runBackfill(t, client, requestBackfillOptions(client.export))
 
 	if result.Status != workflow.RunStatusManualSteps {
 		t.Fatalf("Status = %q, want %q", result.Status, workflow.RunStatusManualSteps)
@@ -28,11 +28,154 @@ func TestRunnerRequiresApprovalBeforeCreatingSupportCase(t *testing.T) {
 	if client.createCaseCalls != 0 {
 		t.Fatalf("CreateCase calls = %d, want 0", client.createCaseCalls)
 	}
+	assertBackfillIdentityStatus(t, result, "verified", "AWS caller identity and CUR 2.0 export state were checked")
+}
+
+func TestRunnerBackfillPreviewExposesPlanBoundSupportCaseStep(t *testing.T) {
+	client := baselineBackfillClient()
+	result := runBackfill(t, client, requestBackfillOptions(client.export))
+	plan := planFromBackfillReport(t, result, requestBackfillOptions(client.export))
+
+	if len(plan.Steps) != 1 {
+		t.Fatalf("Steps length = %d, want 1", len(plan.Steps))
+	}
+	step := plan.Steps[0]
+	if step.ID != workflow.AWSBackfillSupportCaseOperationID {
+		t.Fatalf("support-case step ID = %q, want %q", step.ID, workflow.AWSBackfillSupportCaseOperationID)
+	}
+	if !step.RequiresApproval || step.ApprovalKind != "cloud_mutation" {
+		t.Fatalf("support-case step approval = requires %t kind %q, want cloud mutation approval", step.RequiresApproval, step.ApprovalKind)
+	}
+	if !plan.Approval.Required || plan.Approval.Blocked {
+		t.Fatalf("plan approval summary = %#v, want required and not blocked", plan.Approval)
+	}
+	check, ok := reportCheck(result, "aws_backfill_support_case_approval_required")
+	if !ok {
+		t.Fatalf("approval check not found in %#v", result.PlanInput.Checks)
+	}
+	var binding string
+	for _, evidence := range check.Evidence {
+		if evidence.Key == "support_case_binding_ref" {
+			binding = evidence.Value
+		}
+		for _, forbidden := range []string{
+			client.export.Name,
+			client.export.ExportARN,
+			client.export.SourceAccount,
+			client.export.Destination.Bucket,
+			client.export.Destination.Prefix,
+			supportCaseBody(backfillContext{Export: client.export, Period: "2026-06", MissingDataPartition: true, MissingManifest: true}, backfillRequestReference(client.export.ExportARN, "2026-06")),
+		} {
+			if strings.Contains(evidence.Value, forbidden) {
+				t.Fatalf("approval evidence %s leaked raw support-case detail %q in %q", evidence.Key, forbidden, evidence.Value)
+			}
+		}
+	}
+	if binding == "" {
+		t.Fatalf("approval evidence missing support_case_binding_ref: %#v", check.Evidence)
+	}
+}
+
+func TestRunnerBlocksStaleBackfillApprovalBeforeCreatingSupportCase(t *testing.T) {
+	client := baselineBackfillClient()
+	options := requestBackfillOptions(client.export)
+	options.Approvals = []workflow.ExecutionApproval{{
+		OperationID: workflow.AWSBackfillSupportCaseOperationID,
+		Intent:      workflow.ApprovalIntentRequestBackfillSupportCase,
+		PlanID:      "plan_ponmlkjihgfedcba",
+		Confirmed:   true,
+	}}
+
+	result := runBackfill(t, client, options)
+
+	if result.Status != workflow.RunStatusBlocked {
+		t.Fatalf("Status = %q, want %q", result.Status, workflow.RunStatusBlocked)
+	}
+	if result.Code != "aws_plan_stale" {
+		t.Fatalf("Code = %q, want aws_plan_stale", result.Code)
+	}
+	if result.Mutated {
+		t.Fatal("Mutated = true, want false for stale approval")
+	}
+	if client.createCaseCalls != 0 {
+		t.Fatalf("CreateCase calls = %d, want 0", client.createCaseCalls)
+	}
+}
+
+func TestRunnerBlocksBackfillApprovalWhenSupportCaseBodyFactsChange(t *testing.T) {
+	client := baselineBackfillClient()
+	options := approvedBackfillOptions(t, client)
+	client.exports[0].Name = "matilda-cur2-renamed"
+	client.export = client.exports[0]
+
+	result := runBackfill(t, client, options)
+
+	if result.Status != workflow.RunStatusBlocked {
+		t.Fatalf("Status = %q, want %q", result.Status, workflow.RunStatusBlocked)
+	}
+	if result.Code != "aws_plan_stale" {
+		t.Fatalf("Code = %q, want aws_plan_stale", result.Code)
+	}
+	if result.Mutated {
+		t.Fatal("Mutated = true, want false for stale support-case request approval")
+	}
+	if client.createCaseCalls != 0 {
+		t.Fatalf("CreateCase calls = %d, want 0", client.createCaseCalls)
+	}
+}
+
+func TestRunnerBlocksBackfillApprovalWhenSupportClassificationChanges(t *testing.T) {
+	client := baselineBackfillClient()
+	options := approvedBackfillOptions(t, client)
+	client.services = []SupportService{{
+		Code: "billing",
+		Name: "Billing",
+		Categories: []SupportCategory{{
+			Code: "cur-backfill",
+			Name: "CUR backfill",
+		}},
+	}}
+
+	result := runBackfill(t, client, options)
+
+	if result.Status != workflow.RunStatusBlocked {
+		t.Fatalf("Status = %q, want %q", result.Status, workflow.RunStatusBlocked)
+	}
+	if result.Code != "aws_plan_stale" {
+		t.Fatalf("Code = %q, want aws_plan_stale", result.Code)
+	}
+	if result.Mutated {
+		t.Fatal("Mutated = true, want false for stale support-case classification approval")
+	}
+	if client.createCaseCalls != 0 {
+		t.Fatalf("CreateCase calls = %d, want 0", client.createCaseCalls)
+	}
+}
+
+func TestRunnerBlocksMismatchedBackfillApprovalBeforeCreatingSupportCase(t *testing.T) {
+	client := baselineBackfillClient()
+	options := approvedBackfillOptions(t, client)
+	options.Approvals = append(options.Approvals, options.Approvals[0])
+
+	result := runBackfill(t, client, options)
+
+	if result.Status != workflow.RunStatusBlocked {
+		t.Fatalf("Status = %q, want %q", result.Status, workflow.RunStatusBlocked)
+	}
+	if result.Code != "aws_plan_approval_mismatch" {
+		t.Fatalf("Code = %q, want aws_plan_approval_mismatch", result.Code)
+	}
+	if result.Mutated {
+		t.Fatal("Mutated = true, want false for mismatched approval")
+	}
+	if client.createCaseCalls != 0 {
+		t.Fatalf("CreateCase calls = %d, want 0", client.createCaseCalls)
+	}
 }
 
 func TestRunnerBlocksWhenClientIsUnavailable(t *testing.T) {
 	runner := NewRunner(RunnerConfig{})
-	result := runner.Run(context.Background(), AWSBillingApplyPrereqsRequest(), workflow.DefaultExecutionOptions())
+	result := runner.Run(context.Background(), AWSBillingApplyPrereqsRequest(), requestBackfillOptions(baselineBackfillClient().export))
 
 	if result.Status != workflow.RunStatusBlocked {
 		t.Fatalf("Status = %q, want %q", result.Status, workflow.RunStatusBlocked)
@@ -43,21 +186,125 @@ func TestRunnerBlocksWhenClientIsUnavailable(t *testing.T) {
 	if result.Mutated {
 		t.Fatal("Mutated = true, want false without client")
 	}
+	assertBackfillIdentityStatus(t, result, "unknown", "AWS caller identity and CUR 2.0 export state were not checked")
+}
+
+func TestRunnerRequiresBackfillOperationBeforeResolvingClient(t *testing.T) {
+	client := baselineBackfillClient()
+	options := approvedBackfillOptions(t, client)
+	options.AWSBillingOperation = ""
+	factoryCalls := 0
+	runner := NewRunner(RunnerConfig{
+		ClientFactory: func(workflow.ExecutionOptions) Client {
+			factoryCalls++
+			return client
+		},
+		Now: time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC),
+	})
+
+	result := runner.Run(context.Background(), AWSBillingApplyPrereqsRequest(), options)
+
+	if result.Status != workflow.RunStatusBlocked {
+		t.Fatalf("Status = %q, want %q", result.Status, workflow.RunStatusBlocked)
+	}
+	if result.Code != "aws_backfill_operation_required" {
+		t.Fatalf("Code = %q, want aws_backfill_operation_required", result.Code)
+	}
+	if result.Mutated {
+		t.Fatal("Mutated = true, want false")
+	}
+	if factoryCalls != 0 || client.createCaseCalls != 0 {
+		t.Fatalf("provider calls = factory %d create case %d, want none", factoryCalls, client.createCaseCalls)
+	}
+	assertBackfillIdentityStatus(t, result, "unknown", "AWS caller identity and CUR 2.0 export state were not checked")
+}
+
+func TestRunnerRequiresAWSBillingApplyPrereqsRequestBeforeResolvingClient(t *testing.T) {
+	client := baselineBackfillClient()
+	factoryCalls := 0
+	runner := NewRunner(RunnerConfig{
+		ClientFactory: func(workflow.ExecutionOptions) Client {
+			factoryCalls++
+			return client
+		},
+		Now: time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC),
+	})
+	request := AWSBillingApplyPrereqsRequest()
+	request.Action = assessment.ActionPreflight
+
+	result := runner.Run(context.Background(), request, requestBackfillOptions(client.export))
+
+	if result.Status != workflow.RunStatusBlocked {
+		t.Fatalf("Status = %q, want %q", result.Status, workflow.RunStatusBlocked)
+	}
+	if result.Code != "aws_billing_apply_prereqs_request_required" {
+		t.Fatalf("Code = %q, want aws_billing_apply_prereqs_request_required", result.Code)
+	}
+	if result.Mutated {
+		t.Fatal("Mutated = true, want false")
+	}
+	if factoryCalls != 0 || client.createCaseCalls != 0 {
+		t.Fatalf("provider calls = factory %d create case %d, want none", factoryCalls, client.createCaseCalls)
+	}
+	assertBackfillIdentityStatus(t, result, "unknown", "AWS caller identity and CUR 2.0 export state were not checked")
+}
+
+func TestRunnerBlocksUnconfirmedAndWrongIntentBackfillApprovalsBeforeCreatingSupportCase(t *testing.T) {
+	tests := []struct {
+		name      string
+		configure func(workflow.ExecutionOptions) workflow.ExecutionOptions
+	}{
+		{
+			name: "unconfirmed approval",
+			configure: func(options workflow.ExecutionOptions) workflow.ExecutionOptions {
+				options.Approvals[0].Confirmed = false
+				return options
+			},
+		},
+		{
+			name: "wrong intent",
+			configure: func(options workflow.ExecutionOptions) workflow.ExecutionOptions {
+				options.Approvals[0].Intent = "create_cur2_export"
+				return options
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := baselineBackfillClient()
+
+			result := runBackfill(t, client, tt.configure(approvedBackfillOptions(t, client)))
+
+			if result.Status != workflow.RunStatusBlocked {
+				t.Fatalf("Status = %q, want %q", result.Status, workflow.RunStatusBlocked)
+			}
+			if result.Code != "aws_plan_approval_mismatch" {
+				t.Fatalf("Code = %q, want aws_plan_approval_mismatch", result.Code)
+			}
+			if result.Mutated {
+				t.Fatal("Mutated = true, want false")
+			}
+			if client.createCaseCalls != 0 {
+				t.Fatalf("CreateCase calls = %d, want 0", client.createCaseCalls)
+			}
+		})
+	}
 }
 
 func TestRunnerUsesClientFactory(t *testing.T) {
 	client := baselineBackfillClient()
 	runner := NewRunner(RunnerConfig{
 		ClientFactory: func(options workflow.ExecutionOptions) Client {
-			if !workflow.HasAWSBackfillSupportCaseApproval(options) {
-				t.Fatalf("factory options missing approval: %#v", options)
+			if options.AWSBillingOperation != workflow.AWSBillingOperationRequestBackfill {
+				t.Fatalf("factory options operation = %q, want request_backfill", options.AWSBillingOperation)
 			}
 			return client
 		},
 		Now: time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC),
 	})
 
-	result := runner.Run(context.Background(), AWSBillingApplyPrereqsRequest(), approvedBackfillOptions(client.export))
+	result := runner.Run(context.Background(), AWSBillingApplyPrereqsRequest(), approvedBackfillOptions(t, client))
 
 	if result.Code != "aws_backfill_support_case_created" {
 		t.Fatalf("Code = %q, want aws_backfill_support_case_created", result.Code)
@@ -69,7 +316,8 @@ func TestRunnerUsesClientFactory(t *testing.T) {
 
 func TestRunnerCreatesSupportCaseWhenExplicitlyApproved(t *testing.T) {
 	client := baselineBackfillClient()
-	result := runBackfill(t, client, approvedBackfillOptions(client.export))
+	options := approvedBackfillOptions(t, client)
+	result := runBackfill(t, client, options)
 
 	if result.Status != workflow.RunStatusManualSteps {
 		t.Fatalf("Status = %q, want %q", result.Status, workflow.RunStatusManualSteps)
@@ -82,6 +330,10 @@ func TestRunnerCreatesSupportCaseWhenExplicitlyApproved(t *testing.T) {
 	}
 	if result.PlanInput == nil || len(result.PlanInput.Steps) != 1 {
 		t.Fatalf("PlanInput.Steps = %#v, want one support case creation step", result.PlanInput)
+	}
+	plan := planFromBackfillReport(t, result, options)
+	if !plan.Approval.Required || !plan.Approval.Approved || plan.Approval.Blocked {
+		t.Fatalf("approval summary = %#v, want required and approved after approved support case creation", plan.Approval)
 	}
 	if result.PlanInput.Steps[0].Intent != workflow.PlanStepCreate {
 		t.Fatalf("step intent = %q, want %q", result.PlanInput.Steps[0].Intent, workflow.PlanStepCreate)
@@ -114,7 +366,7 @@ func TestRunnerReportsWarningWhenCreatedCaseStatusLookupFails(t *testing.T) {
 	client := baselineBackfillClient()
 	client.describeCreatedCaseErr = NewProviderError("aws_support_describe_cases_failed", "created case lookup failed")
 
-	result := runBackfill(t, client, approvedBackfillOptions(client.export))
+	result := runBackfill(t, client, approvedBackfillOptions(t, client))
 
 	if result.Code != "aws_backfill_support_case_created" {
 		t.Fatalf("Code = %q, want aws_backfill_support_case_created", result.Code)
@@ -142,7 +394,7 @@ func TestRunnerReusesExistingMatchingOpenSupportCase(t *testing.T) {
 		Status:    "opened",
 	}}
 
-	result := runBackfill(t, client, approvedBackfillOptions(client.export))
+	result := runBackfill(t, client, approvedBackfillOptions(t, client))
 
 	if result.Code != "aws_backfill_support_case_already_open" {
 		t.Fatalf("Code = %q, want aws_backfill_support_case_already_open", result.Code)
@@ -155,11 +407,38 @@ func TestRunnerReusesExistingMatchingOpenSupportCase(t *testing.T) {
 	}
 }
 
+func TestRunnerFailsClosedWhenMatchingOpenSupportCaseHasNoSafeReference(t *testing.T) {
+	client := baselineBackfillClient()
+	ref := backfillRequestReference(client.export.ExportARN, "2026-06")
+	client.openCases = []SupportCase{{
+		Subject: "Existing backfill request [" + ref + "]",
+		Status:  "opened",
+	}}
+
+	result := runBackfill(t, client, approvedBackfillOptions(t, client))
+
+	if result.Status != workflow.RunStatusBlocked {
+		t.Fatalf("Status = %q, want %q", result.Status, workflow.RunStatusBlocked)
+	}
+	if result.Code != "aws_backfill_duplicate_check_failed" {
+		t.Fatalf("Code = %q, want aws_backfill_duplicate_check_failed", result.Code)
+	}
+	if result.Mutated {
+		t.Fatal("Mutated = true, want false when matching case has no safe reference")
+	}
+	if client.createCaseCalls != 0 {
+		t.Fatalf("CreateCase calls = %d, want 0", client.createCaseCalls)
+	}
+	if _, ok := reportCheck(result, "aws_backfill_support_case_already_open"); ok {
+		t.Fatal("existing-case reuse check present, want fail-closed duplicate check")
+	}
+}
+
 func TestRunnerFailsClosedWhenDuplicateCheckFails(t *testing.T) {
 	client := baselineBackfillClient()
 	client.describeOpenCasesErr = NewProviderError("aws_support_describe_cases_failed", "duplicate check unavailable")
 
-	result := runBackfill(t, client, approvedBackfillOptions(client.export))
+	result := runBackfill(t, client, approvedBackfillOptions(t, client))
 
 	if result.Status != workflow.RunStatusBlocked {
 		t.Fatalf("Status = %q, want %q", result.Status, workflow.RunStatusBlocked)
@@ -179,7 +458,7 @@ func TestRunnerBlocksWhenCreateCaseFails(t *testing.T) {
 	client := baselineBackfillClient()
 	client.createCaseErr = NewProviderError("aws_support_create_case_failed", "create failed")
 
-	result := runBackfill(t, client, approvedBackfillOptions(client.export))
+	result := runBackfill(t, client, approvedBackfillOptions(t, client))
 
 	if result.Status != workflow.RunStatusBlocked {
 		t.Fatalf("Status = %q, want %q", result.Status, workflow.RunStatusBlocked)
@@ -192,11 +471,54 @@ func TestRunnerBlocksWhenCreateCaseFails(t *testing.T) {
 	}
 }
 
+func TestRunnerBlocksWhenCreatedSupportCaseIDIsEmpty(t *testing.T) {
+	client := baselineBackfillClient()
+	client.createdCaseID = ""
+
+	result := runBackfill(t, client, approvedBackfillOptions(t, client))
+
+	if result.Status != workflow.RunStatusBlocked {
+		t.Fatalf("Status = %q, want %q", result.Status, workflow.RunStatusBlocked)
+	}
+	if result.Code != "aws_support_create_case_response_incomplete" {
+		t.Fatalf("Code = %q, want aws_support_create_case_response_incomplete", result.Code)
+	}
+	if !result.Mutated {
+		t.Fatal("Mutated = false, want true because AWS Support create was attempted and returned an incomplete response")
+	}
+	if client.createCaseCalls != 1 {
+		t.Fatalf("CreateCase calls = %d, want 1", client.createCaseCalls)
+	}
+	if _, ok := reportCheck(result, "aws_backfill_support_case_created"); ok {
+		t.Fatal("created support case check present, want fail-closed report")
+	}
+}
+
+func TestRunnerTreatsIncompleteCreateCaseProviderResponseAsMutationAmbiguous(t *testing.T) {
+	client := baselineBackfillClient()
+	client.createCaseErr = NewProviderError("aws_support_create_case_response_incomplete", "AWS Support CreateCase response did not include a case ID.")
+
+	result := runBackfill(t, client, approvedBackfillOptions(t, client))
+
+	if result.Status != workflow.RunStatusBlocked {
+		t.Fatalf("Status = %q, want %q", result.Status, workflow.RunStatusBlocked)
+	}
+	if result.Code != "aws_support_create_case_response_incomplete" {
+		t.Fatalf("Code = %q, want aws_support_create_case_response_incomplete", result.Code)
+	}
+	if !result.Mutated {
+		t.Fatal("Mutated = false, want true for incomplete CreateCase response after request")
+	}
+	if _, ok := reportCheck(result, "aws_backfill_support_case_created"); ok {
+		t.Fatal("created support case check present, want fail-closed incomplete-response report")
+	}
+}
+
 func TestRunnerGuidesWhenSupportAPIIsUnavailable(t *testing.T) {
 	client := baselineBackfillClient()
 	client.describeServicesErr = NewProviderError("aws_support_subscription_required", "support plan does not allow Support API case creation")
 
-	result := runBackfill(t, client, approvedBackfillOptions(client.export))
+	result := runBackfill(t, client, requestBackfillOptions(client.export))
 
 	if result.Status != workflow.RunStatusManualSteps {
 		t.Fatalf("Status = %q, want %q", result.Status, workflow.RunStatusManualSteps)
@@ -217,7 +539,7 @@ func TestRunnerDoesNotCreateCaseWhenPreviousMonthIsAlreadyPresent(t *testing.T) 
 	client.previousMonthDataReady = true
 	client.previousMonthManifestReady = true
 
-	result := runBackfill(t, client, approvedBackfillOptions(client.export))
+	result := runBackfill(t, client, requestBackfillOptions(client.export))
 
 	if result.Status != workflow.RunStatusReady {
 		t.Fatalf("Status = %q, want %q", result.Status, workflow.RunStatusReady)
@@ -237,7 +559,7 @@ func TestRunnerGuidesWhenNoCUR2ExportExists(t *testing.T) {
 	client := baselineBackfillClient()
 	client.exports = nil
 
-	result := runBackfill(t, client, approvedBackfillOptions(client.export))
+	result := runBackfill(t, client, requestBackfillOptions(client.export))
 
 	if result.Status != workflow.RunStatusManualSteps {
 		t.Fatalf("Status = %q, want %q", result.Status, workflow.RunStatusManualSteps)
@@ -251,13 +573,42 @@ func TestRunnerGuidesWhenNoCUR2ExportExists(t *testing.T) {
 	if client.createCaseCalls != 0 {
 		t.Fatalf("CreateCase calls = %d, want 0", client.createCaseCalls)
 	}
+	assertBackfillIdentityStatus(t, result, "verified", "AWS caller identity was verified")
+}
+
+func TestRunnerBlocksWhenPreflightSeesIncompleteExportSummary(t *testing.T) {
+	client := baselineBackfillClient()
+	client.exportPages = map[string]cur2preflight.ExportPage{
+		"": {
+			Exports: []cur2preflight.ExportSummary{{
+				Name:       "matilda-cur2",
+				TableName:  "COST_AND_USAGE_REPORT",
+				SourceType: "COST_AND_USAGE_REPORT",
+			}},
+		},
+	}
+
+	result := runBackfill(t, client, requestBackfillOptions(client.export))
+
+	if result.Status != workflow.RunStatusBlocked {
+		t.Fatalf("Status = %q, want %q", result.Status, workflow.RunStatusBlocked)
+	}
+	if result.Code != "aws_data_exports_incomplete_export_summary" {
+		t.Fatalf("Code = %q, want aws_data_exports_incomplete_export_summary", result.Code)
+	}
+	if result.Mutated {
+		t.Fatal("Mutated = true, want false when AWS Data Exports response is incomplete")
+	}
+	if client.createCaseCalls != 0 {
+		t.Fatalf("CreateCase calls = %d, want 0", client.createCaseCalls)
+	}
 }
 
 func TestRunnerBlocksWhenCUR2PreflightIsNotReadyForBackfill(t *testing.T) {
 	client := baselineBackfillClient()
 	client.table.Columns = client.table.Columns[1:]
 
-	result := runBackfill(t, client, approvedBackfillOptions(client.export))
+	result := runBackfill(t, client, requestBackfillOptions(client.export))
 
 	if result.Status != workflow.RunStatusBlocked {
 		t.Fatalf("Status = %q, want %q", result.Status, workflow.RunStatusBlocked)
@@ -268,6 +619,7 @@ func TestRunnerBlocksWhenCUR2PreflightIsNotReadyForBackfill(t *testing.T) {
 	if result.Mutated {
 		t.Fatal("Mutated = true, want false when preflight blocks")
 	}
+	assertBackfillIdentityStatus(t, result, "verified", "AWS caller identity was verified")
 }
 
 func TestRunnerBlocksWhenPreviousMonthInspectionFails(t *testing.T) {
@@ -275,7 +627,7 @@ func TestRunnerBlocksWhenPreviousMonthInspectionFails(t *testing.T) {
 	client.listObjectsErr = cur2preflight.NewProviderError("aws_s3_bucket_inaccessible", "list failed")
 	client.listObjectsErrAfterCalls = 2
 
-	result := runBackfill(t, client, approvedBackfillOptions(client.export))
+	result := runBackfill(t, client, requestBackfillOptions(client.export))
 
 	if result.Status != workflow.RunStatusBlocked {
 		t.Fatalf("Status = %q, want %q", result.Status, workflow.RunStatusBlocked)
@@ -294,7 +646,7 @@ func TestRunnerBlocksWhenPreviousMonthManifestRecheckFails(t *testing.T) {
 	client.listObjectsErr = cur2preflight.NewProviderError("aws_s3_bucket_inaccessible", "manifest list failed")
 	client.listObjectsErrAfterCalls = 3
 
-	result := runBackfill(t, client, approvedBackfillOptions(client.export))
+	result := runBackfill(t, client, requestBackfillOptions(client.export))
 
 	if result.Status != workflow.RunStatusBlocked {
 		t.Fatalf("Status = %q, want %q", result.Status, workflow.RunStatusBlocked)
@@ -318,7 +670,7 @@ func TestRunnerGuidesWhenSupportClassificationIsAmbiguous(t *testing.T) {
 		}},
 	})
 
-	result := runBackfill(t, client, approvedBackfillOptions(client.export))
+	result := runBackfill(t, client, requestBackfillOptions(client.export))
 
 	if result.Status != workflow.RunStatusManualSteps {
 		t.Fatalf("Status = %q, want %q", result.Status, workflow.RunStatusManualSteps)
@@ -353,7 +705,7 @@ func TestRunnerGuidesForGenericBillingCategoryWithoutMutation(t *testing.T) {
 		}},
 	}}
 
-	result := runBackfill(t, client, approvedBackfillOptions(client.export))
+	result := runBackfill(t, client, requestBackfillOptions(client.export))
 
 	if result.Status != workflow.RunStatusManualSteps {
 		t.Fatalf("Status = %q, want %q", result.Status, workflow.RunStatusManualSteps)
@@ -376,7 +728,7 @@ func TestRunnerGuidesWhenLowSeverityIsUnavailable(t *testing.T) {
 	client := baselineBackfillClient()
 	client.severities = []SupportSeverity{{Code: "normal", Name: "System impaired"}}
 
-	result := runBackfill(t, client, approvedBackfillOptions(client.export))
+	result := runBackfill(t, client, requestBackfillOptions(client.export))
 
 	if result.Status != workflow.RunStatusManualSteps {
 		t.Fatalf("Status = %q, want %q", result.Status, workflow.RunStatusManualSteps)
@@ -395,6 +747,80 @@ func TestRunnerGuidesWhenLowSeverityIsUnavailable(t *testing.T) {
 	}
 }
 
+func TestRunnerGuidesWhenSupportClassificationHasIncompleteCodes(t *testing.T) {
+	tests := []struct {
+		name      string
+		configure func(*fakeBackfillClient)
+		wantCode  string
+	}{
+		{
+			name: "empty service code",
+			configure: func(client *fakeBackfillClient) {
+				client.services = []SupportService{{
+					Name: "Billing",
+					Categories: []SupportCategory{{
+						Code: "cost-and-usage-reports",
+						Name: "Cost and Usage Reports",
+					}},
+				}}
+			},
+			wantCode: "aws_support_case_classification_unavailable",
+		},
+		{
+			name: "empty category code",
+			configure: func(client *fakeBackfillClient) {
+				client.services = []SupportService{{
+					Code: "billing",
+					Name: "Billing",
+					Categories: []SupportCategory{{
+						Name: "Cost and Usage Reports",
+					}},
+				}}
+			},
+			wantCode: "aws_support_case_classification_unavailable",
+		},
+		{
+			name: "empty severity code",
+			configure: func(client *fakeBackfillClient) {
+				client.severities = []SupportSeverity{{Name: "Low"}}
+			},
+			wantCode: "aws_support_low_severity_unavailable",
+		},
+		{
+			name: "non-low severity code with low display name",
+			configure: func(client *fakeBackfillClient) {
+				client.severities = []SupportSeverity{{Code: "normal", Name: "Low"}}
+			},
+			wantCode: "aws_support_low_severity_unavailable",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := baselineBackfillClient()
+			tt.configure(client)
+
+			result := runBackfill(t, client, requestBackfillOptions(client.export))
+
+			if result.Status != workflow.RunStatusManualSteps {
+				t.Fatalf("Status = %q, want %q", result.Status, workflow.RunStatusManualSteps)
+			}
+			if result.SupportStatus != workflow.SupportGuided {
+				t.Fatalf("SupportStatus = %q, want %q", result.SupportStatus, workflow.SupportGuided)
+			}
+			if result.Code != tt.wantCode {
+				t.Fatalf("Code = %q, want %q", result.Code, tt.wantCode)
+			}
+			if result.Mutated {
+				t.Fatal("Mutated = true, want false when support classification is incomplete")
+			}
+			if client.createCaseCalls != 0 {
+				t.Fatalf("CreateCase calls = %d, want 0", client.createCaseCalls)
+			}
+		})
+	}
+}
+
 func TestRunnerGuidesWhenNoSupportCategoryMatchesBackfillIntent(t *testing.T) {
 	client := baselineBackfillClient()
 	client.services = []SupportService{{
@@ -406,7 +832,7 @@ func TestRunnerGuidesWhenNoSupportCategoryMatchesBackfillIntent(t *testing.T) {
 		}},
 	}}
 
-	result := runBackfill(t, client, approvedBackfillOptions(client.export))
+	result := runBackfill(t, client, requestBackfillOptions(client.export))
 
 	if result.Status != workflow.RunStatusManualSteps {
 		t.Fatalf("Status = %q, want %q", result.Status, workflow.RunStatusManualSteps)
@@ -463,7 +889,7 @@ func TestRunnerGuidesWhenCreateCaseOptionsArePartiallyUnverified(t *testing.T) {
 		"billing/cur-backfill": {Available: true},
 	}
 
-	result := runBackfill(t, client, approvedBackfillOptions(client.export))
+	result := runBackfill(t, client, requestBackfillOptions(client.export))
 
 	if result.Status != workflow.RunStatusManualSteps {
 		t.Fatalf("Status = %q, want %q", result.Status, workflow.RunStatusManualSteps)
@@ -518,6 +944,21 @@ func TestSelectCUR2ExportFailsClosedForMissingAmbiguousAndProviderErrors(t *test
 		client.listExportsErr = NewProviderError("aws_data_exports_access_denied", "denied")
 		_, _, err := selectCUR2Export(ctx, client, "")
 		assertProviderErrorCode(t, err, "aws_data_exports_access_denied")
+	})
+
+	t.Run("incomplete export summary", func(t *testing.T) {
+		client := baselineBackfillClient()
+		client.exportPages = map[string]cur2preflight.ExportPage{
+			"": {
+				Exports: []cur2preflight.ExportSummary{{
+					Name:       "matilda-cur2",
+					TableName:  "COST_AND_USAGE_REPORT",
+					SourceType: "COST_AND_USAGE_REPORT",
+				}},
+			},
+		}
+		_, _, err := selectCUR2Export(ctx, client, "")
+		assertProviderErrorCode(t, err, "aws_data_exports_incomplete_export_summary")
 	})
 
 	t.Run("get export error", func(t *testing.T) {
@@ -603,6 +1044,65 @@ func TestSupportCaseBodyUsesFallbackMissingComponentText(t *testing.T) {
 	}
 }
 
+func TestSupportCaseBindingRefIsOpaqueStableAndSensitive(t *testing.T) {
+	client := baselineBackfillClient()
+	context := backfillContext{
+		Export:               client.export,
+		ExportRef:            cur2preflight.SafeCUR2ExportRef(client.export.ExportARN),
+		Period:               "2026-06",
+		MissingDataPartition: true,
+		MissingManifest:      true,
+	}
+	classification := supportClassification{
+		Language:     "en",
+		IssueType:    "technical",
+		ServiceCode:  "billing",
+		CategoryCode: "cost-and-usage-reports",
+		SeverityCode: "low",
+	}
+	reference := backfillRequestReference(client.export.ExportARN, context.Period)
+
+	binding := supportCaseBindingRef(classification, context, reference)
+
+	if !strings.HasPrefix(binding, "support_case_") {
+		t.Fatalf("supportCaseBindingRef = %q, want support_case_ prefix", binding)
+	}
+	for _, r := range strings.TrimPrefix(binding, "support_case_") {
+		if r < 'a' || r > 'p' {
+			t.Fatalf("supportCaseBindingRef = %q, want account-id-safe lowercase a-p suffix", binding)
+		}
+	}
+	if binding != supportCaseBindingRef(classification, context, reference) {
+		t.Fatal("supportCaseBindingRef is not stable for identical support-case facts")
+	}
+	body := supportCaseBody(context, reference)
+	for _, forbidden := range []string{
+		client.export.Name,
+		client.export.ExportARN,
+		client.export.SourceAccount,
+		client.export.Destination.Bucket,
+		client.export.Destination.Prefix,
+		body,
+	} {
+		if strings.Contains(binding, forbidden) {
+			t.Fatalf("supportCaseBindingRef leaked raw support-case detail %q in %q", forbidden, binding)
+		}
+	}
+	changedContext := context
+	changedContext.Export.Destination.Prefix = "matilda/cur2-renamed"
+	if binding == supportCaseBindingRef(classification, changedContext, reference) {
+		t.Fatal("supportCaseBindingRef did not change when support-case body facts changed")
+	}
+	changedClassification := classification
+	changedClassification.CategoryCode = "cur-backfill"
+	if binding == supportCaseBindingRef(changedClassification, context, reference) {
+		t.Fatal("supportCaseBindingRef did not change when support classification changed")
+	}
+	if encoded := letterEncodeHash([]byte{0x1f}, 1); encoded != "b" {
+		t.Fatalf("letterEncodeHash odd length = %q, want first high-nibble letter", encoded)
+	}
+}
+
 func runBackfill(t *testing.T, client *fakeBackfillClient, options workflow.ExecutionOptions) workflow.CapabilityReport {
 	t.Helper()
 	runner := NewRunner(RunnerConfig{
@@ -612,9 +1112,10 @@ func runBackfill(t *testing.T, client *fakeBackfillClient, options workflow.Exec
 	return runner.Run(context.Background(), AWSBillingApplyPrereqsRequest(), options)
 }
 
-func approvedBackfillOptions(export cur2preflight.Export) workflow.ExecutionOptions {
+func requestBackfillOptions(export cur2preflight.Export) workflow.ExecutionOptions {
 	ref := cur2preflight.SafeCUR2ExportRef(export.ExportARN)
 	options, err := workflow.NormalizeExecutionOptionsForRequest(AWSBillingApplyPrereqsRequest(), workflow.ExecutionOptions{
+		AWSBillingOperation: workflow.AWSBillingOperationRequestBackfill,
 		Selectors: &workflow.ExecutionSelectors{
 			AWS: &workflow.AWSExecutionSelectors{
 				Profile:       "default",
@@ -622,16 +1123,66 @@ func approvedBackfillOptions(export cur2preflight.Export) workflow.ExecutionOpti
 				CUR2ExportRef: ref,
 			},
 		},
-		Approvals: []workflow.ExecutionApproval{{
-			OperationID: workflow.AWSBackfillSupportCaseOperationID,
-			Intent:      workflow.ApprovalIntentRequestBackfillSupportCase,
-			Confirmed:   true,
-		}},
 	})
 	if err != nil {
 		panic(err)
 	}
 	return options
+}
+
+func approvedBackfillOptions(t *testing.T, client *fakeBackfillClient) workflow.ExecutionOptions {
+	t.Helper()
+	options := requestBackfillOptions(client.export)
+	plan := backfillPreviewPlan(t, client, options)
+	options.Approvals = []workflow.ExecutionApproval{{
+		OperationID: workflow.AWSBackfillSupportCaseOperationID,
+		Intent:      workflow.ApprovalIntentRequestBackfillSupportCase,
+		PlanID:      plan.PlanID,
+		Confirmed:   true,
+	}}
+	normalized, err := workflow.NormalizeExecutionOptionsForRequest(AWSBillingApplyPrereqsRequest(), options)
+	if err != nil {
+		t.Fatalf("NormalizeExecutionOptionsForRequest returned error: %v", err)
+	}
+	return normalized
+}
+
+func backfillPreviewPlan(t *testing.T, client *fakeBackfillClient, options workflow.ExecutionOptions) workflow.ExecutionPlan {
+	t.Helper()
+	probe := *client
+	result := runBackfill(t, &probe, options)
+	if result.Code != "aws_backfill_support_case_approval_required" {
+		t.Fatalf("preview code = %q, want aws_backfill_support_case_approval_required", result.Code)
+	}
+	return planFromBackfillReport(t, result, options)
+}
+
+func planFromBackfillReport(t *testing.T, result workflow.CapabilityReport, options workflow.ExecutionOptions) workflow.ExecutionPlan {
+	t.Helper()
+	if result.PlanInput == nil {
+		t.Fatal("PlanInput is nil")
+	}
+	input := *result.PlanInput
+	input.ExecutionOptions = options
+	plan, err := workflow.BuildExecutionPlan(input)
+	if err != nil {
+		t.Fatalf("BuildExecutionPlan returned error: %v", err)
+	}
+	return plan
+}
+
+func assertBackfillIdentityStatus(t *testing.T, result workflow.CapabilityReport, wantStatus string, wantSummary string) {
+	t.Helper()
+	if result.PlanInput == nil {
+		t.Fatal("PlanInput is nil")
+	}
+	got := result.PlanInput.OperatorIdentitySummary
+	if got.IdentityStatus != wantStatus {
+		t.Fatalf("IdentityStatus = %q, want %q", got.IdentityStatus, wantStatus)
+	}
+	if !strings.Contains(got.Summary, wantSummary) {
+		t.Fatalf("identity summary = %q, want to contain %q", got.Summary, wantSummary)
+	}
 }
 
 func baselineBackfillClient() *fakeBackfillClient {

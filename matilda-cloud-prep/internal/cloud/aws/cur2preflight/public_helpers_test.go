@@ -23,6 +23,12 @@ func TestPublicHelpersMirrorPreflightSelectionAndPreviousMonthRules(t *testing.T
 	if !strings.HasPrefix(ref, "cur2-") {
 		t.Fatalf("SafeCUR2ExportRef = %q, want cur2- prefix", ref)
 	}
+	if !isGeneratedCUR2Ref(ref) {
+		t.Fatalf("SafeCUR2ExportRef = %q, want generated letter-only ref", ref)
+	}
+	if hasTwelveDigitRun(ref) {
+		t.Fatalf("SafeCUR2ExportRef = %q, want no AWS-account-ID-like digit run", ref)
+	}
 	refs, err := SafeCUR2ExportRefs([]Export{export})
 	if err != nil {
 		t.Fatalf("SafeCUR2ExportRefs returned error: %v", err)
@@ -52,4 +58,31 @@ func TestPublicHelpersMirrorPreflightSelectionAndPreviousMonthRules(t *testing.T
 	if !MatchesPreviousMonthManifestKey(manifestPrefix+"Manifest.json", export, period) {
 		t.Fatal("MatchesPreviousMonthManifestKey rejected valid manifest key")
 	}
+}
+
+func isGeneratedCUR2Ref(value string) bool {
+	if !strings.HasPrefix(value, "cur2-") {
+		return false
+	}
+	for _, r := range strings.TrimPrefix(value, "cur2-") {
+		if r < 'a' || r > 'p' {
+			return false
+		}
+	}
+	return true
+}
+
+func hasTwelveDigitRun(value string) bool {
+	run := 0
+	for _, r := range value {
+		if r >= '0' && r <= '9' {
+			run++
+			if run >= 12 {
+				return true
+			}
+			continue
+		}
+		run = 0
+	}
+	return false
 }

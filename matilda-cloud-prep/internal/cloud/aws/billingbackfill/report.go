@@ -7,6 +7,18 @@ import (
 )
 
 func (runner Runner) report(request workflow.Request, status workflow.RunStatus, support workflow.SupportStatus, code string, message string, mutated bool, step workflow.PlanStep, checks ...workflow.PlanCheck) workflow.CapabilityReport {
+	return runner.reportWithIdentity(request, unknownBackfillIdentitySummary, status, support, code, message, mutated, step, checks...)
+}
+
+func (runner Runner) verifiedReport(request workflow.Request, status workflow.RunStatus, support workflow.SupportStatus, code string, message string, mutated bool, step workflow.PlanStep, checks ...workflow.PlanCheck) workflow.CapabilityReport {
+	return runner.reportWithIdentity(request, verifiedBackfillIdentitySummary, status, support, code, message, mutated, step, checks...)
+}
+
+func (runner Runner) preflightReport(request workflow.Request, preflight workflow.CapabilityReport, status workflow.RunStatus, support workflow.SupportStatus, code string, message string, mutated bool, step workflow.PlanStep, checks ...workflow.PlanCheck) workflow.CapabilityReport {
+	return runner.reportWithIdentity(request, preflightBackfillIdentitySummary(preflight), status, support, code, message, mutated, step, checks...)
+}
+
+func (runner Runner) reportWithIdentity(request workflow.Request, identitySummary func([]workflow.SourceHandle) workflow.OperatorIdentitySummary, status workflow.RunStatus, support workflow.SupportStatus, code string, message string, mutated bool, step workflow.PlanStep, checks ...workflow.PlanCheck) workflow.CapabilityReport {
 	handles := sourceHandles()
 	step.SourceHandles = handles
 	for index := range checks {
@@ -20,12 +32,8 @@ func (runner Runner) report(request workflow.Request, status workflow.RunStatus,
 		Mutated:       mutated,
 		SourceHandles: handles,
 		PlanInput: &workflow.ExecutionPlanInput{
-			Request: request,
-			OperatorIdentitySummary: workflow.OperatorIdentitySummary{
-				IdentityStatus: "verified",
-				Summary:        "AWS caller identity and CUR 2.0 export state were checked before AWS billing apply-prereqs.",
-				SourceHandles:  handles,
-			},
+			Request:                 request,
+			OperatorIdentitySummary: identitySummary(handles),
 			CoverageRecommendation: workflow.CoverageRecommendation{
 				CoverageStatus: workflow.CoverageUnknown,
 				Summary:        "AWS billing coverage follows the selected CUR 2.0 export and previous-month billing period.",
@@ -38,8 +46,43 @@ func (runner Runner) report(request workflow.Request, status workflow.RunStatus,
 	}
 }
 
+func unknownBackfillIdentitySummary(handles []workflow.SourceHandle) workflow.OperatorIdentitySummary {
+	return workflow.OperatorIdentitySummary{
+		IdentityStatus: "unknown",
+		Summary:        "AWS caller identity and CUR 2.0 export state were not checked before this AWS billing apply-prereqs report.",
+		SourceHandles:  handles,
+	}
+}
+
+func verifiedBackfillIdentitySummary(handles []workflow.SourceHandle) workflow.OperatorIdentitySummary {
+	return workflow.OperatorIdentitySummary{
+		IdentityStatus: "verified",
+		Summary:        "AWS caller identity and CUR 2.0 export state were checked before AWS billing apply-prereqs.",
+		SourceHandles:  handles,
+	}
+}
+
+func preflightBackfillIdentitySummary(preflight workflow.CapabilityReport) func([]workflow.SourceHandle) workflow.OperatorIdentitySummary {
+	return func(handles []workflow.SourceHandle) workflow.OperatorIdentitySummary {
+		if preflight.PlanInput == nil || strings.TrimSpace(preflight.PlanInput.OperatorIdentitySummary.IdentityStatus) == "" {
+			return unknownBackfillIdentitySummary(handles)
+		}
+		summary := preflight.PlanInput.OperatorIdentitySummary
+		summary.SourceHandles = handles
+		return summary
+	}
+}
+
+func withApprovedExecutionPlanID(report workflow.CapabilityReport, planID string) workflow.CapabilityReport {
+	if report.PlanInput != nil {
+		report.PlanInput.ApprovedExecutionPlanID = planID
+	}
+	return report
+}
+
 func approvalRequiredStep() workflow.PlanStep {
 	return workflow.PlanStep{
+		ID:                        workflow.AWSBackfillSupportCaseOperationID,
 		Intent:                    workflow.PlanStepCreate,
 		Title:                     "Request AWS CUR 2.0 previous-month backfill",
 		Description:               "Create an AWS Support case for previous-month CUR 2.0 billing data backfill only after explicit approval.",
@@ -56,6 +99,7 @@ func approvalRequiredStep() workflow.PlanStep {
 
 func supportCaseCreatedStep() workflow.PlanStep {
 	return workflow.PlanStep{
+		ID:                        workflow.AWSBackfillSupportCaseOperationID,
 		Intent:                    workflow.PlanStepCreate,
 		Title:                     "Requested AWS CUR 2.0 previous-month backfill",
 		Description:               "Created an AWS Support case for previous-month CUR 2.0 billing data backfill after explicit approval.",

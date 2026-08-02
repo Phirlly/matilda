@@ -205,7 +205,7 @@ func isRepairableCUR2Candidate(item classifiedCUR2Candidate) bool {
 		return false
 	}
 	switch item.Result.Code {
-	case "aws_s3_delivery_policy_missing", "aws_s3_bucket_policy_inaccessible":
+	case "aws_s3_delivery_policy_missing":
 		return true
 	default:
 		return false
@@ -446,10 +446,6 @@ func (facts *cur2CandidateFacts) deriveBlocker(status workflow.RunStatus, result
 	if status != workflow.RunStatusBlocked {
 		return
 	}
-	if resultCode == "aws_cur2_output_settings_blocked" && facts.OutputVersioning == "OVERWRITE_REPORT" {
-		facts.Blocker = "overwrite file versioning is not verified for this Matilda path."
-		return
-	}
 	if facts.PolicyGap != "" && (facts.PolicyStatus == "action needed" || resultCode == "aws_s3_delivery_policy_missing") {
 		facts.Blocker = "S3 delivery policy does not satisfy " + policyGapRequirement(facts.PolicyGap) + "."
 	}
@@ -485,6 +481,9 @@ func selectableCUR2NextAction(item classifiedCUR2Candidate) string {
 	facts := cur2CandidateFactsFromResult(item)
 	switch item.Result.Status {
 	case workflow.StatusReady:
+		if facts.PolicyStatus == "action needed" || facts.PolicyStatus == "not inspected" {
+			return "continue with this CUR 2.0 export; review the S3 delivery policy before relying on future delivery or backfill."
+		}
 		switch item.Result.Code {
 		case "aws_s3_delivery_policy_missing", "aws_s3_bucket_policy_inaccessible":
 			return "continue with this CUR 2.0 export; review the S3 delivery policy before relying on future delivery or backfill."
@@ -533,15 +532,13 @@ func policyGapRequirement(gap string) string {
 }
 
 func nonReadyCUR2NextAction(item classifiedCUR2Candidate) string {
-	facts := cur2CandidateFactsFromResult(item)
 	switch item.Result.Code {
 	case "aws_cur2_output_settings_blocked":
-		if facts.OutputVersioning == "OVERWRITE_REPORT" {
-			return "confirm Matilda support for OVERWRITE_REPORT, or select a CREATE_NEW_REPORT CUR 2.0 export."
-		}
 		return "review the CUR 2.0 output settings and rerun after they match a Matilda-supported AWS-standard shape."
 	case "aws_data_exports_transient":
 		return "retry preflight after the transient AWS Data Exports issue clears."
+	case "aws_s3_bucket_policy_inaccessible":
+		return "grant read access to inspect the S3 bucket policy, then rerun preflight."
 	default:
 		return "review the direct preflight result and rerun after remediation."
 	}

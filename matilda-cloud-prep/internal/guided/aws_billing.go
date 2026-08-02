@@ -317,8 +317,9 @@ func writeAWSBillingSummaryWithFacts(stdout io.Writer, source billingguide.Crede
 		fmt.Fprintln(stdout, result.Message)
 	}
 	fmt.Fprintln(stdout)
-	fmt.Fprintln(stdout, "Reproduce with:")
-	fmt.Fprintf(stdout, "  %s\n", directAWSBillingCommand(source, selectedExportRef(result)))
+	label, command := awsBillingFollowupCommand(source, result)
+	fmt.Fprintln(stdout, label)
+	fmt.Fprintf(stdout, "  %s\n", command)
 }
 
 func selectedExportRef(result workflow.Result) string {
@@ -330,6 +331,40 @@ func selectedExportRef(result workflow.Result) string {
 
 func directAWSBillingCommand(source billingguide.CredentialSource, exportRef string) string {
 	parts := []string{"matilda-prep", "rapid-assessment", "billing", "aws", "preflight"}
+	return directAWSBillingCommandWithParts(parts, source, exportRef)
+}
+
+func directAWSBillingBackfillCommand(source billingguide.CredentialSource, exportRef string) string {
+	parts := []string{"matilda-prep", "rapid-assessment", "billing", "aws", "apply-prereqs"}
+	parts = directAWSBillingSelectorParts(parts, source, exportRef)
+	parts = append(parts, "--request-backfill")
+	return strings.Join(parts, " ")
+}
+
+func directAWSBillingCreateCUR2Command(source billingguide.CredentialSource) string {
+	parts := []string{"matilda-prep", "rapid-assessment", "billing", "aws", "apply-prereqs"}
+	parts = directAWSBillingSelectorParts(parts, source, "")
+	parts = append(parts, "--create-cur2-export")
+	return strings.Join(parts, " ")
+}
+
+func awsBillingFollowupCommand(source billingguide.CredentialSource, result workflow.Result) (string, string) {
+	switch result.Code {
+	case "aws_backfill_manual_step_required":
+		return "Next command:", directAWSBillingBackfillCommand(source, selectedExportRef(result))
+	case "aws_cur2_export_not_found", "aws_non_cur2_source_out_of_scope":
+		return "Next command:", directAWSBillingCreateCUR2Command(source)
+	default:
+		return "Reproduce with:", directAWSBillingCommand(source, selectedExportRef(result))
+	}
+}
+
+func directAWSBillingCommandWithParts(parts []string, source billingguide.CredentialSource, exportRef string) string {
+	parts = directAWSBillingSelectorParts(parts, source, exportRef)
+	return strings.Join(parts, " ")
+}
+
+func directAWSBillingSelectorParts(parts []string, source billingguide.CredentialSource, exportRef string) []string {
 	if source.Profile != "" {
 		parts = append(parts, "--profile", shellArg(source.Profile))
 	}
@@ -339,7 +374,7 @@ func directAWSBillingCommand(source billingguide.CredentialSource, exportRef str
 	if exportRef != "" {
 		parts = append(parts, "--export-ref", shellArg(exportRef))
 	}
-	return strings.Join(parts, " ")
+	return parts
 }
 
 func credentialSourceLabel(source billingguide.CredentialSource) string {

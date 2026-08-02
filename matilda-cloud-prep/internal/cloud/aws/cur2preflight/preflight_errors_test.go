@@ -398,7 +398,7 @@ func TestPreflightHandlesListedExportWithoutARN(t *testing.T) {
 
 	result := runPreflight(t, client)
 
-	assertBlockedCode(t, result, "aws_cur2_export_not_found")
+	assertBlockedCode(t, result, "aws_data_exports_incomplete_export_summary")
 	if client.calls["GetExport"] != 0 {
 		t.Fatalf("GetExport calls = %d, want 0 for missing export ARN", client.calls["GetExport"])
 	}

@@ -106,7 +106,7 @@ func TestRegistryPassesExecutionOptionsToCapabilityRunner(t *testing.T) {
 			AWS: &AWSExecutionSelectors{
 				Profile:       "default",
 				Region:        "us-west-2",
-				CUR2ExportRef: "cur2-1234abcd5678ef90",
+				CUR2ExportRef: "cur2-abcdefghijklmnop",
 			},
 		},
 	}
@@ -137,7 +137,7 @@ func TestRegistryPassesExecutionOptionsToCapabilityRunner(t *testing.T) {
 	if gotOptions.Selectors == nil || gotOptions.Selectors.AWS == nil {
 		t.Fatalf("runner AWS selectors missing: %#v", gotOptions)
 	}
-	if gotOptions.Selectors.AWS.Profile != "default" || gotOptions.Selectors.AWS.Region != "us-west-2" || gotOptions.Selectors.AWS.CUR2ExportRef != "cur2-1234abcd5678ef90" {
+	if gotOptions.Selectors.AWS.Profile != "default" || gotOptions.Selectors.AWS.Region != "us-west-2" || gotOptions.Selectors.AWS.CUR2ExportRef != "cur2-abcdefghijklmnop" {
 		t.Fatalf("runner AWS selectors = %#v, want supplied selectors", gotOptions.Selectors.AWS)
 	}
 	if result.ExecutionOptions.Selectors == nil || result.ExecutionOptions.Selectors.AWS == nil {

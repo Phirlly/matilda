@@ -83,6 +83,18 @@ func TestRegistryRejectsInvalidCapabilityReportFields(t *testing.T) {
 			},
 		},
 		{
+			name: "message with bare AWS account ID",
+			mutate: func(report *CapabilityReport) {
+				report.Message = "AWS account 123456789012 is ready."
+			},
+		},
+		{
+			name: "message with private path",
+			mutate: func(report *CapabilityReport) {
+				report.Message = "Review /private/tmp/matilda-output.json."
+			},
+		},
+		{
 			name: "unsafe missing source",
 			mutate: func(report *CapabilityReport) {
 				report.MissingSourceOfTruth = []string{"read /Users/lly/private.txt"}

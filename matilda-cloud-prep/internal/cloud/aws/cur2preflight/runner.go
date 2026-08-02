@@ -239,8 +239,7 @@ func (runner Runner) inspectListedExports(ctx context.Context, client Client, su
 	for _, summary := range summaries {
 		exportARN := strings.TrimSpace(summary.ExportARN)
 		if exportARN == "" {
-			exports = append(exports, Export{Name: summary.Name})
-			continue
+			return nil, NewProviderError("aws_data_exports_incomplete_export_summary", "AWS Data Exports returned an export summary without an export ARN.")
 		}
 		export, err := client.GetExport(ctx, exportARN)
 		if err != nil {
@@ -338,7 +337,24 @@ func cur2ExportRef(exportARN string) string {
 
 func cur2ExportRefWithLength(exportARN string, length int) string {
 	sum := sha256.Sum256([]byte("aws:bcm-data-exports:export-arn:" + exportARN))
-	return "cur2-" + hex.EncodeToString(sum[:])[:length]
+	return "cur2-" + letterEncodeHash(sum[:], length)
+}
+
+func letterEncodeHash(hash []byte, length int) string {
+	const alphabet = "abcdefghijklmnop"
+	var builder strings.Builder
+	builder.Grow(length)
+	for _, value := range hash {
+		if builder.Len() >= length {
+			break
+		}
+		builder.WriteByte(alphabet[value>>4])
+		if builder.Len() >= length {
+			break
+		}
+		builder.WriteByte(alphabet[value&0x0f])
+	}
+	return builder.String()
 }
 
 func candidateEvidence(candidates []Export, refs []string) []workflow.PlanEvidence {
@@ -551,7 +567,7 @@ func inspectBucketPolicy(ctx context.Context, client Client, export Export) chec
 	if err != nil {
 		return failFinding(providerErrorCode(err, "aws_s3_bucket_policy_inaccessible"), "AWS S3 bucket policy visibility", "S3 bucket policy could not be inspected.")
 	}
-	return validateBucketPolicy(policy, export.SourceAccount, export.SourceARN, export.Destination)
+	return validateBucketPolicy(policy, export.SourceAccount, export.SourceARN, export)
 }
 
 func policyFindingAfterCurrentDataProof(policyFinding checkFinding, previousMonthFinding checkFinding) checkFinding {

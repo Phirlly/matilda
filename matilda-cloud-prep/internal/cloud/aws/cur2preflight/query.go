@@ -82,6 +82,12 @@ func validateCUR2Query(statement string, tableColumns []string) checkFinding {
 			logicalFieldSources[matildaProductNameField] = matildaProductNameField + "<-" + cur2ProductNameSelector
 		}
 	}
+	if !outputs[matildaProductNameField] && logicalFieldSources[matildaProductNameField] == "" {
+		if source := productNameLogicalFieldSource(schemaColumns); source != "" {
+			markProductNameLogicalSource(outputs, source)
+			logicalFieldSources[matildaProductNameField] = source
+		}
+	}
 
 	missing := missingRequiredColumns(outputs)
 	if len(missing) > 0 {
@@ -202,6 +208,15 @@ func productNameLogicalFieldSource(available map[string]bool) string {
 		return matildaProductNameField + "<-" + cur2ProductMapColumn
 	default:
 		return ""
+	}
+}
+
+func markProductNameLogicalSource(available map[string]bool, source string) {
+	switch source {
+	case matildaProductNameField + "<-" + cur2ProductNameSelector:
+		available[cur2ProductNameSelector] = true
+	case matildaProductNameField + "<-" + cur2ProductMapColumn:
+		available[cur2ProductMapColumn] = true
 	}
 }
 

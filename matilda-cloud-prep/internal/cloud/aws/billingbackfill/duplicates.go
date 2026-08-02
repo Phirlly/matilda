@@ -17,6 +17,9 @@ func findExistingOpenCase(ctx context.Context, client Client, reference string) 
 	}
 	for _, supportCase := range cases {
 		if strings.Contains(supportCase.Subject, reference) {
+			if strings.TrimSpace(supportCase.CaseID) == "" && strings.TrimSpace(supportCase.DisplayID) == "" {
+				return SupportCase{}, false, NewProviderError("aws_backfill_duplicate_check_failed", "Matching AWS Support case did not include a safe case reference.")
+			}
 			return supportCase, true, nil
 		}
 	}
