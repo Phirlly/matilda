@@ -286,7 +286,7 @@ func TestAWSBillingPreflightFlagsReachRunnerAndJSON(t *testing.T) {
 		"rapid-assessment", "billing", "aws", "preflight",
 		"--profile", "default",
 		"--region", "us-west-2",
-		"--export-ref", "cur2-1234abcd5678ef90",
+		"--export-ref", "cur2-abcdefghijklmnop",
 		"--timeout", "45s",
 	}, strings.NewReader(""), &stdout, &stderr, registry)
 
@@ -310,7 +310,7 @@ func TestAWSBillingPreflightFlagsReachRunnerAndJSON(t *testing.T) {
 	}
 	if gotOptions.Selectors.AWS.Profile != "default" ||
 		gotOptions.Selectors.AWS.Region != "us-west-2" ||
-		gotOptions.Selectors.AWS.CUR2ExportRef != "cur2-1234abcd5678ef90" {
+		gotOptions.Selectors.AWS.CUR2ExportRef != "cur2-abcdefghijklmnop" {
 		t.Fatalf("runner AWS selectors = %#v, want supplied selector values", gotOptions.Selectors.AWS)
 	}
 
@@ -336,7 +336,7 @@ func TestAWSBillingPreflightFlagsReachRunnerAndJSON(t *testing.T) {
 	if !ok {
 		t.Fatalf("execution_options.selectors.aws missing or wrong type: %#v", selectors["aws"])
 	}
-	if awsSelectors["profile"] != "default" || awsSelectors["region"] != "us-west-2" || awsSelectors["cur2_export_ref"] != "cur2-1234abcd5678ef90" {
+	if awsSelectors["profile"] != "default" || awsSelectors["region"] != "us-west-2" || awsSelectors["cur2_export_ref"] != "cur2-abcdefghijklmnop" {
 		t.Fatalf("execution_options.selectors.aws = %#v, want supplied selector values", awsSelectors)
 	}
 	for _, forbidden := range []string{"arn:aws", "/Users/", "access_key", "secret_key", "session_token"} {
@@ -346,7 +346,7 @@ func TestAWSBillingPreflightFlagsReachRunnerAndJSON(t *testing.T) {
 	}
 }
 
-func TestAWSBillingApplyPrereqsFlagsReachRunnerAndJSON(t *testing.T) {
+func TestAWSBillingBackfillPlanFlagsReachRunnerAndJSON(t *testing.T) {
 	request := workflow.Request{
 		Goal:           assessment.RapidAssessment,
 		CollectionPath: assessment.CollectionBilling,
@@ -371,9 +371,8 @@ func TestAWSBillingApplyPrereqsFlagsReachRunnerAndJSON(t *testing.T) {
 		"rapid-assessment", "billing", "aws", "apply-prereqs",
 		"--profile", "default",
 		"--region", "us-west-2",
-		"--export-ref", "cur2-1234abcd5678ef90",
+		"--export-ref", "cur2-abcdefghijklmnop",
 		"--request-backfill",
-		"--confirm-create-support-case",
 	}, strings.NewReader(""), &stdout, &stderr, registry)
 
 	if code != 0 {
@@ -387,16 +386,75 @@ func TestAWSBillingApplyPrereqsFlagsReachRunnerAndJSON(t *testing.T) {
 	}
 	if gotOptions.Selectors.AWS.Profile != "default" ||
 		gotOptions.Selectors.AWS.Region != "us-west-2" ||
-		gotOptions.Selectors.AWS.CUR2ExportRef != "cur2-1234abcd5678ef90" {
+		gotOptions.Selectors.AWS.CUR2ExportRef != "cur2-abcdefghijklmnop" {
 		t.Fatalf("runner AWS selectors = %#v, want supplied selector values", gotOptions.Selectors.AWS)
 	}
-	if len(gotOptions.Approvals) != 1 {
-		t.Fatalf("runner approvals length = %d, want 1", len(gotOptions.Approvals))
+	if gotOptions.AWSBillingOperation != workflow.AWSBillingOperationRequestBackfill {
+		t.Fatalf("AWSBillingOperation = %q, want %q", gotOptions.AWSBillingOperation, workflow.AWSBillingOperationRequestBackfill)
 	}
-	if gotOptions.Approvals[0].OperationID != workflow.AWSBackfillSupportCaseOperationID ||
-		gotOptions.Approvals[0].Intent != workflow.ApprovalIntentRequestBackfillSupportCase ||
-		!gotOptions.Approvals[0].Confirmed {
-		t.Fatalf("runner approval = %#v, want scoped AWS backfill support case approval", gotOptions.Approvals[0])
+	if len(gotOptions.Approvals) != 0 {
+		t.Fatalf("runner approvals length = %d, want none for plan-only backfill", len(gotOptions.Approvals))
+	}
+
+	doc := decodeJSON(t, stdout.String())
+	executionOptions, ok := doc["execution_options"].(map[string]any)
+	if !ok {
+		t.Fatalf("execution_options missing or wrong type in %s", stdout.String())
+	}
+	if executionOptions["aws_billing_operation"] != string(workflow.AWSBillingOperationRequestBackfill) {
+		t.Fatalf("execution_options.aws_billing_operation = %v, want request backfill", executionOptions["aws_billing_operation"])
+	}
+	if _, ok := executionOptions["approvals"]; ok {
+		t.Fatalf("execution_options unexpectedly includes approvals: %#v", executionOptions["approvals"])
+	}
+}
+
+func TestAWSBillingBackfillApprovalFlagsReachRunnerAndJSON(t *testing.T) {
+	request := workflow.Request{
+		Goal:           assessment.RapidAssessment,
+		CollectionPath: assessment.CollectionBilling,
+		Provider:       assessment.ProviderAWS,
+		Action:         assessment.ActionApplyPrereqs,
+	}
+	var gotOptions workflow.ExecutionOptions
+	registry, err := workflow.NewRegistry(workflow.Capability{
+		Request: request,
+		Runner: workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+			gotOptions = options
+			return cliCapabilityReport(got, workflow.RunStatusManualSteps, workflow.SupportGuided, "aws_backfill_support_case_approval_received")
+		}),
+	})
+	if err != nil {
+		t.Fatalf("NewRegistry returned error: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := RunWithRegistry([]string{
+		"rapid-assessment", "billing", "aws", "apply-prereqs",
+		"--profile", "default",
+		"--region", "us-west-2",
+		"--export-ref", "cur2-abcdefghijklmnop",
+		"--request-backfill",
+		"--confirm-create-support-case",
+		"--approve-plan", "plan_abcdefghijklmnop",
+		"--approve-step", workflow.AWSBackfillSupportCaseOperationID,
+	}, strings.NewReader(""), &stdout, &stderr, registry)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr: %s", code, stderr.String())
+	}
+	if stderr.String() != "" {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	if gotOptions.AWSBillingOperation != workflow.AWSBillingOperationRequestBackfill {
+		t.Fatalf("AWSBillingOperation = %q, want %q", gotOptions.AWSBillingOperation, workflow.AWSBillingOperationRequestBackfill)
+	}
+	if !workflow.HasApprovedPlanStep(gotOptions, "plan_abcdefghijklmnop", workflow.AWSBackfillSupportCaseOperationID) {
+		t.Fatalf("runner options missing plan-bound backfill approval: %#v", gotOptions.Approvals)
+	}
+	if gotOptions.Approvals[0].Intent != workflow.ApprovalIntentRequestBackfillSupportCase {
+		t.Fatalf("runner approval intent = %q, want backfill support case intent", gotOptions.Approvals[0].Intent)
 	}
 
 	doc := decodeJSON(t, stdout.String())
@@ -414,8 +472,137 @@ func TestAWSBillingApplyPrereqsFlagsReachRunnerAndJSON(t *testing.T) {
 	}
 	if approval["operation_id"] != workflow.AWSBackfillSupportCaseOperationID ||
 		approval["intent"] != workflow.ApprovalIntentRequestBackfillSupportCase ||
+		approval["plan_id"] != "plan_abcdefghijklmnop" ||
 		approval["confirmed"] != true {
-		t.Fatalf("approval = %#v, want scoped AWS backfill support case approval", approval)
+		t.Fatalf("approval = %#v, want plan-bound AWS backfill support case approval", approval)
+	}
+}
+
+func TestAWSBillingCreateCUR2ExportPlanFlagsReachRunnerAndJSON(t *testing.T) {
+	request := workflow.Request{
+		Goal:           assessment.RapidAssessment,
+		CollectionPath: assessment.CollectionBilling,
+		Provider:       assessment.ProviderAWS,
+		Action:         assessment.ActionApplyPrereqs,
+	}
+	var gotOptions workflow.ExecutionOptions
+	registry, err := workflow.NewRegistry(workflow.Capability{
+		Request: request,
+		Runner: workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+			gotOptions = options
+			return cliCapabilityReport(got, workflow.RunStatusManualSteps, workflow.SupportGuided, "aws_cur2_create_export_plan_ready")
+		}),
+	})
+	if err != nil {
+		t.Fatalf("NewRegistry returned error: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := RunWithRegistry([]string{
+		"rapid-assessment", "billing", "aws", "apply-prereqs",
+		"--profile", "default",
+		"--region", "us-west-2",
+		"--create-cur2-export",
+	}, strings.NewReader(""), &stdout, &stderr, registry)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr: %s", code, stderr.String())
+	}
+	if stderr.String() != "" {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	if gotOptions.AWSBillingOperation != workflow.AWSBillingOperationCreateCUR2Export {
+		t.Fatalf("AWSBillingOperation = %q, want %q", gotOptions.AWSBillingOperation, workflow.AWSBillingOperationCreateCUR2Export)
+	}
+	if len(gotOptions.Approvals) != 0 {
+		t.Fatalf("approvals length = %d, want none for plan-only create-new", len(gotOptions.Approvals))
+	}
+
+	doc := decodeJSON(t, stdout.String())
+	executionOptions, ok := doc["execution_options"].(map[string]any)
+	if !ok {
+		t.Fatalf("execution_options missing or wrong type in %s", stdout.String())
+	}
+	if executionOptions["aws_billing_operation"] != string(workflow.AWSBillingOperationCreateCUR2Export) {
+		t.Fatalf("execution_options.aws_billing_operation = %v, want create CUR 2.0 export", executionOptions["aws_billing_operation"])
+	}
+	if _, ok := executionOptions["approvals"]; ok {
+		t.Fatalf("execution_options unexpectedly includes approvals: %#v", executionOptions["approvals"])
+	}
+}
+
+func TestAWSBillingCreateCUR2ExportApprovalFlagsReachRunnerAndJSON(t *testing.T) {
+	request := workflow.Request{
+		Goal:           assessment.RapidAssessment,
+		CollectionPath: assessment.CollectionBilling,
+		Provider:       assessment.ProviderAWS,
+		Action:         assessment.ActionApplyPrereqs,
+	}
+	var gotOptions workflow.ExecutionOptions
+	registry, err := workflow.NewRegistry(workflow.Capability{
+		Request: request,
+		Runner: workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+			gotOptions = options
+			return cliCapabilityReport(got, workflow.RunStatusManualSteps, workflow.SupportGuided, "aws_cur2_create_export_approval_received")
+		}),
+	})
+	if err != nil {
+		t.Fatalf("NewRegistry returned error: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := RunWithRegistry([]string{
+		"rapid-assessment", "billing", "aws", "apply-prereqs",
+		"--profile", "default",
+		"--region", "us-west-2",
+		"--create-cur2-export",
+		"--approve-plan", "plan_abcdefghijklmnop",
+		"--approve-step", workflow.AWSCUR2CreateBucketOperationID,
+		"--approve-step", workflow.AWSCUR2MergeBucketPolicyOperationID,
+		"--approve-step", workflow.AWSCUR2CreateExportOperationID,
+	}, strings.NewReader(""), &stdout, &stderr, registry)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr: %s", code, stderr.String())
+	}
+	if stderr.String() != "" {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	if gotOptions.AWSBillingOperation != workflow.AWSBillingOperationCreateCUR2Export {
+		t.Fatalf("AWSBillingOperation = %q, want %q", gotOptions.AWSBillingOperation, workflow.AWSBillingOperationCreateCUR2Export)
+	}
+	if len(gotOptions.Approvals) != 3 {
+		t.Fatalf("approvals length = %d, want 3", len(gotOptions.Approvals))
+	}
+	for _, step := range []string{
+		workflow.AWSCUR2CreateBucketOperationID,
+		workflow.AWSCUR2MergeBucketPolicyOperationID,
+		workflow.AWSCUR2CreateExportOperationID,
+	} {
+		if !workflow.HasApprovedPlanStep(gotOptions, "plan_abcdefghijklmnop", step) {
+			t.Fatalf("missing approved step %q in %#v", step, gotOptions.Approvals)
+		}
+	}
+
+	doc := decodeJSON(t, stdout.String())
+	executionOptions, ok := doc["execution_options"].(map[string]any)
+	if !ok {
+		t.Fatalf("execution_options missing or wrong type in %s", stdout.String())
+	}
+	approvals, ok := executionOptions["approvals"].([]any)
+	if !ok || len(approvals) != 3 {
+		t.Fatalf("execution_options.approvals = %#v, want 3 approvals", executionOptions["approvals"])
+	}
+	for _, approvalAny := range approvals {
+		approval, ok := approvalAny.(map[string]any)
+		if !ok {
+			t.Fatalf("approval wrong type: %#v", approvalAny)
+		}
+		if approval["plan_id"] != "plan_abcdefghijklmnop" || approval["confirmed"] != true {
+			t.Fatalf("approval = %#v, want approved plan step", approval)
+		}
 	}
 }
 
@@ -423,7 +610,7 @@ func TestAWSSelectorFlagsAreScopedToAWSBillingPreflightAndApplyPrereqs(t *testin
 	tests := [][]string{
 		{"rapid-assessment", "api", "aws", "preflight", "--profile", "default"},
 		{"rapid-assessment", "billing", "gcp", "preflight", "--region", "us-west-2"},
-		{"deep-discovery", "aws", "preflight", "--export-ref", "cur2-1234abcd5678ef90"},
+		{"deep-discovery", "aws", "preflight", "--export-ref", "cur2-abcdefghijklmnop"},
 		{"rapid-assessment", "billing", "aws", "validate", "--profile", "default"},
 		{"rapid-assessment", "billing", "aws", "package", "--profile", "default"},
 	}
@@ -445,31 +632,96 @@ func TestAWSSelectorFlagsAreScopedToAWSBillingPreflightAndApplyPrereqs(t *testin
 	}
 }
 
-func TestAWSBackfillApprovalFlagsAreScopedToAWSBillingApplyPrereqs(t *testing.T) {
+func TestAWSBackfillOperationFlagsAreScopedToAWSBillingApplyPrereqs(t *testing.T) {
 	tests := []struct {
 		name string
 		args []string
 		want string
 	}{
 		{
-			name: "approval rejected on preflight",
+			name: "operation rejected on preflight",
 			args: []string{"rapid-assessment", "billing", "aws", "preflight", "--request-backfill", "--confirm-create-support-case"},
-			want: "AWS backfill approval flags are supported only for matilda-prep rapid-assessment billing aws apply-prereqs",
+			want: "AWS backfill operation flags are supported only for matilda-prep rapid-assessment billing aws apply-prereqs",
 		},
 		{
-			name: "approval rejected on non aws provider",
+			name: "operation rejected on non aws provider",
 			args: []string{"rapid-assessment", "billing", "gcp", "apply-prereqs", "--request-backfill", "--confirm-create-support-case"},
-			want: "AWS backfill approval flags are supported only for matilda-prep rapid-assessment billing aws apply-prereqs",
+			want: "AWS backfill operation flags are supported only for matilda-prep rapid-assessment billing aws apply-prereqs",
 		},
 		{
-			name: "partial approval request flag",
-			args: []string{"rapid-assessment", "billing", "aws", "apply-prereqs", "--request-backfill"},
-			want: "AWS backfill support case approval requires both --request-backfill and --confirm-create-support-case",
-		},
-		{
-			name: "partial approval confirm flag",
+			name: "confirm without request flag",
 			args: []string{"rapid-assessment", "billing", "aws", "apply-prereqs", "--confirm-create-support-case"},
-			want: "AWS backfill support case approval requires both --request-backfill and --confirm-create-support-case",
+			want: "AWS backfill support case confirmation requires --request-backfill",
+		},
+		{
+			name: "confirm without plan-bound approval",
+			args: []string{"rapid-assessment", "billing", "aws", "apply-prereqs", "--request-backfill", "--confirm-create-support-case"},
+			want: "AWS backfill support case approval requires --confirm-create-support-case, --approve-plan, and at least one --approve-step",
+		},
+		{
+			name: "approve without confirm",
+			args: []string{"rapid-assessment", "billing", "aws", "apply-prereqs", "--request-backfill", "--approve-plan", "plan_abcdefghijklmnop", "--approve-step", workflow.AWSBackfillSupportCaseOperationID},
+			want: "AWS backfill support case approval requires --confirm-create-support-case, --approve-plan, and at least one --approve-step",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			code, stdout, stderr := runCLI(tt.args...)
+
+			if code != 2 {
+				t.Fatalf("exit code = %d, want 2", code)
+			}
+			if stdout != "" {
+				t.Fatalf("stdout = %q, want empty", stdout)
+			}
+			if !strings.Contains(stderr, tt.want) {
+				t.Fatalf("stderr = %q, want %q", stderr, tt.want)
+			}
+		})
+	}
+}
+
+func TestAWSBillingCreateCUR2ExportFlagsAreScopedAndConflictChecked(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "create cur2 rejected on preflight",
+			args: []string{"rapid-assessment", "billing", "aws", "preflight", "--create-cur2-export"},
+			want: "AWS billing operation flags are supported only for matilda-prep rapid-assessment billing aws apply-prereqs",
+		},
+		{
+			name: "create cur2 rejected on non aws provider",
+			args: []string{"rapid-assessment", "billing", "gcp", "apply-prereqs", "--create-cur2-export"},
+			want: "AWS billing operation flags are supported only for matilda-prep rapid-assessment billing aws apply-prereqs",
+		},
+		{
+			name: "approve plan without create intent",
+			args: []string{"rapid-assessment", "billing", "aws", "apply-prereqs", "--approve-plan", "plan_abcdefghijklmnop"},
+			want: "approval flags require a matching AWS billing operation",
+		},
+		{
+			name: "approve step without approve plan",
+			args: []string{"rapid-assessment", "billing", "aws", "apply-prereqs", "--create-cur2-export", "--approve-step", workflow.AWSCUR2CreateExportOperationID},
+			want: "plan-bound approval requires both --approve-plan and at least one --approve-step",
+		},
+		{
+			name: "approve plan without approve step",
+			args: []string{"rapid-assessment", "billing", "aws", "apply-prereqs", "--create-cur2-export", "--approve-plan", "plan_abcdefghijklmnop"},
+			want: "plan-bound approval requires both --approve-plan and at least one --approve-step",
+		},
+		{
+			name: "create conflicts with backfill",
+			args: []string{"rapid-assessment", "billing", "aws", "apply-prereqs", "--create-cur2-export", "--request-backfill", "--confirm-create-support-case"},
+			want: "aws_billing_prereqs_operation_conflict",
+		},
+		{
+			name: "create cur2 does not accept selected export ref",
+			args: []string{"rapid-assessment", "billing", "aws", "apply-prereqs", "--create-cur2-export", "--export-ref", "cur2-abcdefghijklmnop"},
+			want: "export-ref applies only to AWS CUR 2.0 preflight and request-backfill",
 		},
 	}
 
@@ -834,6 +1086,12 @@ func TestHelpAndVersionAreDeterministicAndPublicSafe(t *testing.T) {
 		"matilda-prep start",
 		"matilda-prep rapid-assessment <billing|api> <provider> <action>",
 		"matilda-prep deep-discovery <provider> <action>",
+		"AWS Rapid Assessment - Billing Based preflight/backfill selection options:",
+		"--export-ref <cur2-ref-from-previous-output>",
+		"--request-backfill       plan an AWS Support request for previous-month CUR 2.0 backfill",
+		"--request-backfill --confirm-create-support-case --approve-plan <plan-id> --approve-step aws.billing.cur2.previous_month_backfill_support_case",
+		"--create-cur2-export --approve-plan <plan-id> --approve-step <plan-step-id>",
+		"repeat --approve-step for each mutating step ID returned by the current plan",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("help stdout = %q, want to contain %q", stdout, want)
@@ -843,6 +1101,9 @@ func TestHelpAndVersionAreDeterministicAndPublicSafe(t *testing.T) {
 		if strings.Contains(stdout, forbidden) {
 			t.Fatalf("help output contains forbidden term %q in %q", forbidden, stdout)
 		}
+	}
+	if strings.Contains(stdout, "AWS Rapid Assessment - Billing Based preflight/apply-prereqs options:") {
+		t.Fatalf("help output describes export-ref too broadly: %s", stdout)
 	}
 
 	code, stdout, stderr = runCLI("--version")
@@ -929,6 +1190,86 @@ func TestActionHelpDoesNotExecuteWorkflow(t *testing.T) {
 				t.Fatalf("action help executed workflow instead of rendering help: %s", stdout)
 			}
 		})
+	}
+}
+
+func TestAWSBillingApplyPrereqsActionHelpIncludesOperationAndApprovalFlags(t *testing.T) {
+	code, stdout, stderr := runCLI("rapid-assessment", "billing", "aws", "apply-prereqs", "--help")
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr: %s", code, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	for _, want := range []string{
+		"matilda-prep rapid-assessment billing aws apply-prereqs",
+		"--request-backfill",
+		"--create-cur2-export",
+		"--approve-plan <plan-id>",
+		"--approve-step <plan-step-id>",
+		"aws.billing.cur2.previous_month_backfill_support_case",
+		"repeat --approve-step for each mutating step ID returned by the current plan",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("stdout = %q, want to contain %q", stdout, want)
+		}
+	}
+}
+
+func TestAWSBillingPreflightActionHelpIncludesSelectorFlags(t *testing.T) {
+	code, stdout, stderr := runCLI("rapid-assessment", "billing", "aws", "preflight", "--help")
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr: %s", code, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	for _, want := range []string{
+		"matilda-prep rapid-assessment billing aws preflight",
+		"AWS Rapid Assessment - Billing Based preflight/backfill selection options:",
+		"--profile <aws-profile-name>",
+		"--region <aws-region>",
+		"--export-ref <cur2-ref-from-previous-output>",
+		"--timeout <duration>",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("stdout = %q, want to contain %q", stdout, want)
+		}
+	}
+	if strings.Contains(stdout, "not_implemented") || strings.Contains(stdout, "provider_capability_not_implemented") {
+		t.Fatalf("action help executed workflow instead of rendering help: %s", stdout)
+	}
+}
+
+func TestGenericActionHelpOmitsAWSBillingSelectorFlags(t *testing.T) {
+	code, stdout, stderr := runCLI("rapid-assessment", "billing", "gcp", "preflight", "--help")
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr: %s", code, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	for _, forbidden := range []string{
+		"AWS Rapid Assessment - Billing Based preflight/backfill selection options:",
+		"--profile <aws-profile-name>",
+		"--region <aws-region>",
+		"--export-ref <cur2-ref-from-previous-output>",
+	} {
+		if strings.Contains(stdout, forbidden) {
+			t.Fatalf("generic preflight help contains AWS-only text %q in %q", forbidden, stdout)
+		}
+	}
+}
+
+func TestActionHelpFailsClosedForUnknownContracts(t *testing.T) {
+	if got := actionPurpose(assessment.Action("unknown-action")); !strings.Contains(got, "Cloud mutation: unknown") || !strings.Contains(got, "Unsupported actions fail closed") {
+		t.Fatalf("actionPurpose unknown = %q, want fail-closed message", got)
+	}
+	if got := mutationHelp(workflow.MutationLevel("future-mutation")); got != "unknown" {
+		t.Fatalf("mutationHelp unknown = %q, want unknown", got)
 	}
 }
 

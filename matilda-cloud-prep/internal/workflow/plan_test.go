@@ -60,6 +60,22 @@ func TestBuildExecutionPlanCreatesProviderNeutralPlan(t *testing.T) {
 	assertSafeSourceHandles(t, plan.SourceHandles)
 }
 
+func TestGeneratedWorkflowIDsAreAccountIDSafe(t *testing.T) {
+	plan, err := BuildExecutionPlan(sampleExecutionPlanInput(samplePlanRequest()))
+	if err != nil {
+		t.Fatalf("BuildExecutionPlan returned error: %v", err)
+	}
+
+	for _, id := range []string{plan.PlanID, plan.Steps[0].ID, plan.Checks[0].ID} {
+		if awsAccountIDTextPattern.MatchString(id) {
+			t.Fatalf("generated ID %q looks like an AWS account ID", id)
+		}
+		if strings.ContainsAny(id, "0123456789") {
+			t.Fatalf("generated ID %q contains digits, want account-ID-safe letters only", id)
+		}
+	}
+}
+
 func TestPlanIDIsDeterministicAndUsesReviewedMaterial(t *testing.T) {
 	input := sampleExecutionPlanInput(samplePlanRequest())
 
@@ -94,6 +110,281 @@ func TestPlanIDIsDeterministicAndUsesReviewedMaterial(t *testing.T) {
 	if packageChanged.PlanID == first.PlanID {
 		t.Fatal("PlanID did not change after package schema status changed")
 	}
+
+	input = sampleExecutionPlanInput(samplePlanRequest())
+	input.Checks[0].Evidence[0].Value = "true"
+	checkChanged, err := BuildExecutionPlan(input)
+	if err != nil {
+		t.Fatalf("BuildExecutionPlan(checkChanged) returned error: %v", err)
+	}
+	if checkChanged.PlanID == first.PlanID {
+		t.Fatal("PlanID did not change after material check evidence changed")
+	}
+}
+
+func TestPlanIDIgnoresApprovalOnlyFields(t *testing.T) {
+	request := samplePlanRequest()
+	request.Action = assessment.ActionApplyPrereqs
+	input := sampleExecutionPlanInput(request)
+	input.ExecutionOptions = ExecutionOptions{
+		InterfaceMode:       InterfaceModeDirect,
+		AWSBillingOperation: AWSBillingOperationCreateCUR2Export,
+		Selectors: &ExecutionSelectors{AWS: &AWSExecutionSelectors{
+			Profile: "default",
+			Region:  "us-west-2",
+		}},
+	}
+	input.Steps = []PlanStep{
+		sampleStepWithID(PlanStepCreate, AWSCUR2CreateBucketOperationID),
+		sampleStepWithID(PlanStepCreate, AWSCUR2CreateExportOperationID),
+	}
+
+	preview, err := BuildExecutionPlan(input)
+	if err != nil {
+		t.Fatalf("BuildExecutionPlan(preview) returned error: %v", err)
+	}
+
+	input.ExecutionOptions.Approvals = []ExecutionApproval{
+		{
+			OperationID: AWSCUR2CreateBucketOperationID,
+			PlanID:      preview.PlanID,
+			Confirmed:   true,
+		},
+		{
+			OperationID: AWSCUR2CreateExportOperationID,
+			PlanID:      preview.PlanID,
+			Confirmed:   true,
+		},
+	}
+	approved, err := BuildExecutionPlan(input)
+	if err != nil {
+		t.Fatalf("BuildExecutionPlan(approved) returned error: %v", err)
+	}
+
+	if approved.PlanID != preview.PlanID {
+		t.Fatalf("PlanID changed after adding approval-only fields: %q != %q", approved.PlanID, preview.PlanID)
+	}
+}
+
+func TestBuildExecutionPlanApprovalSummaryReflectsExactPlanBoundApprovals(t *testing.T) {
+	request := samplePlanRequest()
+	request.Action = assessment.ActionApplyPrereqs
+	input := sampleExecutionPlanInput(request)
+	input.ExecutionOptions = ExecutionOptions{
+		InterfaceMode:       InterfaceModeDirect,
+		AWSBillingOperation: AWSBillingOperationCreateCUR2Export,
+		Selectors: &ExecutionSelectors{AWS: &AWSExecutionSelectors{
+			Profile: "default",
+			Region:  "us-west-2",
+		}},
+	}
+	input.Steps = []PlanStep{
+		sampleStepWithID(PlanStepCreate, AWSCUR2CreateBucketOperationID),
+		sampleStepWithID(PlanStepCreate, AWSCUR2CreateExportOperationID),
+	}
+
+	preview, err := BuildExecutionPlan(input)
+	if err != nil {
+		t.Fatalf("BuildExecutionPlan(preview) returned error: %v", err)
+	}
+	if !preview.Approval.Required || preview.Approval.Approved || preview.Approval.Blocked {
+		t.Fatalf("preview approval = %#v, want required, not approved, not blocked", preview.Approval)
+	}
+
+	input.ExecutionOptions.Approvals = []ExecutionApproval{
+		{OperationID: AWSCUR2CreateBucketOperationID, PlanID: preview.PlanID, Confirmed: true},
+		{OperationID: AWSCUR2CreateExportOperationID, PlanID: preview.PlanID, Confirmed: true},
+	}
+	approved, err := BuildExecutionPlan(input)
+	if err != nil {
+		t.Fatalf("BuildExecutionPlan(approved) returned error: %v", err)
+	}
+	if approved.PlanID != preview.PlanID {
+		t.Fatalf("approved plan ID = %q, want preview plan ID %q", approved.PlanID, preview.PlanID)
+	}
+	if !approved.Approval.Required || !approved.Approval.Approved || approved.Approval.Blocked {
+		t.Fatalf("approved summary = %#v, want required and approved", approved.Approval)
+	}
+
+	input.ExecutionOptions.Approvals = append(input.ExecutionOptions.Approvals, ExecutionApproval{
+		OperationID: AWSCUR2CreateExportOperationID,
+		PlanID:      preview.PlanID,
+		Confirmed:   true,
+	})
+	mismatched, err := BuildExecutionPlan(input)
+	if err != nil {
+		t.Fatalf("BuildExecutionPlan(mismatched) returned error: %v", err)
+	}
+	if mismatched.Approval.Approved {
+		t.Fatalf("mismatched approval summary = %#v, want not approved", mismatched.Approval)
+	}
+
+	input.ExecutionOptions.Approvals = []ExecutionApproval{
+		{OperationID: AWSCUR2CreateBucketOperationID, PlanID: "plan_ponmlkjihgfedcba", Confirmed: true},
+		{OperationID: AWSCUR2CreateExportOperationID, PlanID: "plan_ponmlkjihgfedcba", Confirmed: true},
+	}
+	stale, err := BuildExecutionPlan(input)
+	if err != nil {
+		t.Fatalf("BuildExecutionPlan(stale) returned error: %v", err)
+	}
+	if stale.Approval.Approved {
+		t.Fatalf("stale approval summary = %#v, want not approved", stale.Approval)
+	}
+
+	input.ExecutionOptions.Approvals = []ExecutionApproval{
+		{OperationID: AWSCUR2CreateBucketOperationID, PlanID: preview.PlanID, Confirmed: true},
+		{OperationID: AWSCUR2CreateExportOperationID, PlanID: preview.PlanID, Confirmed: false},
+	}
+	unconfirmed, err := BuildExecutionPlan(input)
+	if err != nil {
+		t.Fatalf("BuildExecutionPlan(unconfirmed) returned error: %v", err)
+	}
+	if unconfirmed.Approval.Approved {
+		t.Fatalf("unconfirmed approval summary = %#v, want not approved", unconfirmed.Approval)
+	}
+}
+
+func TestBuildExecutionPlanUsesApprovedExecutionPlanIDForRuntimeResult(t *testing.T) {
+	request := samplePlanRequest()
+	request.Action = assessment.ActionApplyPrereqs
+	input := sampleExecutionPlanInput(request)
+	input.ExecutionOptions = ExecutionOptions{
+		InterfaceMode:       InterfaceModeDirect,
+		AWSBillingOperation: AWSBillingOperationCreateCUR2Export,
+		Selectors: &ExecutionSelectors{AWS: &AWSExecutionSelectors{
+			Profile: "default",
+			Region:  "us-west-2",
+		}},
+	}
+	input.Steps = []PlanStep{
+		sampleStepWithID(PlanStepCreate, AWSCUR2CreateExportOperationID),
+	}
+
+	preview, err := BuildExecutionPlan(input)
+	if err != nil {
+		t.Fatalf("BuildExecutionPlan(preview) returned error: %v", err)
+	}
+
+	input.ApprovedExecutionPlanID = preview.PlanID
+	input.ExecutionOptions.Approvals = []ExecutionApproval{{
+		OperationID: AWSCUR2CreateExportOperationID,
+		PlanID:      preview.PlanID,
+		Confirmed:   true,
+	}}
+	input.Checks[0].ID = "runtime_status"
+	input.Checks[0].Message = "Runtime validation completed after the approved mutation."
+
+	runtime, err := BuildExecutionPlan(input)
+	if err != nil {
+		t.Fatalf("BuildExecutionPlan(runtime) returned error: %v", err)
+	}
+	if runtime.PlanID == preview.PlanID {
+		t.Fatalf("runtime plan ID = %q, want runtime evidence to produce a distinct result plan", runtime.PlanID)
+	}
+	if !runtime.Approval.Required || !runtime.Approval.Approved || runtime.Approval.Blocked {
+		t.Fatalf("runtime approval summary = %#v, want approved from approved execution plan ID", runtime.Approval)
+	}
+	if runtime.Approval.ApprovalPlanID != preview.PlanID {
+		t.Fatalf("runtime approval plan ID = %q, want approved preview plan ID %q", runtime.Approval.ApprovalPlanID, preview.PlanID)
+	}
+}
+
+func TestBuildExecutionPlanRejectsInvalidApprovedExecutionPlanID(t *testing.T) {
+	for _, planID := range []string{"plan_123", "plan_abcdefghijklmnop_password"} {
+		t.Run(planID, func(t *testing.T) {
+			input := sampleExecutionPlanInput(samplePlanRequest())
+			input.ApprovedExecutionPlanID = planID
+
+			_, err := BuildExecutionPlan(input)
+			if err == nil {
+				t.Fatal("BuildExecutionPlan accepted invalid approved execution plan ID")
+			}
+			if !strings.Contains(err.Error(), "approved_execution_plan_id") {
+				t.Fatalf("error = %q, want approved_execution_plan_id context", err)
+			}
+		})
+	}
+}
+
+func TestPlanIDIgnoresExplicitRuntimeEvidenceOnly(t *testing.T) {
+	input := sampleExecutionPlanInput(samplePlanRequest())
+	input.Checks[0].Evidence = append(input.Checks[0].Evidence, PlanEvidence{
+		Key:            "selected_export_ref",
+		Value:          "cur2-preview",
+		PlanIDExcluded: true,
+	})
+
+	first, err := BuildExecutionPlan(input)
+	if err != nil {
+		t.Fatalf("BuildExecutionPlan(first) returned error: %v", err)
+	}
+
+	input.Checks[0].Evidence[1].Value = "cur2-returned"
+	runtimeChanged, err := BuildExecutionPlan(input)
+	if err != nil {
+		t.Fatalf("BuildExecutionPlan(runtimeChanged) returned error: %v", err)
+	}
+	if runtimeChanged.PlanID != first.PlanID {
+		t.Fatalf("PlanID changed after runtime-only evidence changed: %q != %q", runtimeChanged.PlanID, first.PlanID)
+	}
+
+	input.Checks[0].Evidence[0].Value = "true"
+	materialChanged, err := BuildExecutionPlan(input)
+	if err != nil {
+		t.Fatalf("BuildExecutionPlan(materialChanged) returned error: %v", err)
+	}
+	if materialChanged.PlanID == first.PlanID {
+		t.Fatal("PlanID did not change after ordinary material evidence changed")
+	}
+}
+
+func TestBuildExecutionPlanPreservesExplicitMutatingStepIDs(t *testing.T) {
+	input := sampleExecutionPlanInput(samplePlanRequest())
+	input.Steps = []PlanStep{
+		sampleStepWithID(PlanStepCreate, AWSCUR2CreateBucketOperationID),
+		sampleStepWithID(PlanStepCreate, AWSCUR2MergeBucketPolicyOperationID),
+		sampleStep(PlanStepGuide),
+	}
+
+	plan, err := BuildExecutionPlan(input)
+	if err != nil {
+		t.Fatalf("BuildExecutionPlan returned error: %v", err)
+	}
+
+	if plan.Steps[0].ID != AWSCUR2CreateBucketOperationID {
+		t.Fatalf("first step ID = %q, want %q", plan.Steps[0].ID, AWSCUR2CreateBucketOperationID)
+	}
+	if plan.Steps[1].ID != AWSCUR2MergeBucketPolicyOperationID {
+		t.Fatalf("second step ID = %q, want %q", plan.Steps[1].ID, AWSCUR2MergeBucketPolicyOperationID)
+	}
+	if plan.Steps[2].ID == "" || plan.Steps[2].ID == "caller-controlled-guide" {
+		t.Fatalf("non-mutating step ID = %q, want generated stable ID", plan.Steps[2].ID)
+	}
+}
+
+func TestBuildExecutionPlanAcceptsAWSBillingCoverageStatuses(t *testing.T) {
+	for _, status := range []CoverageStatus{
+		CoverageOrganizationWide,
+		CoverageAccountOnly,
+		CoverageSingleAccount,
+		CoverageUnverified,
+	} {
+		t.Run(string(status), func(t *testing.T) {
+			input := sampleExecutionPlanInput(samplePlanRequest())
+			input.CoverageRecommendation = CoverageRecommendation{
+				CoverageStatus: status,
+				Summary:        "AWS billing coverage is classified from provider evidence.",
+			}
+
+			plan, err := BuildExecutionPlan(input)
+			if err != nil {
+				t.Fatalf("BuildExecutionPlan returned error: %v", err)
+			}
+			if plan.CoverageRecommendation.CoverageStatus != status {
+				t.Fatalf("CoverageStatus = %q, want %q", plan.CoverageRecommendation.CoverageStatus, status)
+			}
+		})
+	}
 }
 
 func TestOperatorIdentitySummaryRejectsCredentialMaterial(t *testing.T) {
@@ -119,6 +410,45 @@ func TestOperatorIdentitySummaryRejectsCredentialMaterial(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), "operator_identity_summary") {
 				t.Fatalf("error = %q, want operator_identity_summary context", err)
+			}
+		})
+	}
+}
+
+func TestBuildExecutionPlanRejectsBareAWSAccountIDAndPrivatePaths(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*ExecutionPlanInput)
+		want   string
+	}{
+		{
+			name: "bare AWS account ID in plan text",
+			mutate: func(input *ExecutionPlanInput) {
+				input.Checks[0].Message = "AWS account 123456789012 is selected."
+			},
+			want: "aws account id",
+		},
+		{
+			name: "private tmp path in plan text",
+			mutate: func(input *ExecutionPlanInput) {
+				input.Steps[0].CurrentState = "Generated file is at /private/tmp/matilda-output.json."
+			},
+			want: "/private/",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := sampleExecutionPlanInput(samplePlanRequest())
+			tt.mutate(&input)
+
+			_, err := BuildExecutionPlan(input)
+
+			if err == nil {
+				t.Fatal("BuildExecutionPlan accepted unsafe plan text")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %q, want unsafe text marker %q", err, tt.want)
 			}
 		})
 	}
@@ -459,6 +789,20 @@ func TestBuildExecutionPlanRejectsInvalidInputs(t *testing.T) {
 			wantErr: "plan step rollback",
 		},
 		{
+			name: "empty step source handles",
+			mutate: func(input *ExecutionPlanInput) {
+				input.Steps[0].SourceHandles = nil
+			},
+			wantErr: "source handle",
+		},
+		{
+			name: "unsafe step missing source of truth",
+			mutate: func(input *ExecutionPlanInput) {
+				input.Steps[0].MissingSourceOfTruth = []string{"copy private_key from /Users/lly/private.pem"}
+			},
+			wantErr: "missing_source_of_truth",
+		},
+		{
 			name: "unknown step intent",
 			mutate: func(input *ExecutionPlanInput) {
 				input.Steps[0].Intent = PlanStepIntent("discover")
@@ -516,11 +860,25 @@ func TestBuildExecutionPlanRejectsInvalidInputs(t *testing.T) {
 			wantErr: "unknown check status",
 		},
 		{
+			name: "empty check source handles",
+			mutate: func(input *ExecutionPlanInput) {
+				input.Checks[0].SourceHandles = nil
+			},
+			wantErr: "source handle",
+		},
+		{
 			name: "unsafe check evidence",
 			mutate: func(input *ExecutionPlanInput) {
 				input.Checks[0].Evidence = []PlanEvidence{{Key: "client_secret", Value: "plain-secret"}}
 			},
 			wantErr: "plan evidence",
+		},
+		{
+			name: "unsafe operator missing source of truth",
+			mutate: func(input *ExecutionPlanInput) {
+				input.OperatorIdentitySummary.MissingSourceOfTruth = []string{"use /Users/lly/.aws/credentials"}
+			},
+			wantErr: "missing_source_of_truth",
 		},
 		{
 			name: "unsafe missing source of truth",
@@ -595,6 +953,12 @@ func sampleStep(intent PlanStepIntent) PlanStep {
 		SourceHandles:             providerNeutralSourceHandles(),
 		MissingSourceOfTruth:      []string{"Provider-specific source of truth is required before implementation."},
 	}
+}
+
+func sampleStepWithID(intent PlanStepIntent, id string) PlanStep {
+	step := sampleStep(intent)
+	step.ID = id
+	return step
 }
 
 func sampleApprovalKind(intent PlanStepIntent) string {

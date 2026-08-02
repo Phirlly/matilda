@@ -38,6 +38,13 @@ func NewRunner(config RunnerConfig) Runner {
 }
 
 func (runner Runner) Run(ctx context.Context, request workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+	if request != AWSBillingApplyPrereqsRequest() {
+		return runner.report(request, workflow.RunStatusBlocked, workflow.SupportBlocked, "aws_billing_apply_prereqs_request_required", "AWS billing backfill runner requires the AWS Rapid Assessment - Billing Based apply-prereqs request.", false, blockedStep(), failCheck("aws_billing_apply_prereqs_request_required", "AWS billing apply-prereqs request", "AWS billing backfill runner was called outside the AWS Rapid Assessment - Billing Based apply-prereqs path."))
+	}
+	if options.AWSBillingOperation != workflow.AWSBillingOperationRequestBackfill {
+		return runner.report(request, workflow.RunStatusBlocked, workflow.SupportBlocked, "aws_backfill_operation_required", "AWS billing backfill runner requires the request-backfill operation intent.", false, blockedStep(), failCheck("aws_backfill_operation_required", "AWS billing backfill operation", "AWS billing backfill runner was called without the request-backfill operation intent."))
+	}
+
 	client := runner.clientFor(options)
 	if isNilClient(client) {
 		return runner.report(request, workflow.RunStatusBlocked, workflow.SupportBlocked, "aws_provider_capability_blocked", "AWS billing apply-prereqs client is not configured.", false, blockedStep(), failCheck("aws_provider_capability_blocked", "AWS billing apply-prereqs", "AWS billing apply-prereqs client is not configured."))
@@ -53,38 +60,65 @@ func (runner Runner) Run(ctx context.Context, request workflow.Request, options 
 
 	context, err := runner.resolveBackfillContext(ctx, client, options)
 	if err != nil {
-		return runner.report(request, workflow.RunStatusBlocked, workflow.SupportBlocked, providerErrorCode(err, "aws_backfill_context_unavailable"), "AWS CUR 2.0 backfill context could not be resolved without unsafe assumptions.", false, blockedStep(), failCheck(providerErrorCode(err, "aws_backfill_context_unavailable"), "AWS CUR 2.0 backfill context", "AWS CUR 2.0 backfill context could not be resolved without unsafe assumptions."))
+		return runner.verifiedReport(request, workflow.RunStatusBlocked, workflow.SupportBlocked, providerErrorCode(err, "aws_backfill_context_unavailable"), "AWS CUR 2.0 backfill context could not be resolved without unsafe assumptions.", false, blockedStep(), failCheck(providerErrorCode(err, "aws_backfill_context_unavailable"), "AWS CUR 2.0 backfill context", "AWS CUR 2.0 backfill context could not be resolved without unsafe assumptions."))
 	}
 	if !context.MissingDataPartition && !context.MissingManifest {
-		return runner.report(request, workflow.RunStatusReady, workflow.SupportSupported, "aws_backfill_not_required", "Previous-month AWS CUR 2.0 billing data is already present.", false, reuseStep(), passCheck("aws_backfill_not_required", "AWS previous-month billing data", "Previous-month AWS CUR 2.0 billing data is already present.", workflow.PlanEvidence{Key: "previous_billing_period", Value: context.Period}))
-	}
-
-	if !workflow.HasAWSBackfillSupportCaseApproval(options) {
-		return runner.report(request, workflow.RunStatusManualSteps, workflow.SupportGuided, "aws_backfill_support_case_approval_required", "AWS Support case creation requires explicit backfill approval.", false, approvalRequiredStep(), warnCheck("aws_backfill_support_case_approval_required", "AWS Support case approval", "Run apply-prereqs with explicit backfill support-case approval flags to request AWS backfill.", context.evidence()...))
+		return runner.verifiedReport(request, workflow.RunStatusReady, workflow.SupportSupported, "aws_backfill_not_required", "Previous-month AWS CUR 2.0 billing data is already present.", false, reuseStep(), passCheck("aws_backfill_not_required", "AWS previous-month billing data", "Previous-month AWS CUR 2.0 billing data is already present.", workflow.PlanEvidence{Key: "previous_billing_period", Value: context.Period}))
 	}
 
 	classification, err := resolveSupportClassification(ctx, client)
 	if err != nil {
 		code := providerErrorCode(err, "aws_support_case_manual_fallback_required")
 		if manualFallbackProviderError(code) {
-			return runner.report(request, workflow.RunStatusManualSteps, workflow.SupportGuided, "aws_support_case_manual_fallback_required", "AWS Support API case creation is unavailable; use the manual AWS Support request path.", false, manualSupportCaseStep(), warnCheck("aws_support_case_manual_fallback_required", "AWS Support API availability", "AWS Support API case creation is unavailable for this account or support plan.", manualSupportRequestEvidence(context)...))
+			return runner.verifiedReport(request, workflow.RunStatusManualSteps, workflow.SupportGuided, "aws_support_case_manual_fallback_required", "AWS Support API case creation is unavailable; use the manual AWS Support request path.", false, manualSupportCaseStep(), warnCheck("aws_support_case_manual_fallback_required", "AWS Support API availability", "AWS Support API case creation is unavailable for this account or support plan.", manualSupportRequestEvidence(context)...))
 		}
-		return runner.report(request, workflow.RunStatusManualSteps, workflow.SupportGuided, code, "AWS Support case could not be created automatically; use the manual AWS Support request path.", false, manualSupportCaseStep(), warnCheck(code, "AWS Support case manual fallback", "AWS Support service, category, severity, or create-case options could not be resolved safely enough for automation.", manualSupportRequestEvidence(context)...))
+		return runner.verifiedReport(request, workflow.RunStatusManualSteps, workflow.SupportGuided, code, "AWS Support case could not be created automatically; use the manual AWS Support request path.", false, manualSupportCaseStep(), warnCheck(code, "AWS Support case manual fallback", "AWS Support service, category, severity, or create-case options could not be resolved safely enough for automation.", manualSupportRequestEvidence(context)...))
+	}
+	ref := backfillRequestReference(context.Export.ExportARN, context.Period)
+	approvalEvidence := context.approvalEvidence(supportCaseBindingRef(classification, context, ref))
+	approvalStep := approvalRequiredStep()
+	approvalCheck := warnCheck("aws_backfill_support_case_approval_required", "AWS Support case approval", "Review the current plan, then rerun apply-prereqs with a plan-bound backfill support-case approval.", approvalEvidence...)
+	approvalInput := runner.verifiedReport(request, workflow.RunStatusManualSteps, workflow.SupportGuided, "aws_backfill_support_case_approval_required", "AWS Support case creation requires explicit plan-bound backfill approval.", false, approvalStep, approvalCheck).PlanInput
+	if approvalInput == nil {
+		return runner.verifiedReport(request, workflow.RunStatusBlocked, workflow.SupportBlocked, "aws_backfill_plan_build_failed", "AWS Support backfill approval plan could not be built safely.", false, blockedStep(), failCheck("aws_backfill_plan_build_failed", "AWS Support case approval plan", "AWS Support backfill approval plan could not be built safely."))
+	}
+	previewInput := *approvalInput
+	previewInput.ExecutionOptions = backfillPlanPreviewOptions(options)
+	preview, err := workflow.BuildExecutionPlan(previewInput)
+	if err != nil {
+		return runner.verifiedReport(request, workflow.RunStatusBlocked, workflow.SupportBlocked, "aws_backfill_plan_build_failed", "AWS Support backfill approval plan could not be built safely.", false, blockedStep(), failCheck("aws_backfill_plan_build_failed", "AWS Support case approval plan", "AWS Support backfill approval plan could not be built safely."))
 	}
 
-	ref := backfillRequestReference(context.Export.ExportARN, context.Period)
+	switch approval := backfillApprovalState(options, preview.PlanID, preview.Steps); approval {
+	case approvalMissing:
+		return runner.verifiedReport(request, workflow.RunStatusManualSteps, workflow.SupportGuided, "aws_backfill_support_case_approval_required", "AWS Support case creation requires explicit plan-bound backfill approval.", false, approvalStep, approvalCheck)
+	case approvalStale:
+		return runner.verifiedReport(request, workflow.RunStatusBlocked, workflow.SupportBlocked, "aws_plan_stale", "Approved AWS Support backfill plan does not match the current plan. Review the new plan before creating a support case.", false, approvalStep, failCheck("aws_plan_stale", "AWS Support case approval", "The supplied approval plan ID does not match the current AWS backfill plan.", approvalEvidence...))
+	case approvalMismatch:
+		return runner.verifiedReport(request, workflow.RunStatusBlocked, workflow.SupportBlocked, "aws_plan_approval_mismatch", "Approved AWS Support backfill steps do not match the current mutating step set.", false, approvalStep, failCheck("aws_plan_approval_mismatch", "AWS Support case approval", "The supplied approved step set does not match the current AWS backfill support-case step.", approvalEvidence...))
+	case approvalReady:
+	default:
+		return runner.verifiedReport(request, workflow.RunStatusBlocked, workflow.SupportBlocked, "aws_plan_approval_mismatch", "Approved AWS Support backfill steps do not match the current mutating step set.", false, approvalStep, failCheck("aws_plan_approval_mismatch", "AWS Support case approval", "The supplied approved step set does not match the current AWS backfill support-case step.", approvalEvidence...))
+	}
+	approvedPlanID := preview.PlanID
+
 	existing, ok, err := findExistingOpenCase(ctx, client, ref)
 	if err != nil {
-		return runner.report(request, workflow.RunStatusBlocked, workflow.SupportBlocked, "aws_backfill_duplicate_check_failed", "AWS Support duplicate-case check failed; no case was created.", false, blockedStep(), failCheck("aws_backfill_duplicate_check_failed", "AWS Support duplicate-case check", "Existing AWS Support cases could not be checked safely before mutation."))
+		return withApprovedExecutionPlanID(runner.verifiedReport(request, workflow.RunStatusBlocked, workflow.SupportBlocked, "aws_backfill_duplicate_check_failed", "AWS Support duplicate-case check failed; no case was created.", false, blockedStep(), failCheck("aws_backfill_duplicate_check_failed", "AWS Support duplicate-case check", "Existing AWS Support cases could not be checked safely before mutation.")), approvedPlanID)
 	}
 	if ok {
-		return runner.report(request, workflow.RunStatusManualSteps, workflow.SupportSupported, "aws_backfill_support_case_already_open", "An existing matching AWS Support case is already open.", false, reuseStep(), passCheck("aws_backfill_support_case_already_open", "AWS Support duplicate-case check", "An existing matching AWS Support case is already open.", supportCaseEvidence(existing, context.Period)...))
+		return withApprovedExecutionPlanID(runner.verifiedReport(request, workflow.RunStatusManualSteps, workflow.SupportSupported, "aws_backfill_support_case_already_open", "An existing matching AWS Support case is already open.", false, reuseStep(), passCheck("aws_backfill_support_case_already_open", "AWS Support duplicate-case check", "An existing matching AWS Support case is already open.", supportCaseEvidence(existing, context.Period)...)), approvedPlanID)
 	}
 
 	caseRequest := buildCreateCaseRequest(classification, context, ref)
 	created, err := client.CreateCase(ctx, caseRequest)
 	if err != nil {
-		return runner.report(request, workflow.RunStatusBlocked, workflow.SupportBlocked, providerErrorCode(err, "aws_support_create_case_failed"), "AWS Support case could not be created.", false, blockedStep(), failCheck(providerErrorCode(err, "aws_support_create_case_failed"), "AWS Support case creation", "AWS Support case could not be created."))
+		code := providerErrorCode(err, "aws_support_create_case_failed")
+		mutated := code == "aws_support_create_case_response_incomplete"
+		return withApprovedExecutionPlanID(runner.verifiedReport(request, workflow.RunStatusBlocked, workflow.SupportBlocked, code, createCaseFailureMessage(mutated), mutated, blockedStep(), failCheck(code, "AWS Support case creation", createCaseFailureCheckMessage(mutated))), approvedPlanID)
+	}
+	if strings.TrimSpace(created.CaseID) == "" {
+		return withApprovedExecutionPlanID(runner.verifiedReport(request, workflow.RunStatusBlocked, workflow.SupportBlocked, "aws_support_create_case_response_incomplete", "AWS Support case creation returned an incomplete response after the create request.", true, blockedStep(), failCheck("aws_support_create_case_response_incomplete", "AWS Support case creation", "AWS Support case creation was attempted, but AWS did not return a case ID.")), approvedPlanID)
 	}
 
 	caseDetails := SupportCase{CaseID: created.CaseID, Status: "created"}
@@ -109,7 +143,7 @@ func (runner Runner) Run(ctx context.Context, request workflow.Request, options 
 	if statusLookupCheck.ID != "" {
 		checks = append(checks, statusLookupCheck)
 	}
-	return runner.report(request, workflow.RunStatusManualSteps, workflow.SupportSupported, "aws_backfill_support_case_created", "AWS Support case was created; rerun preflight after AWS completes the backfill.", true, supportCaseCreatedStep(), checks...)
+	return withApprovedExecutionPlanID(runner.verifiedReport(request, workflow.RunStatusManualSteps, workflow.SupportSupported, "aws_backfill_support_case_created", "AWS Support case was created; rerun preflight after AWS completes the backfill.", true, supportCaseCreatedStep(), checks...), approvedPlanID)
 }
 
 func (runner Runner) clientFor(options workflow.ExecutionOptions) Client {
@@ -138,15 +172,17 @@ func isNilClient(client Client) bool {
 func (runner Runner) preflightNotBackfillReport(request workflow.Request, preflight workflow.CapabilityReport) workflow.CapabilityReport {
 	switch {
 	case preflight.Code == "aws_cur2_export_not_found":
-		return runner.report(request, workflow.RunStatusManualSteps, workflow.SupportGuided, "aws_cur2_creation_required", "No AWS CUR 2.0 export exists yet; CUR 2.0 export creation is required before previous-month backfill can be requested.", false, guideStep(), warnCheck("aws_cur2_creation_required", "AWS CUR 2.0 export discovery", "No AWS CUR 2.0 export exists yet."))
+		return runner.preflightReport(request, preflight, workflow.RunStatusManualSteps, workflow.SupportGuided, "aws_cur2_creation_required", "No AWS CUR 2.0 export exists yet; CUR 2.0 export creation is required before previous-month backfill can be requested.", false, guideStep(), warnCheck("aws_cur2_creation_required", "AWS CUR 2.0 export discovery", "No AWS CUR 2.0 export exists yet."))
+	case preflight.Code == "aws_data_exports_incomplete_export_summary":
+		return runner.preflightReport(request, preflight, workflow.RunStatusBlocked, workflow.SupportBlocked, "aws_data_exports_incomplete_export_summary", "AWS Data Exports returned incomplete export metadata; no backfill action was taken.", false, blockedStep(), failCheck("aws_data_exports_incomplete_export_summary", "AWS Data Exports export metadata", "AWS Data Exports returned an export summary without an export ARN."))
 	case preflight.Status == workflow.RunStatusReady:
-		return runner.report(request, workflow.RunStatusReady, workflow.SupportSupported, "aws_backfill_not_required", "AWS CUR 2.0 previous-month billing data does not require backfill.", false, reuseStep(), passCheck("aws_backfill_not_required", "AWS previous-month billing data", "AWS CUR 2.0 previous-month billing data does not require backfill."))
+		return runner.preflightReport(request, preflight, workflow.RunStatusReady, workflow.SupportSupported, "aws_backfill_not_required", "AWS CUR 2.0 previous-month billing data does not require backfill.", false, reuseStep(), passCheck("aws_backfill_not_required", "AWS previous-month billing data", "AWS CUR 2.0 previous-month billing data does not require backfill."))
 	default:
 		code := preflight.Code
 		if strings.TrimSpace(code) == "" {
 			code = "aws_backfill_preflight_not_ready"
 		}
-		return runner.report(request, workflow.RunStatusBlocked, workflow.SupportBlocked, "aws_backfill_preflight_not_ready", "AWS Support backfill was not requested because CUR 2.0 preflight is not in a backfill-ready state.", false, blockedStep(), failCheck(code, "AWS CUR 2.0 preflight", "AWS CUR 2.0 preflight must reach previous-month backfill state before a support case can be requested."))
+		return runner.preflightReport(request, preflight, workflow.RunStatusBlocked, workflow.SupportBlocked, "aws_backfill_preflight_not_ready", "AWS Support backfill was not requested because CUR 2.0 preflight is not in a backfill-ready state.", false, blockedStep(), failCheck(code, "AWS CUR 2.0 preflight", "AWS CUR 2.0 preflight must reach previous-month backfill state before a support case can be requested."))
 	}
 }
 
@@ -171,4 +207,63 @@ func manualFallbackProviderError(code string) bool {
 	}
 }
 
+func createCaseFailureMessage(mutated bool) string {
+	if mutated {
+		return "AWS Support case creation returned an incomplete response after the create request."
+	}
+	return "AWS Support case could not be created."
+}
+
+func createCaseFailureCheckMessage(mutated bool) string {
+	if mutated {
+		return "AWS Support case creation was attempted, but AWS did not return a case ID."
+	}
+	return "AWS Support case could not be created."
+}
+
 var _ workflow.CapabilityRunner = Runner{}
+
+type approvalState string
+
+const (
+	approvalMissing  approvalState = "missing"
+	approvalReady    approvalState = "ready"
+	approvalStale    approvalState = "stale"
+	approvalMismatch approvalState = "mismatch"
+)
+
+func backfillApprovalState(options workflow.ExecutionOptions, planID string, steps []workflow.PlanStep) approvalState {
+	expected := map[string]int{}
+	for _, step := range steps {
+		if step.RequiresApproval {
+			expected[step.ID] = 1
+		}
+	}
+	if len(options.Approvals) == 0 {
+		return approvalMissing
+	}
+	actual := map[string]int{}
+	for _, approval := range options.Approvals {
+		if approval.PlanID != planID {
+			return approvalStale
+		}
+		if !approval.Confirmed || approval.Intent != workflow.ApprovalIntentRequestBackfillSupportCase {
+			return approvalMismatch
+		}
+		actual[approval.OperationID]++
+	}
+	if len(actual) != len(expected) {
+		return approvalMismatch
+	}
+	for id, count := range expected {
+		if actual[id] != count {
+			return approvalMismatch
+		}
+	}
+	return approvalReady
+}
+
+func backfillPlanPreviewOptions(options workflow.ExecutionOptions) workflow.ExecutionOptions {
+	options.Approvals = nil
+	return options
+}

@@ -90,6 +90,85 @@ func TestEnsureSupportClassifiesLoadConfigFailure(t *testing.T) {
 	}
 }
 
+func TestSupportClientNilSuccessResponsesReturnProviderErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		fake *fakeSupport
+		run  func(*Client) error
+		want string
+	}{
+		{
+			name: "describe services",
+			fake: &fakeSupport{describeServicesNilOutput: true},
+			run: func(client *Client) error {
+				_, err := client.DescribeServices(context.Background(), billingbackfill.DescribeServicesRequest{Language: "en"})
+				return err
+			},
+			want: "aws_support_api_unavailable",
+		},
+		{
+			name: "describe severity levels",
+			fake: &fakeSupport{describeSeverityNilOutput: true},
+			run: func(client *Client) error {
+				_, err := client.DescribeSeverityLevels(context.Background(), billingbackfill.DescribeSeverityLevelsRequest{Language: "en"})
+				return err
+			},
+			want: "aws_support_api_unavailable",
+		},
+		{
+			name: "describe create case options",
+			fake: &fakeSupport{describeCreateCaseOptionsNilOutput: true},
+			run: func(client *Client) error {
+				_, err := client.DescribeCreateCaseOptions(context.Background(), billingbackfill.DescribeCreateCaseOptionsRequest{
+					Language:     "en",
+					IssueType:    "technical",
+					ServiceCode:  "billing",
+					CategoryCode: "cost-and-usage-reports",
+				})
+				return err
+			},
+			want: "aws_support_api_unavailable",
+		},
+		{
+			name: "describe cases",
+			fake: &fakeSupport{describeCasesNilOutput: true},
+			run: func(client *Client) error {
+				_, err := client.DescribeCases(context.Background(), billingbackfill.DescribeCasesRequest{})
+				return err
+			},
+			want: "aws_support_describe_cases_failed",
+		},
+		{
+			name: "create case",
+			fake: &fakeSupport{createCaseNilOutput: true},
+			run: func(client *Client) error {
+				_, err := client.CreateCase(context.Background(), billingbackfill.CreateCaseRequest{})
+				return err
+			},
+			want: "aws_support_create_case_response_incomplete",
+		},
+		{
+			name: "create case empty case id",
+			fake: &fakeSupport{createCaseOutput: &awssupport.CreateCaseOutput{}},
+			run: func(client *Client) error {
+				_, err := client.CreateCase(context.Background(), billingbackfill.CreateCaseRequest{})
+				return err
+			},
+			want: "aws_support_create_case_response_incomplete",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := New(Config{SupportClient: tt.fake})
+
+			err := tt.run(client)
+
+			assertBackfillProviderCode(t, err, tt.want)
+		})
+	}
+}
+
 func TestDescribeCasesExcludesCommunicationsAndPaginates(t *testing.T) {
 	supportClient := &fakeSupport{
 		describeCasesOutputs: []*awssupport.DescribeCasesOutput{
@@ -392,12 +471,17 @@ type fakeSupport struct {
 	createCaseInput  *awssupport.CreateCaseInput
 	createCaseOutput *awssupport.CreateCaseOutput
 
-	createCaseOptionsOutput      *awssupport.DescribeCreateCaseOptionsOutput
-	describeServicesErr          error
-	describeSeverityErr          error
-	describeCreateCaseOptionsErr error
-	describeCasesErr             error
-	createCaseErr                error
+	createCaseOptionsOutput            *awssupport.DescribeCreateCaseOptionsOutput
+	describeServicesNilOutput          bool
+	describeSeverityNilOutput          bool
+	describeCreateCaseOptionsNilOutput bool
+	describeCasesNilOutput             bool
+	createCaseNilOutput                bool
+	describeServicesErr                error
+	describeSeverityErr                error
+	describeCreateCaseOptionsErr       error
+	describeCasesErr                   error
+	createCaseErr                      error
 }
 
 type fakeFactory struct {
@@ -413,6 +497,9 @@ func (factory *fakeFactory) SupportClient(aws.Config) supportAPI {
 func (fake *fakeSupport) DescribeServices(context.Context, *awssupport.DescribeServicesInput, ...func(*awssupport.Options)) (*awssupport.DescribeServicesOutput, error) {
 	if fake.describeServicesErr != nil {
 		return nil, fake.describeServicesErr
+	}
+	if fake.describeServicesNilOutput {
+		return nil, nil
 	}
 	return &awssupport.DescribeServicesOutput{
 		Services: []supporttypes.Service{{
@@ -430,6 +517,9 @@ func (fake *fakeSupport) DescribeSeverityLevels(context.Context, *awssupport.Des
 	if fake.describeSeverityErr != nil {
 		return nil, fake.describeSeverityErr
 	}
+	if fake.describeSeverityNilOutput {
+		return nil, nil
+	}
 	return &awssupport.DescribeSeverityLevelsOutput{
 		SeverityLevels: []supporttypes.SeverityLevel{{Code: aws.String("low"), Name: aws.String("General guidance")}},
 	}, nil
@@ -438,6 +528,9 @@ func (fake *fakeSupport) DescribeSeverityLevels(context.Context, *awssupport.Des
 func (fake *fakeSupport) DescribeCreateCaseOptions(_ context.Context, input *awssupport.DescribeCreateCaseOptionsInput, _ ...func(*awssupport.Options)) (*awssupport.DescribeCreateCaseOptionsOutput, error) {
 	if fake.describeCreateCaseOptionsErr != nil {
 		return nil, fake.describeCreateCaseOptionsErr
+	}
+	if fake.describeCreateCaseOptionsNilOutput {
+		return nil, nil
 	}
 	if fake.createCaseOptionsOutput != nil {
 		return fake.createCaseOptionsOutput, nil
@@ -453,6 +546,9 @@ func (fake *fakeSupport) DescribeCases(_ context.Context, input *awssupport.Desc
 		return nil, fake.describeCasesErr
 	}
 	fake.describeCasesInputs = append(fake.describeCasesInputs, input)
+	if fake.describeCasesNilOutput {
+		return nil, nil
+	}
 	if len(fake.describeCasesOutputs) == 0 {
 		return &awssupport.DescribeCasesOutput{}, nil
 	}
@@ -466,6 +562,9 @@ func (fake *fakeSupport) CreateCase(_ context.Context, input *awssupport.CreateC
 		return nil, fake.createCaseErr
 	}
 	fake.createCaseInput = input
+	if fake.createCaseNilOutput {
+		return nil, nil
+	}
 	if fake.createCaseOutput != nil {
 		return fake.createCaseOutput, nil
 	}
@@ -533,4 +632,15 @@ func (fake *fakePreflight) GetExecution(context.Context, string, string) (cur2pr
 func (fake *fakePreflight) ListObjects(context.Context, string, string, string, int32) (cur2preflight.ObjectPage, error) {
 	fake.record()
 	return cur2preflight.ObjectPage{}, nil
+}
+
+func assertBackfillProviderCode(t *testing.T, err error, want string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("error = nil, want %s", want)
+	}
+	var providerErr billingbackfill.ProviderError
+	if !errors.As(err, &providerErr) || providerErr.Code != want {
+		t.Fatalf("error = %#v, want %s ProviderError", err, want)
+	}
 }

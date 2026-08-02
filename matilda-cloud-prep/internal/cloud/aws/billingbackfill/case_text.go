@@ -3,6 +3,7 @@ package billingbackfill
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -22,6 +23,53 @@ func buildCreateCaseRequest(classification supportClassification, context backfi
 		Subject:      fmt.Sprintf("Request AWS CUR 2.0 previous-month backfill [%s]", reference),
 		Body:         supportCaseBody(context, reference),
 	}
+}
+
+type supportCaseBindingMaterial struct {
+	Classification        supportClassification `json:"classification"`
+	Request               CreateCaseRequest     `json:"request"`
+	ExportARN             string                `json:"export_arn"`
+	ExportRef             string                `json:"export_ref"`
+	Period                string                `json:"period"`
+	MissingDataPartition  bool                  `json:"missing_data_partition"`
+	MissingManifest       bool                  `json:"missing_manifest"`
+	SelectedReportVisible bool                  `json:"selected_report_visible"`
+}
+
+func supportCaseBindingRef(classification supportClassification, context backfillContext, reference string) string {
+	material := supportCaseBindingMaterial{
+		Classification:        classification,
+		Request:               buildCreateCaseRequest(classification, context, reference),
+		ExportARN:             strings.TrimSpace(context.Export.ExportARN),
+		ExportRef:             strings.TrimSpace(context.ExportRef),
+		Period:                strings.TrimSpace(context.Period),
+		MissingDataPartition:  context.MissingDataPartition,
+		MissingManifest:       context.MissingManifest,
+		SelectedReportVisible: context.SelectedReportVisible,
+	}
+	encoded, err := json.Marshal(material)
+	if err != nil {
+		panic(err)
+	}
+	sum := sha256.Sum256(encoded)
+	return "support_case_" + letterEncodeHash(sum[:], 16)
+}
+
+func letterEncodeHash(hash []byte, length int) string {
+	const alphabet = "abcdefghijklmnop"
+	var builder strings.Builder
+	builder.Grow(length)
+	for _, value := range hash {
+		if builder.Len() >= length {
+			break
+		}
+		builder.WriteByte(alphabet[value>>4])
+		if builder.Len() >= length {
+			break
+		}
+		builder.WriteByte(alphabet[value&0x0f])
+	}
+	return builder.String()
 }
 
 func supportCaseBody(context backfillContext, reference string) string {

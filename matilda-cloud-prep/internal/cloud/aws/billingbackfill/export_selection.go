@@ -38,6 +38,12 @@ func (context backfillContext) evidence() []workflow.PlanEvidence {
 	return evidence
 }
 
+func (context backfillContext) approvalEvidence(supportCaseBindingRef string) []workflow.PlanEvidence {
+	evidence := context.evidence()
+	evidence = append(evidence, workflow.PlanEvidence{Key: "support_case_binding_ref", Value: supportCaseBindingRef})
+	return evidence
+}
+
 func (runner Runner) resolveBackfillContext(ctx context.Context, client Client, options workflow.ExecutionOptions) (backfillContext, error) {
 	export, ref, err := selectCUR2Export(ctx, client, awsCUR2ExportRefOption(options))
 	if err != nil {
@@ -77,7 +83,7 @@ func selectCUR2Export(ctx context.Context, client Client, requestedRef string) (
 	exports := []cur2preflight.Export{}
 	for _, summary := range summaries {
 		if strings.TrimSpace(summary.ExportARN) == "" {
-			continue
+			return cur2preflight.Export{}, "", NewProviderError("aws_data_exports_incomplete_export_summary", "AWS Data Exports returned an export summary without an export ARN.")
 		}
 		export, err := client.GetExport(ctx, summary.ExportARN)
 		if err != nil {

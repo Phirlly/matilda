@@ -583,6 +583,32 @@ func TestPreflightAcceptsAWSStandardProductMapForMatildaProductName(t *testing.T
 	assertNoUnsafeAWSOutput(t, result)
 }
 
+func TestPreflightAcceptsAWSStandardProductMapMetadataWithoutQueryMutation(t *testing.T) {
+	client := baselineClient()
+	client.table.Columns = append(requiredCUR2ColumnsWithout("product_product_name"), "product")
+	client.export.QueryStatement = "SELECT " + strings.Join(requiredCUR2ColumnsWithout("product_product_name"), ", ") + " FROM COST_AND_USAGE_REPORT"
+
+	result := runPreflight(t, client)
+
+	if result.Status != workflow.StatusReady {
+		t.Fatalf("Status = %q, want %q; code=%q", result.Status, workflow.StatusReady, result.Code)
+	}
+	assertCheckEvidence(t, result, "logical_field_source", "product_product_name<-product")
+	assertNoUnsafeAWSOutput(t, result)
+}
+
+func TestPreflightBlocksWhenProductNameLogicalFieldHasNoAWSStandardSource(t *testing.T) {
+	client := baselineClient()
+	client.table.Columns = requiredCUR2ColumnsWithout("product_product_name")
+	client.export.QueryStatement = "SELECT " + strings.Join(requiredCUR2ColumnsWithout("product_product_name"), ", ") + " FROM COST_AND_USAGE_REPORT"
+
+	result := runPreflight(t, client)
+
+	assertBlockedCode(t, result, "aws_cur2_required_fields_missing")
+	assertCheckEvidence(t, result, "missing_required_field", "product_product_name")
+	assertNoUnsafeAWSOutput(t, result)
+}
+
 func TestPreflightAcceptsAWSStandardProductNameMapAlias(t *testing.T) {
 	client := baselineClient()
 	client.table.Columns = append(requiredCUR2ColumnsWithout("product_product_name"), "product")
@@ -839,6 +865,56 @@ func TestPreflightAcceptsMatildaSupportedParquetCUR2Output(t *testing.T) {
 	assertNoUnsafeAWSOutput(t, result)
 }
 
+func TestPreflightAcceptsAWSValidOverwriteCUR2Output(t *testing.T) {
+	client := baselineClient()
+	client.export.Destination.Output.Overwrite = "OVERWRITE_REPORT"
+
+	result := runPreflight(t, client)
+
+	if result.Status != workflow.StatusReady {
+		t.Fatalf("Status = %q, want %q; code=%q", result.Status, workflow.StatusReady, result.Code)
+	}
+	if result.Code != "aws_cur2_preflight_ready" {
+		t.Fatalf("Code = %q, want aws_cur2_preflight_ready", result.Code)
+	}
+	assertPlanCheckMessage(t, result, "CUR 2.0 overwrite setting", "CUR 2.0 export overwrites report files. AWS supports OVERWRITE_REPORT for CUR 2.0 exports; CREATE_NEW_REPORT remains preferred for tool-created exports.")
+	assertCheckEvidence(t, result, "overwrite", "OVERWRITE_REPORT")
+	assertCheckEvidence(t, result, "matilda_output_preference", "supported_not_preferred")
+	assertNoUnsafeAWSOutput(t, result)
+}
+
+func TestPreflightAcceptsExistingDailyParquetOverwriteCUR2Output(t *testing.T) {
+	client := baselineClient()
+	client.export.TableConfigurations["COST_AND_USAGE_REPORT"]["TIME_GRANULARITY"] = "DAILY"
+	client.export.Destination.Output.Format = "PARQUET"
+	client.export.Destination.Output.Compression = "PARQUET"
+	client.export.Destination.Output.Overwrite = "OVERWRITE_REPORT"
+	client.objectPages = []ObjectPage{{
+		Keys: []string{
+			"matilda/cur2/matilda-cur2/data/BILLING_PERIOD=2026-06/part-000.snappy.parquet",
+			"matilda/cur2/matilda-cur2/metadata/BILLING_PERIOD=2026-06/Manifest.json",
+		},
+	}}
+
+	result := runPreflight(t, client)
+
+	if result.Status != workflow.StatusReady {
+		t.Fatalf("Status = %q, want %q; code=%q", result.Status, workflow.StatusReady, result.Code)
+	}
+	if result.Code != "aws_cur2_time_granularity_not_preferred" {
+		t.Fatalf("Code = %q, want aws_cur2_time_granularity_not_preferred", result.Code)
+	}
+	assertPlanCheckMessage(t, result, "CUR 2.0 time granularity", "CUR 2.0 export uses daily time granularity. This is valid AWS CUR 2.0, but monthly is preferred for Matilda Rapid Assessment - Billing Based.")
+	assertPlanCheckMessage(t, result, "CUR 2.0 output format", "CUR 2.0 export uses PARQUET output. AWS supports PARQUET and Matilda can use it for this path.")
+	assertPlanCheckMessage(t, result, "CUR 2.0 compression", "CUR 2.0 export uses PARQUET compression for the supported PARQUET output shape.")
+	assertPlanCheckMessage(t, result, "CUR 2.0 overwrite setting", "CUR 2.0 export overwrites report files. AWS supports OVERWRITE_REPORT for CUR 2.0 exports; CREATE_NEW_REPORT remains preferred for tool-created exports.")
+	assertCheckEvidence(t, result, "time_granularity", "DAILY")
+	assertCheckEvidence(t, result, "output_format", "PARQUET")
+	assertCheckEvidence(t, result, "compression", "PARQUET")
+	assertCheckEvidence(t, result, "overwrite", "OVERWRITE_REPORT")
+	assertNoUnsafeAWSOutput(t, result)
+}
+
 func TestPreflightBlocksOutputSettingDeviations(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -883,9 +959,9 @@ func TestPreflightBlocksOutputSettingDeviations(t *testing.T) {
 			code: "aws_cur2_output_settings_blocked",
 		},
 		{
-			name: "overwrite report",
+			name: "unknown overwrite setting",
 			mutate: func(export *Export) {
-				export.Destination.Output.Overwrite = "OVERWRITE_REPORT"
+				export.Destination.Output.Overwrite = "APPEND_REPORT"
 			},
 			code: "aws_cur2_output_settings_blocked",
 		},
@@ -893,6 +969,20 @@ func TestPreflightBlocksOutputSettingDeviations(t *testing.T) {
 			name: "non custom output type",
 			mutate: func(export *Export) {
 				export.Destination.Output.OutputType = "LEGACY"
+			},
+			code: "aws_cur2_output_settings_blocked",
+		},
+		{
+			name: "athena output type not verified for this path",
+			mutate: func(export *Export) {
+				export.Destination.Output.OutputType = "ATHENA"
+			},
+			code: "aws_cur2_output_settings_blocked",
+		},
+		{
+			name: "redshift output type not verified for this path",
+			mutate: func(export *Export) {
+				export.Destination.Output.OutputType = "REDSHIFT"
 			},
 			code: "aws_cur2_output_settings_blocked",
 		},
@@ -1125,6 +1215,37 @@ func TestPreflightClassifiesS3PolicyAndPreviousMonthFailures(t *testing.T) {
 			wantListed: true,
 		},
 		{
+			name: "actual export name scoped resource covers destination",
+			mutate: func(client *fakeClient) {
+				client.bucketPolicy = bucketPolicy(policySpec{
+					Service:       "bcm-data-exports.amazonaws.com",
+					SourceAccount: client.export.SourceAccount,
+					SourceARN:     client.export.SourceARN,
+					Action:        "s3:PutObject",
+					Resource:      "arn:aws:s3:::matilda-cur2-billing/matilda/cur2/matilda-cur2/*",
+				})
+			},
+			code:       "aws_cur2_preflight_ready",
+			wantStatus: workflow.StatusReady,
+			wantListed: true,
+		},
+		{
+			name: "different export name scoped resource warns when previous month is present",
+			mutate: func(client *fakeClient) {
+				client.bucketPolicy = bucketPolicy(policySpec{
+					Service:       "bcm-data-exports.amazonaws.com",
+					SourceAccount: client.export.SourceAccount,
+					SourceARN:     client.export.SourceARN,
+					Action:        "s3:PutObject",
+					Resource:      "arn:aws:s3:::matilda-cur2-billing/matilda/cur2/other-export/*",
+				})
+			},
+			code:       "aws_s3_delivery_policy_missing",
+			wantStatus: workflow.StatusReady,
+			evidence:   "put_object_resource_not_covered",
+			wantListed: true,
+		},
+		{
 			name: "padded policy resource warns when previous month is present",
 			mutate: func(client *fakeClient) {
 				client.bucketPolicy = bucketPolicy(policySpec{
@@ -1213,6 +1334,54 @@ func TestPreflightClassifiesS3PolicyAndPreviousMonthFailures(t *testing.T) {
 					SourceARN:     "arn:aws:bcm-data-exports:us-east-1:123456789012:export/*",
 					Action:        []string{"s3:PutObject"},
 					Resource:      []string{"arn:aws:s3:::matilda-cur2-billing/*"},
+				})
+			},
+			code:       "aws_cur2_preflight_ready",
+			wantStatus: workflow.StatusReady,
+			wantListed: true,
+		},
+		{
+			name: "source partition s3 resource covers destination",
+			mutate: func(client *fakeClient) {
+				client.export.SourceARN = "arn:aws-us-gov:bcm-data-exports:us-east-1:123456789012:export/matilda-cur2"
+				client.bucketPolicy = bucketPolicy(policySpec{
+					Service:       "bcm-data-exports.amazonaws.com",
+					SourceAccount: client.export.SourceAccount,
+					SourceARN:     client.export.SourceARN,
+					Action:        "s3:PutObject",
+					Resource:      "arn:aws-us-gov:s3:::matilda-cur2-billing/matilda/cur2/*",
+				})
+			},
+			code:       "aws_cur2_preflight_ready",
+			wantStatus: workflow.StatusReady,
+			wantListed: true,
+		},
+		{
+			name: "mismatched s3 resource partition warns when previous month is present",
+			mutate: func(client *fakeClient) {
+				client.export.SourceARN = "arn:aws-us-gov:bcm-data-exports:us-east-1:123456789012:export/matilda-cur2"
+				client.bucketPolicy = bucketPolicy(policySpec{
+					Service:       "bcm-data-exports.amazonaws.com",
+					SourceAccount: client.export.SourceAccount,
+					SourceARN:     client.export.SourceARN,
+					Action:        "s3:PutObject",
+					Resource:      "arn:aws:s3:::matilda-cur2-billing/matilda/cur2/*",
+				})
+			},
+			code:       "aws_s3_delivery_policy_missing",
+			wantStatus: workflow.StatusReady,
+			evidence:   "put_object_resource_not_covered",
+			wantListed: true,
+		},
+		{
+			name: "single statement bucket policy document shape",
+			mutate: func(client *fakeClient) {
+				client.bucketPolicy = singleStatementBucketPolicy(policySpec{
+					Service:       "bcm-data-exports.amazonaws.com",
+					SourceAccount: client.export.SourceAccount,
+					SourceARN:     "arn:aws:bcm-data-exports:us-east-1:123456789012:export/*",
+					Action:        "s3:PutObject",
+					Resource:      "arn:aws:s3:::matilda-cur2-billing/*",
 				})
 			},
 			code:       "aws_cur2_preflight_ready",
@@ -1464,6 +1633,32 @@ func TestPreflightClassifiesS3PolicyAndPreviousMonthFailures(t *testing.T) {
 						Action:        "s3:PutObject",
 						Resource:      "arn:aws:s3:::matilda-cur2-billing/matilda/cur2/*",
 					},
+				)
+			},
+			code:       "aws_cur2_preflight_ready",
+			wantStatus: workflow.StatusReady,
+			wantListed: true,
+		},
+		{
+			name: "unrelated wildcard principal statement does not block later valid policy",
+			mutate: func(client *fakeClient) {
+				client.bucketPolicy = multiStatementBucketPolicyWithRaw(
+					map[string]any{
+						"Effect":    "Allow",
+						"Principal": "*",
+						"Action":    "s3:GetObject",
+						"Resource":  "arn:aws:s3:::matilda-cur2-billing/public/*",
+					},
+					statementFor(policySpec{
+						Service:       "bcm-data-exports.amazonaws.com",
+						SourceAccount: client.export.SourceAccount,
+						SourceARN:     client.export.SourceARN,
+						Action:        "s3:PutObject",
+						Resource:      "arn:aws:s3:::matilda-cur2-billing/matilda/cur2/*",
+					}, map[string]map[string]string{
+						"StringEquals": {"aws:SourceAccount": client.export.SourceAccount},
+						"ArnLike":      {"aws:SourceArn": client.export.SourceARN},
+					}),
 				)
 			},
 			code:       "aws_cur2_preflight_ready",
@@ -2444,11 +2639,42 @@ func multiStatementBucketPolicy(specs ...policySpec) string {
 	return string(encoded)
 }
 
+func multiStatementBucketPolicyWithRaw(statements ...map[string]any) string {
+	policy := map[string]any{
+		"Version":   "2012-10-17",
+		"Statement": statements,
+	}
+	encoded, err := json.Marshal(policy)
+	if err != nil {
+		panic(err)
+	}
+	return string(encoded)
+}
+
 func policyDocument(statement map[string]any) map[string]any {
 	return map[string]any{
 		"Version":   "2012-10-17",
 		"Statement": []any{statement},
 	}
+}
+
+func singleStatementBucketPolicy(spec policySpec) string {
+	conditions := map[string]map[string]string{}
+	if spec.SourceAccount != "" {
+		conditions["StringEquals"] = map[string]string{"aws:SourceAccount": spec.SourceAccount}
+	}
+	if spec.SourceARN != "" {
+		conditions["ArnLike"] = map[string]string{"aws:SourceArn": spec.SourceARN}
+	}
+	policy := map[string]any{
+		"Version":   "2012-10-17",
+		"Statement": statementFor(spec, conditions),
+	}
+	encoded, err := json.Marshal(policy)
+	if err != nil {
+		panic(err)
+	}
+	return string(encoded)
 }
 
 func statementFor(spec policySpec, conditions map[string]map[string]string) map[string]any {

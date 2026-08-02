@@ -114,13 +114,21 @@ func validateOutputSettings(export Export, returnedTableProperties map[string]st
 			outputSettingEvidence("compression", compression),
 		))
 	}
-	if normalizedOutputSetting(output.Overwrite) != "CREATE_NEW_REPORT" {
-		findings = append(findings, withEvidence(failFinding("aws_cur2_output_settings_blocked", "CUR 2.0 overwrite setting", "CUR 2.0 preflight requires CREATE_NEW_REPORT for this path."),
-			outputSettingEvidence("overwrite", output.Overwrite),
-		))
-	} else {
+	switch normalizedOutputSetting(output.Overwrite) {
+	case "CREATE_NEW_REPORT":
 		findings = append(findings, withEvidence(passFinding("aws_cur2_overwrite_ready", "CUR 2.0 overwrite setting", "CUR 2.0 export creates new report files."),
 			outputSettingEvidence("overwrite", output.Overwrite),
+			workflow.PlanEvidence{Key: "matilda_output_preference", Value: "preferred"},
+		))
+	case "OVERWRITE_REPORT":
+		findings = append(findings, withEvidence(passFinding("aws_cur2_overwrite_supported", "CUR 2.0 overwrite setting", "CUR 2.0 export overwrites report files. AWS supports OVERWRITE_REPORT for CUR 2.0 exports; CREATE_NEW_REPORT remains preferred for tool-created exports."),
+			outputSettingEvidence("overwrite", output.Overwrite),
+			workflow.PlanEvidence{Key: "matilda_output_preference", Value: "supported_not_preferred"},
+		))
+	default:
+		findings = append(findings, withEvidence(failFinding("aws_cur2_output_settings_blocked", "CUR 2.0 overwrite setting", "CUR 2.0 overwrite setting is not one of AWS's documented Data Exports values supported for this path: CREATE_NEW_REPORT or OVERWRITE_REPORT."),
+			outputSettingEvidence("overwrite", output.Overwrite),
+			workflow.PlanEvidence{Key: "matilda_output_preference", Value: "unsupported"},
 		))
 	}
 	if normalizedOutputSetting(output.OutputType) != "CUSTOM" {

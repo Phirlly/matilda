@@ -21,23 +21,23 @@ func TestRunAWSBillingClassifiesAmbiguousExportsBeforePrompting(t *testing.T) {
 		switch exportRef {
 		case "":
 			return guidedCapabilityReport(got, workflow.RunStatusBlocked, "aws_cur2_export_ambiguous", []workflow.PlanEvidence{
-				{Key: "candidate_1_export_ref", Value: "cur2-1111111111111111"},
+				{Key: "candidate_1_export_ref", Value: "cur2-acacacacacacacac"},
 				{Key: "candidate_1_health", Value: "HEALTHY"},
 				{Key: "candidate_1_output_format", Value: "TEXT_OR_CSV"},
 				{Key: "candidate_1_destination_region", Value: "us-east-1"},
-				{Key: "candidate_2_export_ref", Value: "cur2-2222222222222222"},
+				{Key: "candidate_2_export_ref", Value: "cur2-bdbdbdbdbdbdbdbd"},
 				{Key: "candidate_2_health", Value: "WARNING"},
 				{Key: "candidate_2_output_format", Value: "PARQUET"},
 				{Key: "candidate_2_destination_region", Value: "us-west-2"},
 			})
-		case "cur2-1111111111111111":
+		case "cur2-acacacacacacacac":
 			return guidedCapabilityReport(got, workflow.StatusReady, "aws_cur2_preflight_ready", []workflow.PlanEvidence{
 				{Key: "output_format", Value: "TEXT_OR_CSV"},
 				{Key: "compression", Value: "GZIP"},
 				{Key: "time_granularity", Value: "MONTHLY"},
 				{Key: "overwrite", Value: "CREATE_NEW_REPORT"},
 			})
-		case "cur2-2222222222222222":
+		case "cur2-bdbdbdbdbdbdbdbd":
 			return guidedCapabilityReport(got, workflow.RunStatusBlocked, "aws_cur2_output_settings_blocked", nil)
 		default:
 			t.Fatalf("unexpected export ref %q", exportRef)
@@ -59,8 +59,8 @@ func TestRunAWSBillingClassifiesAmbiguousExportsBeforePrompting(t *testing.T) {
 	if len(calls) != 3 {
 		t.Fatalf("preflight calls = %d, want initial plus two classification calls", len(calls))
 	}
-	if calls[1].Selectors.AWS.CUR2ExportRef != "cur2-1111111111111111" ||
-		calls[2].Selectors.AWS.CUR2ExportRef != "cur2-2222222222222222" {
+	if calls[1].Selectors.AWS.CUR2ExportRef != "cur2-acacacacacacacac" ||
+		calls[2].Selectors.AWS.CUR2ExportRef != "cur2-bdbdbdbdbdbdbdbd" {
 		t.Fatalf("classification refs = %#v, want both candidate refs", calls)
 	}
 	if strings.Contains(output, "Select AWS CUR 2.0 export") {
@@ -68,13 +68,13 @@ func TestRunAWSBillingClassifiesAmbiguousExportsBeforePrompting(t *testing.T) {
 	}
 	for _, want := range []string{
 		"Classifying 2 CUR 2.0 export candidates",
-		"Auto-selected CUR 2.0 export cur2-1111111111111111",
+		"Auto-selected CUR 2.0 export cur2-acacacacacacacac",
 		"Readiness: ready",
 		"Support code: aws_cur2_preflight_ready",
 		"Export: TEXT_OR_CSV / GZIP, MONTHLY, CREATE_NEW_REPORT",
 		"Next action: continue with this CUR 2.0 export.",
 		"aws_cur2_output_settings_blocked",
-		"--export-ref cur2-1111111111111111",
+		"--export-ref cur2-acacacacacacacac",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("output = %q, want to contain %q", output, want)
@@ -222,22 +222,22 @@ func TestCur2CandidatesSanitizesMetadataAtDisplayBoundary(t *testing.T) {
 	}
 }
 
-func TestRepairableCUR2CandidatesFiltersRepairableBlockedResults(t *testing.T) {
+func TestRepairableCUR2CandidatesExcludesInaccessiblePolicyResults(t *testing.T) {
 	classified := []classifiedCUR2Candidate{
 		{
-			Candidate: cur2Candidate{Ref: "cur2-repairpolicy0001"},
+			Candidate: cur2Candidate{Ref: "cur2-faaaaaaaaaaaaaaa"},
 			Result:    workflow.Result{Status: workflow.RunStatusBlocked, Code: "aws_s3_delivery_policy_missing"},
 		},
 		{
-			Candidate: cur2Candidate{Ref: "cur2-repairpolicy0002"},
+			Candidate: cur2Candidate{Ref: "cur2-fbbbbbbbbbbbbbbb"},
 			Result:    workflow.Result{Status: workflow.RunStatusBlocked, Code: "aws_s3_bucket_policy_inaccessible"},
 		},
 		{
-			Candidate: cur2Candidate{Ref: "cur2-invalidoutput00"},
+			Candidate: cur2Candidate{Ref: "cur2-fccccccccccccccc"},
 			Result:    workflow.Result{Status: workflow.RunStatusBlocked, Code: "aws_cur2_output_settings_blocked"},
 		},
 		{
-			Candidate: cur2Candidate{Ref: "cur2-transient000000"},
+			Candidate: cur2Candidate{Ref: "cur2-fddddddddddddddd"},
 			Result:    workflow.Result{Status: workflow.RunStatusFailed, Code: "aws_data_exports_transient"},
 		},
 	}
@@ -248,16 +248,16 @@ func TestRepairableCUR2CandidatesFiltersRepairableBlockedResults(t *testing.T) {
 	for _, item := range repairable {
 		got = append(got, item.Candidate.Ref)
 	}
-	want := []string{"cur2-repairpolicy0001", "cur2-repairpolicy0002"}
+	want := []string{"cur2-faaaaaaaaaaaaaaa"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("repairable refs = %#v, want %#v", got, want)
 	}
 }
 
-func TestWriteRepairableCUR2CandidateUsesSafeFactsAndPolicyAccessAction(t *testing.T) {
+func TestWriteNonReadyCUR2CandidateUsesSafeFactsAndPolicyAccessAction(t *testing.T) {
 	item := classifiedCUR2Candidate{
 		Candidate: cur2Candidate{
-			Ref:    "cur2-repairpolicy0002",
+			Ref:    "cur2-fbbbbbbbbbbbbbbb",
 			Output: "PARQUET",
 		},
 		Result: workflow.Result{
@@ -276,12 +276,12 @@ func TestWriteRepairableCUR2CandidateUsesSafeFactsAndPolicyAccessAction(t *testi
 	}
 	var output strings.Builder
 
-	writeRepairableCUR2Candidate(&output, item)
+	writeNonReadyCUR2Candidate(&output, item)
 
 	text := output.String()
 	for _, want := range []string{
-		"cur2-repairpolicy0002",
-		"Readiness: repair required",
+		"cur2-fbbbbbbbbbbbbbbb",
+		"Readiness: not ready",
 		"Support code: aws_s3_bucket_policy_inaccessible",
 		"Export: PARQUET / PARQUET, DAILY",
 		"Previous month: 2026-06 missing manifest",
@@ -353,7 +353,7 @@ func TestWriteRepairableCUR2CandidateMapsPolicyGapsToPlainLanguage(t *testing.T)
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			item := classifiedCUR2Candidate{
-				Candidate: cur2Candidate{Ref: "cur2-repairpolicy0001", Output: "TEXT_OR_CSV", Compression: "GZIP"},
+				Candidate: cur2Candidate{Ref: "cur2-faaaaaaaaaaaaaaa", Output: "TEXT_OR_CSV", Compression: "GZIP"},
 				Result: workflow.Result{
 					Status: workflow.RunStatusBlocked,
 					Code:   "aws_s3_delivery_policy_missing",
@@ -387,7 +387,7 @@ func TestWriteRepairableCUR2CandidateMapsPolicyGapsToPlainLanguage(t *testing.T)
 
 func TestWriteRepairableCUR2CandidateDropsUnsafeObjectKeyPolicyGap(t *testing.T) {
 	item := classifiedCUR2Candidate{
-		Candidate: cur2Candidate{Ref: "cur2-repairpolicy0004", Output: "TEXT_OR_CSV", Compression: "GZIP"},
+		Candidate: cur2Candidate{Ref: "cur2-fggggggggggggggg", Output: "TEXT_OR_CSV", Compression: "GZIP"},
 		Result: workflow.Result{
 			Status: workflow.RunStatusBlocked,
 			Code:   "aws_s3_delivery_policy_missing",
@@ -414,7 +414,7 @@ func TestWriteRepairableCUR2CandidateDropsUnsafeObjectKeyPolicyGap(t *testing.T)
 
 func TestWriteSelectableCUR2CandidateShowsPolicyWarningWithoutBlocker(t *testing.T) {
 	item := classifiedCUR2Candidate{
-		Candidate: cur2Candidate{Ref: "cur2-policywarning1"},
+		Candidate: cur2Candidate{Ref: "cur2-feeeeeeeeeeeeeee"},
 		Result: workflow.Result{
 			Status: workflow.StatusReady,
 			Code:   "aws_s3_delivery_policy_missing",
@@ -432,7 +432,7 @@ func TestWriteSelectableCUR2CandidateShowsPolicyWarningWithoutBlocker(t *testing
 
 	text := output.String()
 	for _, want := range []string{
-		"cur2-policywarning1",
+		"cur2-feeeeeeeeeeeeeee",
 		"Readiness: ready",
 		"Support code: aws_s3_delivery_policy_missing",
 		"S3 delivery policy: action needed",
@@ -454,10 +454,90 @@ func TestWriteSelectableCUR2CandidateShowsPolicyWarningWithoutBlocker(t *testing
 	assertGuidedOutputSafe(t, text)
 }
 
+func TestWriteSelectableCUR2CandidateShowsOverwriteAsReady(t *testing.T) {
+	item := classifiedCUR2Candidate{
+		Candidate: cur2Candidate{Ref: "cur2-fqqqqqqqqqqqqqqq"},
+		Result: workflow.Result{
+			Status: workflow.StatusReady,
+			Code:   "aws_cur2_preflight_ready",
+			Plan: &workflow.ExecutionPlan{Checks: []workflow.PlanCheck{
+				cur2PlanCheck(workflow.CheckPass, "aws_cur2_output_format_ready",
+					workflow.PlanEvidence{Key: "output_format", Value: "TEXT_OR_CSV"}),
+				cur2PlanCheck(workflow.CheckPass, "aws_cur2_compression_ready",
+					workflow.PlanEvidence{Key: "compression", Value: "GZIP"}),
+				cur2PlanCheck(workflow.CheckPass, "aws_cur2_time_granularity_ready",
+					workflow.PlanEvidence{Key: "time_granularity", Value: "MONTHLY"}),
+				cur2PlanCheck(workflow.CheckPass, "aws_cur2_overwrite_supported",
+					workflow.PlanEvidence{Key: "overwrite", Value: "OVERWRITE_REPORT"},
+					workflow.PlanEvidence{Key: "matilda_output_preference", Value: "supported_not_preferred"}),
+			}},
+		},
+	}
+	var output strings.Builder
+
+	writeSelectableCUR2Candidate(&output, item)
+
+	text := output.String()
+	for _, want := range []string{
+		"cur2-fqqqqqqqqqqqqqqq",
+		"Readiness: ready",
+		"Support code: aws_cur2_preflight_ready",
+		"Export: TEXT_OR_CSV / GZIP, MONTHLY, OVERWRITE_REPORT",
+		"Next action: continue with this CUR 2.0 export.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("overwrite ready output = %q, want %q", text, want)
+		}
+	}
+	for _, forbidden := range []string{
+		"Blocker:",
+		"overwrite file versioning is not verified",
+		"confirm Matilda support for OVERWRITE_REPORT",
+		"use a CUR 2.0 export with CREATE_NEW_REPORT",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("overwrite ready output contains forbidden value %q: %s", forbidden, text)
+		}
+	}
+	assertGuidedOutputSafe(t, text)
+}
+
+func TestWriteSelectableCUR2CandidateIncludesPolicyActionWhenTopLevelCodeIsAnotherWarning(t *testing.T) {
+	item := classifiedCUR2Candidate{
+		Candidate: cur2Candidate{Ref: "cur2-fdddddddddddddd"},
+		Result: workflow.Result{
+			Status: workflow.StatusReady,
+			Code:   "aws_cur2_delivery_not_started",
+			Plan: &workflow.ExecutionPlan{Checks: []workflow.PlanCheck{
+				cur2PlanCheck(workflow.CheckWarn, "aws_cur2_delivery_not_started"),
+				cur2PlanCheck(workflow.CheckPass, "aws_cur2_previous_month_ready",
+					workflow.PlanEvidence{Key: "previous_billing_period", Value: "2026-06"}),
+				cur2PlanCheck(workflow.CheckWarn, "aws_s3_delivery_policy_missing",
+					workflow.PlanEvidence{Key: "policy_gap", Value: "source_account_condition_missing"}),
+			}},
+		},
+	}
+	var output strings.Builder
+
+	writeSelectableCUR2Candidate(&output, item)
+
+	text := output.String()
+	for _, want := range []string{
+		"Support code: aws_cur2_delivery_not_started",
+		"S3 delivery policy: action needed",
+		"Next action: continue with this CUR 2.0 export; review the S3 delivery policy before relying on future delivery or backfill.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("multi-warning selectable output = %q, want %q", text, want)
+		}
+	}
+	assertGuidedOutputSafe(t, text)
+}
+
 func TestWriteRepairableCUR2CandidateShowsFallbacksWhenFactsAreMissing(t *testing.T) {
 	item := classifiedCUR2Candidate{
 		Candidate: cur2Candidate{
-			Ref:    "cur2-repairpolicy0003",
+			Ref:    "cur2-ffffffffffffffff",
 			Output: "TEXT_OR_CSV",
 		},
 		Result: workflow.Result{
@@ -471,7 +551,7 @@ func TestWriteRepairableCUR2CandidateShowsFallbacksWhenFactsAreMissing(t *testin
 
 	text := output.String()
 	for _, want := range []string{
-		"cur2-repairpolicy0003",
+		"cur2-ffffffffffffffff",
 		"Readiness: repair required",
 		"Support code: aws_repairable_unknown",
 		"Export: TEXT_OR_CSV / unverified",
@@ -490,12 +570,12 @@ func TestWriteRepairableCUR2CandidateShowsFallbacksWhenFactsAreMissing(t *testin
 func TestWriteRepairableCUR2CandidatesOmitsOtherSectionWhenAllAreRepairable(t *testing.T) {
 	classified := []classifiedCUR2Candidate{
 		{
-			Candidate: cur2Candidate{Ref: "cur2-repairpolicy0001", Output: "TEXT_OR_CSV", Compression: "GZIP"},
+			Candidate: cur2Candidate{Ref: "cur2-faaaaaaaaaaaaaaa", Output: "TEXT_OR_CSV", Compression: "GZIP"},
 			Result:    workflow.Result{Status: workflow.RunStatusBlocked, Code: "aws_s3_delivery_policy_missing"},
 		},
 		{
-			Candidate: cur2Candidate{Ref: "cur2-repairpolicy0002", Output: "PARQUET", Compression: "PARQUET"},
-			Result:    workflow.Result{Status: workflow.RunStatusBlocked, Code: "aws_s3_bucket_policy_inaccessible"},
+			Candidate: cur2Candidate{Ref: "cur2-fbbbbbbbbbbbbbbb", Output: "PARQUET", Compression: "PARQUET"},
+			Result:    workflow.Result{Status: workflow.RunStatusBlocked, Code: "aws_s3_delivery_policy_missing"},
 		},
 	}
 	var output strings.Builder
@@ -506,8 +586,8 @@ func TestWriteRepairableCUR2CandidatesOmitsOtherSectionWhenAllAreRepairable(t *t
 	for _, want := range []string{
 		"No AWS CUR 2.0 export is ready yet.",
 		"Repairable CUR 2.0 export candidates",
-		"cur2-repairpolicy0001",
-		"cur2-repairpolicy0002",
+		"cur2-faaaaaaaaaaaaaaa",
+		"cur2-fbbbbbbbbbbbbbbb",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("repairable list output = %q, want %q", text, want)
@@ -519,9 +599,40 @@ func TestWriteRepairableCUR2CandidatesOmitsOtherSectionWhenAllAreRepairable(t *t
 	assertGuidedOutputSafe(t, text)
 }
 
+func TestWriteRepairableCUR2CandidatesShowsInaccessiblePolicyAsOtherNonReady(t *testing.T) {
+	classified := []classifiedCUR2Candidate{
+		{
+			Candidate: cur2Candidate{Ref: "cur2-faaaaaaaaaaaaaaa", Output: "TEXT_OR_CSV", Compression: "GZIP"},
+			Result:    workflow.Result{Status: workflow.RunStatusBlocked, Code: "aws_s3_delivery_policy_missing"},
+		},
+		{
+			Candidate: cur2Candidate{Ref: "cur2-fbbbbbbbbbbbbbbb", Output: "PARQUET", Compression: "PARQUET"},
+			Result:    workflow.Result{Status: workflow.RunStatusBlocked, Code: "aws_s3_bucket_policy_inaccessible"},
+		},
+	}
+	var output strings.Builder
+
+	writeRepairableCUR2Candidates(&output, repairableCUR2Candidates(classified), classified)
+
+	text := output.String()
+	for _, want := range []string{
+		"Repairable CUR 2.0 export candidates",
+		"Other CUR 2.0 candidates",
+		"cur2-fbbbbbbbbbbbbbbb",
+		"Readiness: not ready",
+		"Support code: aws_s3_bucket_policy_inaccessible",
+		"Next action: grant read access to inspect the S3 bucket policy, then rerun preflight.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("repairable list output = %q, want %q", text, want)
+		}
+	}
+	assertGuidedOutputSafe(t, text)
+}
+
 func TestWriteSelectableCUR2CandidateMapsPreviousMonthComponentsToPlainLanguage(t *testing.T) {
 	item := classifiedCUR2Candidate{
-		Candidate: cur2Candidate{Ref: "cur2-backfilllabels1"},
+		Candidate: cur2Candidate{Ref: "cur2-fhhhhhhhhhhhhhhh"},
 		Result: workflow.Result{
 			Status: workflow.RunStatusManualSteps,
 			Code:   "aws_backfill_manual_step_required",
@@ -560,7 +671,7 @@ func TestWriteSelectableCUR2CandidateMapsPreviousMonthComponentsToPlainLanguage(
 
 func TestWriteSelectableCUR2CandidateUsesPlanChecksForBackfillWithoutPolicyRepair(t *testing.T) {
 	item := classifiedCUR2Candidate{
-		Candidate: cur2Candidate{Ref: "cur2-livebackfill001"},
+		Candidate: cur2Candidate{Ref: "cur2-fiiiiiiiiiiiiiii"},
 		Result: workflow.Result{
 			Status: workflow.RunStatusManualSteps,
 			Code:   "aws_backfill_manual_step_required",
@@ -588,7 +699,7 @@ func TestWriteSelectableCUR2CandidateUsesPlanChecksForBackfillWithoutPolicyRepai
 
 	text := output.String()
 	for _, want := range []string{
-		"cur2-livebackfill001",
+		"cur2-fiiiiiiiiiiiiiii",
 		"Readiness: manual step required",
 		"Support code: aws_backfill_manual_step_required",
 		"Export: TEXT_OR_CSV / GZIP, MONTHLY, CREATE_NEW_REPORT",
@@ -613,9 +724,9 @@ func TestWriteSelectableCUR2CandidateUsesPlanChecksForBackfillWithoutPolicyRepai
 	assertGuidedOutputSafe(t, text)
 }
 
-func TestWriteBlockedCUR2CandidateExplainsOverwriteWithoutBlamingParquetOrDaily(t *testing.T) {
+func TestWriteBlockedCUR2CandidateDoesNotTreatOverwriteAsBlocker(t *testing.T) {
 	item := classifiedCUR2Candidate{
-		Candidate: cur2Candidate{Ref: "cur2-overwrite00001"},
+		Candidate: cur2Candidate{Ref: "cur2-fjjjjjjjjjjjjjjj"},
 		Result: workflow.Result{
 			Status: workflow.RunStatusBlocked,
 			Code:   "aws_cur2_output_settings_blocked",
@@ -627,8 +738,10 @@ func TestWriteBlockedCUR2CandidateExplainsOverwriteWithoutBlamingParquetOrDaily(
 					workflow.PlanEvidence{Key: "matilda_format_support", Value: "supported"}),
 				cur2PlanCheck(workflow.CheckPass, "aws_cur2_compression_supported",
 					workflow.PlanEvidence{Key: "compression", Value: "PARQUET"}),
-				cur2PlanCheck(workflow.CheckFail, "aws_cur2_output_settings_blocked",
+				cur2PlanCheck(workflow.CheckPass, "aws_cur2_overwrite_supported",
 					workflow.PlanEvidence{Key: "overwrite", Value: "OVERWRITE_REPORT"}),
+				cur2PlanCheck(workflow.CheckFail, "aws_cur2_output_settings_blocked",
+					workflow.PlanEvidence{Key: "output_format", Value: "JSON"}),
 			}},
 		},
 	}
@@ -638,12 +751,11 @@ func TestWriteBlockedCUR2CandidateExplainsOverwriteWithoutBlamingParquetOrDaily(
 
 	text := output.String()
 	for _, want := range []string{
-		"cur2-overwrite00001",
+		"cur2-fjjjjjjjjjjjjjjj",
 		"Readiness: not ready",
 		"Support code: aws_cur2_output_settings_blocked",
-		"Export: PARQUET / PARQUET, DAILY, OVERWRITE_REPORT",
-		"Blocker: overwrite file versioning is not verified for this Matilda path.",
-		"Next action: confirm Matilda support for OVERWRITE_REPORT, or select a CREATE_NEW_REPORT CUR 2.0 export.",
+		"Export: JSON / PARQUET, DAILY, OVERWRITE_REPORT",
+		"Next action: review the CUR 2.0 output settings and rerun after they match a Matilda-supported AWS-standard shape.",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("overwrite output = %q, want %q", text, want)
@@ -653,6 +765,9 @@ func TestWriteBlockedCUR2CandidateExplainsOverwriteWithoutBlamingParquetOrDaily(
 		"PARQUET output is not supported",
 		"daily granularity is not supported",
 		"use a CUR 2.0 export with CREATE_NEW_REPORT",
+		"overwrite file versioning is not verified",
+		"confirm Matilda support for OVERWRITE_REPORT",
+		"Blocker: overwrite",
 	} {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("overwrite output contains forbidden value %q: %s", forbidden, text)
@@ -663,7 +778,7 @@ func TestWriteBlockedCUR2CandidateExplainsOverwriteWithoutBlamingParquetOrDaily(
 
 func TestWriteSelectableCUR2CandidateShowsEvidenceDerivedDeliveryAndPolicyStatuses(t *testing.T) {
 	item := classifiedCUR2Candidate{
-		Candidate: cur2Candidate{Ref: "cur2-progress000001"},
+		Candidate: cur2Candidate{Ref: "cur2-fkkkkkkkkkkkkkkk"},
 		Result: workflow.Result{
 			Status: workflow.StatusReady,
 			Code:   "aws_cur2_delivery_not_started",
@@ -705,7 +820,7 @@ func TestWriteSelectableCUR2CandidateShowsEvidenceDerivedDeliveryAndPolicyStatus
 
 func TestWriteNonReadyCUR2CandidateShowsDeliveryNotStartedStatus(t *testing.T) {
 	item := classifiedCUR2Candidate{
-		Candidate: cur2Candidate{Ref: "cur2-nodelivery0001"},
+		Candidate: cur2Candidate{Ref: "cur2-flllllllllllllll"},
 		Result: workflow.Result{
 			Status: workflow.RunStatusBlocked,
 			Code:   "aws_cur2_delivery_not_started",
@@ -765,7 +880,7 @@ func TestWriteAWSBillingSummaryFactsSkipsResultsWithoutCUR2PlanFacts(t *testing.
 
 func TestSummaryCUR2ReadinessAndNextActionUsesRepairablePolicyResult(t *testing.T) {
 	item := classifiedCUR2Candidate{
-		Candidate: cur2Candidate{Ref: "cur2-summaryrepair01"},
+		Candidate: cur2Candidate{Ref: "cur2-fmmmmmmmmmmmmmmm"},
 		Result: workflow.Result{
 			Status: workflow.RunStatusBlocked,
 			Code:   "aws_s3_delivery_policy_missing",
@@ -972,11 +1087,11 @@ func TestRunAWSBillingShowsRepairableCUR2CandidatesWhenNoneReady(t *testing.T) {
 func TestWriteBlockedClassificationsUsesSafeFactsAndNextAction(t *testing.T) {
 	classified := []classifiedCUR2Candidate{
 		{
-			Candidate: cur2Candidate{Ref: "cur2-ready0000000000", Output: "TEXT_OR_CSV", Compression: "GZIP"},
+			Candidate: cur2Candidate{Ref: "cur2-fnnnnnnnnnnnnnnn", Output: "TEXT_OR_CSV", Compression: "GZIP"},
 			Result:    workflow.Result{Status: workflow.StatusReady, Code: "aws_cur2_preflight_ready"},
 		},
 		{
-			Candidate: cur2Candidate{Ref: "cur2-overwrite00001", Output: "PARQUET", Compression: "PARQUET"},
+			Candidate: cur2Candidate{Ref: "cur2-fjjjjjjjjjjjjjjj", Output: "PARQUET", Compression: "PARQUET"},
 			Result: workflow.Result{
 				Status: workflow.RunStatusBlocked,
 				Code:   "aws_cur2_output_settings_blocked",
@@ -984,6 +1099,7 @@ func TestWriteBlockedClassificationsUsesSafeFactsAndNextAction(t *testing.T) {
 					Evidence: []workflow.PlanEvidence{
 						{Key: "time_granularity", Value: "DAILY"},
 						{Key: "overwrite", Value: "OVERWRITE_REPORT"},
+						{Key: "output_format", Value: "JSON"},
 						{Key: "policy_gap", Value: "arn:aws:s3:::private-bucket/policy"},
 					},
 				}}},
@@ -996,22 +1112,23 @@ func TestWriteBlockedClassificationsUsesSafeFactsAndNextAction(t *testing.T) {
 
 	text := output.String()
 	for _, want := range []string{
-		"cur2-overwrite00001",
+		"cur2-fjjjjjjjjjjjjjjj",
 		"Readiness: not ready",
 		"Support code: aws_cur2_output_settings_blocked",
-		"Export: PARQUET / PARQUET, DAILY, OVERWRITE_REPORT",
-		"Blocker: overwrite file versioning is not verified for this Matilda path.",
-		"Next action: confirm Matilda support for OVERWRITE_REPORT, or select a CREATE_NEW_REPORT CUR 2.0 export.",
+		"Export: JSON / PARQUET, DAILY, OVERWRITE_REPORT",
+		"Next action: review the CUR 2.0 output settings and rerun after they match a Matilda-supported AWS-standard shape.",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("blocked classification output = %q, want %q", text, want)
 		}
 	}
 	for _, forbidden := range []string{
-		"cur2-ready0000000000",
+		"cur2-fnnnnnnnnnnnnnnn",
 		"not ready: aws_cur2_output_settings_blocked",
 		"arn:aws",
 		"private-bucket",
+		"overwrite file versioning is not verified",
+		"confirm Matilda support for OVERWRITE_REPORT",
 	} {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("blocked classification output contains forbidden value %q: %s", forbidden, text)
@@ -1022,7 +1139,7 @@ func TestWriteBlockedClassificationsUsesSafeFactsAndNextAction(t *testing.T) {
 
 func TestNonReadyCUR2NextActionExplainsOutputSettingsWithoutOverwriteFact(t *testing.T) {
 	item := classifiedCUR2Candidate{
-		Candidate: cur2Candidate{Ref: "cur2-outputsettings1", Output: "JSON"},
+		Candidate: cur2Candidate{Ref: "cur2-fooooooooooooooo", Output: "JSON"},
 		Result:    workflow.Result{Status: workflow.RunStatusBlocked, Code: "aws_cur2_output_settings_blocked"},
 	}
 
@@ -1037,7 +1154,7 @@ func TestNonReadyCUR2NextActionExplainsOutputSettingsWithoutOverwriteFact(t *tes
 
 func TestNonReadyCUR2NextActionUsesGenericFallbackForUnknownCode(t *testing.T) {
 	item := classifiedCUR2Candidate{
-		Candidate: cur2Candidate{Ref: "cur2-unknown0000001"},
+		Candidate: cur2Candidate{Ref: "cur2-fppppppppppppppp"},
 		Result:    workflow.Result{Status: workflow.RunStatusBlocked, Code: "aws_cur2_unknown_blocker"},
 	}
 
@@ -1052,11 +1169,11 @@ func TestNonReadyCUR2NextActionUsesGenericFallbackForUnknownCode(t *testing.T) {
 
 func TestSelectableCUR2ReadinessAndNextActionUseSafeFallbacks(t *testing.T) {
 	manual := classifiedCUR2Candidate{
-		Candidate: cur2Candidate{Ref: "cur2-manualgeneric1"},
+		Candidate: cur2Candidate{Ref: "cur2-gaaaaaaaaaaaaaaa"},
 		Result:    workflow.Result{Status: workflow.RunStatusManualSteps, Code: "aws_cur2_manual_generic"},
 	}
 	unknown := classifiedCUR2Candidate{
-		Candidate: cur2Candidate{Ref: "cur2-unknownstatus01"},
+		Candidate: cur2Candidate{Ref: "cur2-gbbbbbbbbbbbbbbb"},
 		Result:    workflow.Result{Status: workflow.RunStatusBlocked, Code: "aws_cur2_unknown_status"},
 	}
 

@@ -2,9 +2,9 @@ package workflow
 
 import (
 	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -15,8 +15,22 @@ const executionPlanSchemaVersion = "matilda_cloud_prep.execution_plan_v0"
 type CoverageStatus string
 
 const (
-	CoverageUnknown CoverageStatus = "unknown"
+	CoverageUnknown          CoverageStatus = "unknown"
+	CoverageOrganizationWide CoverageStatus = "organization_wide"
+	CoverageAccountOnly      CoverageStatus = "account_only"
+	CoverageSingleAccount    CoverageStatus = "single_account"
+	CoverageUnverified       CoverageStatus = "unverified"
 )
+
+func CoverageStatuses() []CoverageStatus {
+	return []CoverageStatus{
+		CoverageUnknown,
+		CoverageOrganizationWide,
+		CoverageAccountOnly,
+		CoverageSingleAccount,
+		CoverageUnverified,
+	}
+}
 
 type PackageSchemaStatus string
 
@@ -35,6 +49,7 @@ type ExecutionPlanInput struct {
 	PlanGeneratedAt         time.Time
 	Request                 Request
 	ExecutionOptions        ExecutionOptions
+	ApprovedExecutionPlanID string
 	OperatorIdentitySummary OperatorIdentitySummary
 	CoverageRecommendation  CoverageRecommendation
 	PackageSchemaStatus     PackageSchemaStatus
@@ -101,8 +116,9 @@ type PlanCheck struct {
 }
 
 type PlanEvidence struct {
-	Key   string `json:"key"`
-	Value string `json:"value"`
+	Key            string `json:"key"`
+	Value          string `json:"value"`
+	PlanIDExcluded bool   `json:"plan_id_excluded,omitempty"`
 }
 
 type PlanStatusCounts struct {
@@ -111,10 +127,11 @@ type PlanStatusCounts struct {
 }
 
 type ApprovalSummary struct {
-	Required bool   `json:"required"`
-	Approved bool   `json:"approved"`
-	Blocked  bool   `json:"blocked"`
-	Reason   string `json:"reason"`
+	Required       bool   `json:"required"`
+	Approved       bool   `json:"approved"`
+	Blocked        bool   `json:"blocked"`
+	ApprovalPlanID string `json:"approval_plan_id,omitempty"`
+	Reason         string `json:"reason"`
 }
 
 func BuildExecutionPlan(input ExecutionPlanInput) (ExecutionPlan, error) {
@@ -125,6 +142,10 @@ func BuildExecutionPlan(input ExecutionPlanInput) (ExecutionPlan, error) {
 		return ExecutionPlan{}, err
 	}
 	executionOptions, err := NormalizeExecutionOptions(input.ExecutionOptions)
+	if err != nil {
+		return ExecutionPlan{}, err
+	}
+	approvedExecutionPlanID, err := safeApprovedExecutionPlanID(input.ApprovedExecutionPlanID)
 	if err != nil {
 		return ExecutionPlan{}, err
 	}
@@ -168,10 +189,28 @@ func BuildExecutionPlan(input ExecutionPlanInput) (ExecutionPlan, error) {
 		StatusCounts:            countPlanStatuses(steps, checks),
 		SourceHandles:           sourceHandles,
 		MissingSourceOfTruth:    missingSourceOfTruth,
-		Approval:                approvalSummaryFor(steps),
 	}
 	plan.PlanID = stableID("plan", planIDMaterial(plan))
+	approvalPlanID := plan.PlanID
+	if approvedExecutionPlanID != "" {
+		approvalPlanID = approvedExecutionPlanID
+	}
+	plan.Approval = approvalSummaryFor(steps, executionOptions, approvalPlanID)
 	return plan, nil
+}
+
+func safeApprovedExecutionPlanID(planID string) (string, error) {
+	trimmed := strings.TrimSpace(planID)
+	if trimmed == "" {
+		return "", nil
+	}
+	if err := ensureSafeText("approved_execution_plan_id", trimmed); err != nil {
+		return "", err
+	}
+	if !validPlanID(trimmed) {
+		return "", fmt.Errorf("approved_execution_plan_id must use format plan_ plus 16 lowercase account-id-safe characters")
+	}
+	return trimmed, nil
 }
 
 func safeOperatorIdentitySummary(summary OperatorIdentitySummary) (OperatorIdentitySummary, error) {
@@ -198,8 +237,15 @@ func safeOperatorIdentitySummary(summary OperatorIdentitySummary) (OperatorIdent
 }
 
 func validateCoverageRecommendation(recommendation CoverageRecommendation) error {
-	if recommendation.CoverageStatus != CoverageUnknown {
-		return fmt.Errorf("coverage_recommendation coverage_status = %q, want %q", recommendation.CoverageStatus, CoverageUnknown)
+	var valid bool
+	for _, status := range CoverageStatuses() {
+		if recommendation.CoverageStatus == status {
+			valid = true
+			break
+		}
+	}
+	if !valid {
+		return fmt.Errorf("coverage_recommendation coverage_status = %q, want one of unknown, organization_wide, account_only, single_account, unverified", recommendation.CoverageStatus)
 	}
 	if strings.TrimSpace(recommendation.Summary) == "" {
 		return fmt.Errorf("coverage_recommendation summary is required")
@@ -226,6 +272,7 @@ func safePlanSteps(steps []PlanStep) ([]PlanStep, error) {
 		if err := validatePlanStepIntent(step.Intent); err != nil {
 			return nil, fmt.Errorf("step %d: %w", i, err)
 		}
+		explicitStepID := strings.TrimSpace(step.ID)
 		step.ApprovalKind = strings.TrimSpace(step.ApprovalKind)
 		step.RequiresApproval = stepRequiresApproval(step.Intent)
 		if err := requirePlanStepExplanations(step); err != nil {
@@ -234,7 +281,7 @@ func safePlanSteps(steps []PlanStep) ([]PlanStep, error) {
 		if err := validateApprovalKindForIntent(step); err != nil {
 			return nil, fmt.Errorf("step %d: %w", i, err)
 		}
-		if err := ensureSafeText("plan step", string(step.Intent), step.Title, step.Description, step.Reason, step.ApprovalKind, step.CurrentState, step.TargetState, step.RequiredPermission, step.Validation, step.Rollback); err != nil {
+		if err := ensureSafeText("plan step", explicitStepID, string(step.Intent), step.Title, step.Description, step.Reason, step.ApprovalKind, step.CurrentState, step.TargetState, step.RequiredPermission, step.Validation, step.Rollback); err != nil {
 			return nil, fmt.Errorf("step %d: %w", i, err)
 		}
 		handles, err := safeSourceHandles("plan step source handles", step.SourceHandles)
@@ -248,7 +295,11 @@ func safePlanSteps(steps []PlanStep) ([]PlanStep, error) {
 
 		step.SourceHandles = handles
 		step.MissingSourceOfTruth = missing
-		step.ID = stableID("step", stepIDMaterial(step))
+		if step.RequiresApproval && explicitStepID != "" {
+			step.ID = explicitStepID
+		} else {
+			step.ID = stableID("step", stepIDMaterial(step))
+		}
 		copied[i] = step
 	}
 	return copied, nil
@@ -409,12 +460,12 @@ func countPlanStatuses(steps []PlanStep, checks []PlanCheck) PlanStatusCounts {
 	return counts
 }
 
-func approvalSummaryFor(steps []PlanStep) ApprovalSummary {
-	var required bool
+func approvalSummaryFor(steps []PlanStep, options ExecutionOptions, planID string) ApprovalSummary {
 	var blocked bool
+	requiredSteps := map[string]int{}
 	for _, step := range steps {
 		if step.RequiresApproval {
-			required = true
+			requiredSteps[step.ID] = 1
 		}
 		if step.Intent == PlanStepBlocked {
 			blocked = true
@@ -424,17 +475,28 @@ func approvalSummaryFor(steps []PlanStep) ApprovalSummary {
 	switch {
 	case blocked:
 		return ApprovalSummary{
-			Required: required,
-			Approved: false,
-			Blocked:  true,
-			Reason:   "Plan contains blocked steps and cannot be approved for execution.",
+			Required:       len(requiredSteps) > 0,
+			Approved:       false,
+			Blocked:        true,
+			ApprovalPlanID: approvalPlanIDForSummary(planID, requiredSteps),
+			Reason:         "Plan contains blocked steps and cannot be approved for execution.",
 		}
-	case required:
+	case len(requiredSteps) > 0:
+		if approvalsExactlyMatchPlan(options.Approvals, planID, requiredSteps) {
+			return ApprovalSummary{
+				Required:       true,
+				Approved:       true,
+				Blocked:        false,
+				ApprovalPlanID: planID,
+				Reason:         "All mutating steps have explicit approval bound to the approval plan.",
+			}
+		}
 		return ApprovalSummary{
-			Required: true,
-			Approved: false,
-			Blocked:  false,
-			Reason:   "Mutating steps require explicit approval bound to this plan.",
+			Required:       true,
+			Approved:       false,
+			Blocked:        false,
+			ApprovalPlanID: planID,
+			Reason:         "Mutating steps require explicit approval bound to the approval plan.",
 		}
 	default:
 		return ApprovalSummary{
@@ -444,6 +506,35 @@ func approvalSummaryFor(steps []PlanStep) ApprovalSummary {
 			Reason:   "No mutation approval is required for this provider-neutral plan.",
 		}
 	}
+}
+
+func approvalPlanIDForSummary(planID string, requiredSteps map[string]int) string {
+	if len(requiredSteps) == 0 {
+		return ""
+	}
+	return planID
+}
+
+func approvalsExactlyMatchPlan(approvals []ExecutionApproval, planID string, requiredSteps map[string]int) bool {
+	if len(approvals) == 0 || strings.TrimSpace(planID) == "" {
+		return false
+	}
+	actual := map[string]int{}
+	for _, approval := range approvals {
+		if approval.PlanID != planID || !approval.Confirmed {
+			return false
+		}
+		actual[approval.OperationID]++
+	}
+	if len(actual) != len(requiredSteps) {
+		return false
+	}
+	for id, count := range requiredSteps {
+		if actual[id] != count {
+			return false
+		}
+	}
+	return true
 }
 
 func stepRequiresApproval(intent PlanStepIntent) bool {
@@ -469,7 +560,24 @@ func stableID(prefix string, material any) string {
 		panic(fmt.Sprintf("workflow stable ID material is not JSON-serializable: %v", err))
 	}
 	sum := sha256.Sum256(encoded)
-	return prefix + "_" + hex.EncodeToString(sum[:])[:16]
+	return prefix + "_" + accountIDSafeHash(sum[:], 16)
+}
+
+func accountIDSafeHash(hash []byte, length int) string {
+	const alphabet = "abcdefghijklmnop"
+	var builder strings.Builder
+	builder.Grow(length)
+	for _, value := range hash {
+		if builder.Len() >= length {
+			break
+		}
+		builder.WriteByte(alphabet[value>>4])
+		if builder.Len() >= length {
+			break
+		}
+		builder.WriteByte(alphabet[value&0x0f])
+	}
+	return builder.String()
 }
 
 func planIDMaterial(plan ExecutionPlan) any {
@@ -480,6 +588,7 @@ func planIDMaterial(plan ExecutionPlan) any {
 		Action                 string                 `json:"action"`
 		CoverageRecommendation CoverageRecommendation `json:"coverage_recommendation"`
 		Steps                  []PlanStep             `json:"steps"`
+		Checks                 []PlanCheck            `json:"checks"`
 		SourceHandles          []SourceHandle         `json:"source_handles"`
 		PackageSchemaStatus    PackageSchemaStatus    `json:"package_schema_status"`
 		ExecutionOptions       ExecutionOptions       `json:"execution_options"`
@@ -490,10 +599,39 @@ func planIDMaterial(plan ExecutionPlan) any {
 		Action:                 string(plan.Request.Action),
 		CoverageRecommendation: plan.CoverageRecommendation,
 		Steps:                  plan.Steps,
+		Checks:                 planIDChecksMaterial(plan.Checks),
 		SourceHandles:          plan.SourceHandles,
 		PackageSchemaStatus:    plan.PackageSchemaStatus,
-		ExecutionOptions:       plan.ExecutionOptions,
+		ExecutionOptions:       planIDExecutionOptionsMaterial(plan.ExecutionOptions),
 	}
+}
+
+func planIDExecutionOptionsMaterial(options ExecutionOptions) ExecutionOptions {
+	options.Approvals = nil
+	return options
+}
+
+func planIDChecksMaterial(checks []PlanCheck) []PlanCheck {
+	copied := make([]PlanCheck, len(checks))
+	for i, check := range checks {
+		copied[i] = check
+		copied[i].Evidence = planIDEvidenceMaterial(check.Evidence)
+	}
+	return copied
+}
+
+func planIDEvidenceMaterial(evidence []PlanEvidence) []PlanEvidence {
+	if len(evidence) == 0 {
+		return nil
+	}
+	copied := make([]PlanEvidence, len(evidence))
+	for i, item := range evidence {
+		if item.PlanIDExcluded {
+			item.Value = ""
+		}
+		copied[i] = item
+	}
+	return copied
 }
 
 func stepIDMaterial(step PlanStep) any {
@@ -503,6 +641,7 @@ func stepIDMaterial(step PlanStep) any {
 
 func checkIDMaterial(check PlanCheck) any {
 	check.ID = ""
+	check.Evidence = planIDEvidenceMaterial(check.Evidence)
 	return check
 }
 
@@ -513,6 +652,9 @@ func ensureSafeText(context string, values ...string) error {
 			if strings.Contains(lower, forbidden) {
 				return fmt.Errorf("%s contains unsafe content matching %q", context, forbidden)
 			}
+		}
+		if awsAccountIDTextPattern.MatchString(value) {
+			return fmt.Errorf("%s contains unsafe content matching aws account id", context)
 		}
 	}
 	return nil
@@ -530,6 +672,7 @@ var forbiddenPlanTextFragments = []string{
 	"c:\\users\\",
 	".pem",
 	"/home/",
+	"/private/",
 	"ocid1.",
 	"passphrase",
 	"password",
@@ -544,3 +687,5 @@ var forbiddenPlanTextFragments = []string{
 	"session_token",
 	"token=",
 }
+
+var awsAccountIDTextPattern = regexp.MustCompile(`(^|[^0-9])\d{12}([^0-9]|$)`)

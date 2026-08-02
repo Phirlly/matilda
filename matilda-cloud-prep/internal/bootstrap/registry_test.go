@@ -6,6 +6,8 @@ import (
 
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/assessment"
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/cloud/aws/billingbackfill"
+	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/cloud/aws/billingcur2setup"
+	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/cloud/aws/billingprereqs"
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/cloud/aws/cur2preflight"
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/workflow"
 )
@@ -59,7 +61,7 @@ func TestRegistryFactoryReceivesAWSExecutionOptions(t *testing.T) {
 			AWS: &workflow.AWSExecutionSelectors{
 				Profile:       "default",
 				Region:        "us-west-2",
-				CUR2ExportRef: "cur2-1234abcd5678ef90",
+				CUR2ExportRef: "cur2-abcdefghijklmnop",
 			},
 		},
 	})
@@ -70,35 +72,35 @@ func TestRegistryFactoryReceivesAWSExecutionOptions(t *testing.T) {
 	if gotOptions.Selectors == nil || gotOptions.Selectors.AWS == nil {
 		t.Fatalf("factory options missing AWS selectors: %#v", gotOptions)
 	}
-	if gotOptions.Selectors.AWS.Profile != "default" || gotOptions.Selectors.AWS.Region != "us-west-2" || gotOptions.Selectors.AWS.CUR2ExportRef != "cur2-1234abcd5678ef90" {
+	if gotOptions.Selectors.AWS.Profile != "default" || gotOptions.Selectors.AWS.Region != "us-west-2" || gotOptions.Selectors.AWS.CUR2ExportRef != "cur2-abcdefghijklmnop" {
 		t.Fatalf("factory AWS selectors = %#v, want supplied selectors", gotOptions.Selectors.AWS)
 	}
 }
 
-func TestRegistryCanKeepAWSBillingApplyPrereqsDependencyBlocked(t *testing.T) {
-	request := billingbackfill.AWSBillingApplyPrereqsRequest()
+func TestRegistryDefaultAWSBillingApplyPrereqsGuidesWithoutProviderDependency(t *testing.T) {
+	request := billingprereqs.AWSBillingApplyPrereqsRequest()
 
 	result := Registry(RegistryConfig{}).Execute(request)
 
-	if result.Status != workflow.RunStatusBlocked {
-		t.Fatalf("Status = %q, want %q", result.Status, workflow.RunStatusBlocked)
+	if result.Status != workflow.RunStatusManualSteps {
+		t.Fatalf("Status = %q, want %q", result.Status, workflow.RunStatusManualSteps)
 	}
-	if result.SupportStatus != workflow.SupportBlocked {
-		t.Fatalf("SupportStatus = %q, want %q", result.SupportStatus, workflow.SupportBlocked)
+	if result.SupportStatus != workflow.SupportGuided {
+		t.Fatalf("SupportStatus = %q, want %q", result.SupportStatus, workflow.SupportGuided)
 	}
-	if result.Code != "aws_provider_capability_blocked" {
-		t.Fatalf("Code = %q, want aws_provider_capability_blocked", result.Code)
+	if result.Code != "aws_billing_prereqs_operation_required" {
+		t.Fatalf("Code = %q, want aws_billing_prereqs_operation_required", result.Code)
 	}
 	if !result.ProviderCapabilityImplemented {
-		t.Fatal("AWS billing apply-prereqs runtime capability should be registered even when live client wiring is blocked")
+		t.Fatal("AWS billing apply-prereqs runtime capability should be registered")
 	}
 	if result.Mutated {
-		t.Fatal("AWS billing apply-prereqs must not report mutation when the client is unavailable")
+		t.Fatal("AWS billing apply-prereqs default guide must not report mutation")
 	}
 }
 
 func TestRegistryBackfillFactoryReceivesAWSExecutionOptions(t *testing.T) {
-	request := billingbackfill.AWSBillingApplyPrereqsRequest()
+	request := billingprereqs.AWSBillingApplyPrereqsRequest()
 	var gotOptions workflow.ExecutionOptions
 	registry := Registry(RegistryConfig{
 		AWSBillingBackfillClientFactory: func(options workflow.ExecutionOptions) billingbackfill.Client {
@@ -108,18 +110,20 @@ func TestRegistryBackfillFactoryReceivesAWSExecutionOptions(t *testing.T) {
 	})
 
 	result := registry.ExecuteContext(context.Background(), request, workflow.ExecutionOptions{
-		InterfaceMode:  workflow.InterfaceModeDirect,
-		TimeoutSeconds: 45,
+		InterfaceMode:       workflow.InterfaceModeDirect,
+		AWSBillingOperation: workflow.AWSBillingOperationRequestBackfill,
+		TimeoutSeconds:      45,
 		Selectors: &workflow.ExecutionSelectors{
 			AWS: &workflow.AWSExecutionSelectors{
 				Profile:       "default",
 				Region:        "us-west-2",
-				CUR2ExportRef: "cur2-1234abcd5678ef90",
+				CUR2ExportRef: "cur2-abcdefghijklmnop",
 			},
 		},
 		Approvals: []workflow.ExecutionApproval{{
 			OperationID: workflow.AWSBackfillSupportCaseOperationID,
 			Intent:      workflow.ApprovalIntentRequestBackfillSupportCase,
+			PlanID:      "plan_abcdefghijklmnop",
 			Confirmed:   true,
 		}},
 	})
@@ -130,11 +134,47 @@ func TestRegistryBackfillFactoryReceivesAWSExecutionOptions(t *testing.T) {
 	if gotOptions.Selectors == nil || gotOptions.Selectors.AWS == nil {
 		t.Fatalf("factory options missing AWS selectors: %#v", gotOptions)
 	}
-	if gotOptions.Selectors.AWS.Profile != "default" || gotOptions.Selectors.AWS.Region != "us-west-2" || gotOptions.Selectors.AWS.CUR2ExportRef != "cur2-1234abcd5678ef90" {
+	if gotOptions.Selectors.AWS.Profile != "default" || gotOptions.Selectors.AWS.Region != "us-west-2" || gotOptions.Selectors.AWS.CUR2ExportRef != "cur2-abcdefghijklmnop" {
 		t.Fatalf("factory AWS selectors = %#v, want supplied selectors", gotOptions.Selectors.AWS)
 	}
-	if !workflow.HasAWSBackfillSupportCaseApproval(gotOptions) {
+	if !workflow.HasApprovedPlanStep(gotOptions, "plan_abcdefghijklmnop", workflow.AWSBackfillSupportCaseOperationID) {
 		t.Fatalf("factory options missing AWS backfill approval: %#v", gotOptions.Approvals)
+	}
+}
+
+func TestRegistryCUR2SetupFactoryReceivesAWSExecutionOptions(t *testing.T) {
+	request := billingprereqs.AWSBillingApplyPrereqsRequest()
+	var gotOptions workflow.ExecutionOptions
+	registry := Registry(RegistryConfig{
+		AWSBillingSetupClientFactory: func(options workflow.ExecutionOptions) billingcur2setup.Client {
+			gotOptions = options
+			return nil
+		},
+	})
+
+	result := registry.ExecuteContext(context.Background(), request, workflow.ExecutionOptions{
+		InterfaceMode:       workflow.InterfaceModeDirect,
+		TimeoutSeconds:      45,
+		AWSBillingOperation: workflow.AWSBillingOperationCreateCUR2Export,
+		Selectors: &workflow.ExecutionSelectors{
+			AWS: &workflow.AWSExecutionSelectors{
+				Profile: "default",
+				Region:  "us-west-2",
+			},
+		},
+	})
+
+	if result.Code != "aws_provider_capability_blocked" {
+		t.Fatalf("Code = %q, want aws_provider_capability_blocked", result.Code)
+	}
+	if gotOptions.Selectors == nil || gotOptions.Selectors.AWS == nil {
+		t.Fatalf("factory options missing AWS selectors: %#v", gotOptions)
+	}
+	if gotOptions.Selectors.AWS.Profile != "default" || gotOptions.Selectors.AWS.Region != "us-west-2" {
+		t.Fatalf("factory AWS selectors = %#v, want supplied selectors", gotOptions.Selectors.AWS)
+	}
+	if gotOptions.AWSBillingOperation != workflow.AWSBillingOperationCreateCUR2Export {
+		t.Fatalf("factory AWSBillingOperation = %q, want create_cur2_export", gotOptions.AWSBillingOperation)
 	}
 }
 
@@ -150,6 +190,22 @@ func TestDefaultAWSBillingBackfillFactoryBuildsClient(t *testing.T) {
 	})
 	if client == nil {
 		t.Fatal("defaultAWSBillingBackfillClientFactory returned nil client")
+	}
+}
+
+func TestDefaultAWSBillingSetupFactoryBuildsClient(t *testing.T) {
+	factory := defaultAWSBillingSetupClientFactory()
+	client := factory(workflow.ExecutionOptions{
+		AWSBillingOperation: workflow.AWSBillingOperationCreateCUR2Export,
+		Selectors: &workflow.ExecutionSelectors{
+			AWS: &workflow.AWSExecutionSelectors{
+				Profile: "default",
+				Region:  "us-west-2",
+			},
+		},
+	})
+	if client == nil {
+		t.Fatal("defaultAWSBillingSetupClientFactory returned nil client")
 	}
 }
 

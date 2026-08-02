@@ -33,18 +33,42 @@ Providers:
 
 Actions:
   preflight, apply-prereqs, validate, package
+`)
+	writeAWSBillingPreflightHelp(stdout)
+	writeAWSBillingApplyPrereqsHelp(stdout)
+	fmt.Fprint(stdout, `
+Use matilda-prep start for guided setup.
+`)
+}
 
-AWS Rapid Assessment - Billing Based preflight/apply-prereqs options:
+func writeAWSBillingPreflightHelp(stdout io.Writer) {
+	fmt.Fprint(stdout, `
+AWS Rapid Assessment - Billing Based preflight/backfill selection options:
   --profile <aws-profile-name>
   --region <aws-region>
   --export-ref <cur2-ref-from-previous-output>
   --timeout <duration>
+`)
+}
+
+func writeAWSBillingApplyPrereqsHelp(stdout io.Writer) {
+	fmt.Fprint(stdout, `
+AWS Rapid Assessment - Billing Based apply-prereqs operation options:
+  --request-backfill       plan an AWS Support request for previous-month CUR 2.0 backfill
+  --create-cur2-export     plan or apply AWS CUR 2.0 export creation
 
 AWS Rapid Assessment - Billing Based apply-prereqs approval options:
-  --request-backfill
   --confirm-create-support-case
+  --approve-plan <plan-id>
+  --approve-step <plan-step-id>
 
-Use matilda-prep start for guided setup.
+Backfill support case creation requires:
+  --request-backfill --confirm-create-support-case --approve-plan <plan-id> --approve-step aws.billing.cur2.previous_month_backfill_support_case
+
+CUR 2.0 export creation requires:
+  --create-cur2-export --approve-plan <plan-id> --approve-step <plan-step-id>
+
+For CUR 2.0 export creation, repeat --approve-step for each mutating step ID returned by the current plan.
 `)
 }
 
@@ -52,6 +76,12 @@ func writeActionHelp(stdout io.Writer, request workflow.Request) {
 	fmt.Fprintln(stdout, commandString(request))
 	fmt.Fprintln(stdout)
 	fmt.Fprintln(stdout, actionPurpose(request.Action))
+	switch {
+	case isAWSBillingPreflightRequest(request):
+		writeAWSBillingPreflightHelp(stdout)
+	case isAWSBillingApplyPrereqsRequest(request):
+		writeAWSBillingApplyPrereqsHelp(stdout)
+	}
 	fmt.Fprintln(stdout)
 	fmt.Fprintln(stdout, "Use matilda-prep start for guided setup.")
 }
@@ -82,6 +112,20 @@ func mutationHelp(level workflow.MutationLevel) string {
 	default:
 		return "unknown"
 	}
+}
+
+func isAWSBillingApplyPrereqsRequest(request workflow.Request) bool {
+	return request.Goal == assessment.RapidAssessment &&
+		request.CollectionPath == assessment.CollectionBilling &&
+		request.Provider == assessment.ProviderAWS &&
+		request.Action == assessment.ActionApplyPrereqs
+}
+
+func isAWSBillingPreflightRequest(request workflow.Request) bool {
+	return request.Goal == assessment.RapidAssessment &&
+		request.CollectionPath == assessment.CollectionBilling &&
+		request.Provider == assessment.ProviderAWS &&
+		request.Action == assessment.ActionPreflight
 }
 
 func writeProviderFirstCorrection(stderr io.Writer, provider string) {

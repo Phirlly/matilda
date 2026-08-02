@@ -78,11 +78,19 @@ type supportCategoryCandidate struct {
 func supportCategoryCandidates(services []SupportService) []supportCategoryCandidate {
 	candidates := []supportCategoryCandidate{}
 	for _, service := range services {
+		serviceCode := strings.TrimSpace(service.Code)
+		if serviceCode == "" {
+			continue
+		}
 		for _, category := range service.Categories {
+			categoryCode := strings.TrimSpace(category.Code)
+			if categoryCode == "" {
+				continue
+			}
 			if supportTextMatchesBackfillIntent(service.Code, service.Name, category.Code, category.Name) {
 				candidates = append(candidates, supportCategoryCandidate{
-					serviceCode:  strings.TrimSpace(service.Code),
-					categoryCode: strings.TrimSpace(category.Code),
+					serviceCode:  serviceCode,
+					categoryCode: categoryCode,
 				})
 			}
 		}
@@ -117,7 +125,12 @@ func selectLowSeverity(ctx context.Context, client Client, language string) (Sup
 		return SupportSeverity{}, err
 	}
 	for _, level := range levels {
-		if strings.EqualFold(strings.TrimSpace(level.Code), "low") || strings.EqualFold(strings.TrimSpace(level.Name), "low") {
+		code := strings.TrimSpace(level.Code)
+		if code == "" {
+			continue
+		}
+		if strings.EqualFold(code, "low") {
+			level.Code = code
 			return level, nil
 		}
 	}

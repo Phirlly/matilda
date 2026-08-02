@@ -24,6 +24,9 @@ func parseExecutionOptions(request workflow.Request, args []string) (workflow.Ex
 	var timeoutValue string
 	var requestBackfill bool
 	var confirmCreateSupportCase bool
+	var createCUR2Export bool
+	var approvePlan string
+	var approveSteps repeatedStringFlag
 
 	flags := flag.NewFlagSet("matilda-prep", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
@@ -32,6 +35,9 @@ func parseExecutionOptions(request workflow.Request, args []string) (workflow.Ex
 	flags.StringVar(&exportRef, "export-ref", "", "Matilda-generated AWS CUR 2.0 export ref")
 	flags.BoolVar(&requestBackfill, "request-backfill", false, "request previous-month AWS CUR 2.0 backfill")
 	flags.BoolVar(&confirmCreateSupportCase, "confirm-create-support-case", false, "confirm AWS Support case creation")
+	flags.BoolVar(&createCUR2Export, "create-cur2-export", false, "plan or apply AWS CUR 2.0 export creation")
+	flags.StringVar(&approvePlan, "approve-plan", "", "execution plan id for approved cloud mutation steps")
+	flags.Var(&approveSteps, "approve-step", "execution plan step id to approve; repeat for each approved step")
 	flags.StringVar(&timeoutValue, "timeout", defaultDirectTimeout.String(), "execution timeout")
 	if err := flags.Parse(args); err != nil {
 		return workflow.ExecutionOptions{}, safeFlagParseError(err)
@@ -53,18 +59,42 @@ func parseExecutionOptions(request workflow.Request, args []string) (workflow.Ex
 	if provided["export-ref"] && strings.TrimSpace(exportRef) == "" {
 		return workflow.ExecutionOptions{}, fmt.Errorf("export-ref cannot be empty")
 	}
+	if provided["approve-plan"] && strings.TrimSpace(approvePlan) == "" {
+		return workflow.ExecutionOptions{}, fmt.Errorf("approve-plan cannot be empty")
+	}
 
 	awsSelectorUsed := provided["profile"] || provided["region"] || provided["export-ref"]
 	if awsSelectorUsed && !isAWSBillingSelectorCommand(request) {
 		return workflow.ExecutionOptions{}, fmt.Errorf("AWS selector flags are supported only for matilda-prep rapid-assessment billing aws preflight or apply-prereqs")
 	}
 
-	backfillApprovalUsed := provided["request-backfill"] || provided["confirm-create-support-case"]
-	if backfillApprovalUsed && !isAWSBillingApplyPrereqs(request) {
-		return workflow.ExecutionOptions{}, fmt.Errorf("AWS backfill approval flags are supported only for matilda-prep rapid-assessment billing aws apply-prereqs")
+	createOperationUsed := provided["create-cur2-export"]
+	backfillOperationUsed := provided["request-backfill"] || provided["confirm-create-support-case"]
+	approvalUsed := provided["approve-plan"] || len(approveSteps) > 0
+	if backfillOperationUsed && !isAWSBillingApplyPrereqs(request) {
+		return workflow.ExecutionOptions{}, fmt.Errorf("AWS backfill operation flags are supported only for matilda-prep rapid-assessment billing aws apply-prereqs")
 	}
-	if requestBackfill != confirmCreateSupportCase {
-		return workflow.ExecutionOptions{}, fmt.Errorf("AWS backfill support case approval requires both --request-backfill and --confirm-create-support-case")
+	if (createOperationUsed || approvalUsed) && !isAWSBillingApplyPrereqs(request) {
+		return workflow.ExecutionOptions{}, fmt.Errorf("AWS billing operation flags are supported only for matilda-prep rapid-assessment billing aws apply-prereqs")
+	}
+	if createCUR2Export && backfillOperationUsed {
+		return workflow.ExecutionOptions{}, fmt.Errorf("aws_billing_prereqs_operation_conflict")
+	}
+	if createCUR2Export && provided["export-ref"] {
+		return workflow.ExecutionOptions{}, fmt.Errorf("export-ref applies only to AWS CUR 2.0 preflight and request-backfill")
+	}
+	if confirmCreateSupportCase && !requestBackfill {
+		return workflow.ExecutionOptions{}, fmt.Errorf("AWS backfill support case confirmation requires --request-backfill")
+	}
+	if approvalUsed && !createCUR2Export && !requestBackfill {
+		return workflow.ExecutionOptions{}, fmt.Errorf("approval flags require a matching AWS billing operation")
+	}
+	if createCUR2Export && ((strings.TrimSpace(approvePlan) == "") != (len(approveSteps) == 0)) {
+		return workflow.ExecutionOptions{}, fmt.Errorf("plan-bound approval requires both --approve-plan and at least one --approve-step")
+	}
+	if requestBackfill && (confirmCreateSupportCase || approvalUsed) &&
+		(!confirmCreateSupportCase || strings.TrimSpace(approvePlan) == "" || len(approveSteps) == 0) {
+		return workflow.ExecutionOptions{}, fmt.Errorf("AWS backfill support case approval requires --confirm-create-support-case, --approve-plan, and at least one --approve-step")
 	}
 
 	timeout, err := time.ParseDuration(timeoutValue)
@@ -91,14 +121,45 @@ func parseExecutionOptions(request workflow.Request, args []string) (workflow.Ex
 			},
 		}
 	}
-	if requestBackfill && confirmCreateSupportCase {
-		options.Approvals = []workflow.ExecutionApproval{{
-			OperationID: workflow.AWSBackfillSupportCaseOperationID,
-			Intent:      workflow.ApprovalIntentRequestBackfillSupportCase,
-			Confirmed:   true,
-		}}
+	if requestBackfill {
+		options.AWSBillingOperation = workflow.AWSBillingOperationRequestBackfill
+		if confirmCreateSupportCase {
+			for _, step := range approveSteps {
+				options.Approvals = append(options.Approvals, workflow.ExecutionApproval{
+					OperationID: step,
+					Intent:      workflow.ApprovalIntentRequestBackfillSupportCase,
+					PlanID:      approvePlan,
+					Confirmed:   true,
+				})
+			}
+		}
+	}
+	if createCUR2Export {
+		options.AWSBillingOperation = workflow.AWSBillingOperationCreateCUR2Export
+		for _, step := range approveSteps {
+			options.Approvals = append(options.Approvals, workflow.ExecutionApproval{
+				OperationID: step,
+				PlanID:      approvePlan,
+				Confirmed:   true,
+			})
+		}
 	}
 	return workflow.NormalizeExecutionOptionsForRequest(request, options)
+}
+
+type repeatedStringFlag []string
+
+func (values *repeatedStringFlag) String() string {
+	return strings.Join(*values, ",")
+}
+
+func (values *repeatedStringFlag) Set(value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fmt.Errorf("approve-step cannot be empty")
+	}
+	*values = append(*values, value)
+	return nil
 }
 
 func safeFlagParseError(err error) error {
