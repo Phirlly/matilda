@@ -100,7 +100,7 @@ func (runner Runner) Run(ctx context.Context, request workflow.Request, options 
 		return state.report("verified", identitySummary(accountEvidence, callerEvidence))
 	}
 	requestedExportRef := awsCUR2ExportRefOption(options)
-	export, selectedExportRef, finding := selectCUR2Export(exports, requestedExportRef)
+	export, selectedExportRef, finding := selectCUR2Export(exports, requestedExportRef, guidedSelectionRequired(options, requestedExportRef))
 	if finding.Code != "" {
 		state.add(finding)
 		return state.report("verified", identitySummary(accountEvidence, callerEvidence))
@@ -266,7 +266,11 @@ func awsCUR2ExportRefOption(options workflow.ExecutionOptions) string {
 	return strings.TrimSpace(options.Selectors.AWS.CUR2ExportRef)
 }
 
-func selectCUR2Export(exports []Export, requestedRef string) (Export, string, checkFinding) {
+func guidedSelectionRequired(options workflow.ExecutionOptions, requestedRef string) bool {
+	return options.InterfaceMode == workflow.InterfaceModeGuided && requestedRef == ""
+}
+
+func selectCUR2Export(exports []Export, requestedRef string, selectionRequired bool) (Export, string, checkFinding) {
 	if len(exports) == 0 {
 		return Export{}, "", failFinding("aws_cur2_export_not_found", "AWS CUR 2.0 export discovery", "No AWS Data Exports definitions were found.")
 	}
@@ -305,6 +309,11 @@ func selectCUR2Export(exports []Export, requestedRef string) (Export, string, ch
 	}
 	if len(candidates) > 1 {
 		return Export{}, "", withEvidence(failFinding("aws_cur2_export_ambiguous", "AWS CUR 2.0 export discovery", "Multiple CUR 2.0 export candidates were found."),
+			candidateEvidence(candidates, refs)...,
+		)
+	}
+	if selectionRequired {
+		return Export{}, "", withEvidence(failFinding("aws_cur2_export_selection_required", "AWS CUR 2.0 export selection", "One CUR 2.0 export candidate was found for guided selection."),
 			candidateEvidence(candidates, refs)...,
 		)
 	}
@@ -358,9 +367,10 @@ func letterEncodeHash(hash []byte, length int) string {
 }
 
 func candidateEvidence(candidates []Export, refs []string) []workflow.PlanEvidence {
-	evidence := make([]workflow.PlanEvidence, 0, len(candidates)*6)
+	evidence := make([]workflow.PlanEvidence, 0, len(candidates)*16)
 	for index, candidate := range candidates {
 		prefix := fmt.Sprintf("candidate_%d", index+1)
+		facts := candidatePreSelectionFacts(candidate)
 		evidence = append(evidence, workflow.PlanEvidence{Key: prefix + "_export_ref", Value: refs[index]})
 		if health := safeEvidenceValue(candidate.HealthStatus); health != "" {
 			evidence = append(evidence, workflow.PlanEvidence{Key: prefix + "_health", Value: health})
@@ -374,11 +384,207 @@ func candidateEvidence(candidates []Export, refs []string) []workflow.PlanEviden
 		if granularity := safeEvidenceValue(normalizedTableProperty(cur2TableConfiguration(candidate), "TIME_GRANULARITY")); granularity != "" {
 			evidence = append(evidence, workflow.PlanEvidence{Key: prefix + "_time_granularity", Value: granularity})
 		}
+		if overwrite := safeEvidenceValue(candidate.Destination.Output.Overwrite); overwrite != "" {
+			evidence = append(evidence, workflow.PlanEvidence{Key: prefix + "_overwrite", Value: overwrite})
+		}
+		if outputType := safeEvidenceValue(candidate.Destination.Output.OutputType); outputType != "" {
+			evidence = append(evidence, workflow.PlanEvidence{Key: prefix + "_output_type", Value: outputType})
+		}
+		if refreshCadence := safeEvidenceValue(candidate.RefreshCadence); refreshCadence != "" {
+			evidence = append(evidence, workflow.PlanEvidence{Key: prefix + "_refresh_cadence", Value: refreshCadence})
+		}
+		if includeResources := safeEvidenceValue(normalizedTableProperty(cur2TableConfiguration(candidate), "INCLUDE_RESOURCES")); includeResources != "" {
+			evidence = append(evidence, workflow.PlanEvidence{Key: prefix + "_include_resources", Value: includeResources})
+		}
 		if region := safeEvidenceValue(candidate.Destination.Region); region != "" {
 			evidence = append(evidence, workflow.PlanEvidence{Key: prefix + "_destination_region", Value: region})
 		}
+		evidence = append(evidence,
+			workflow.PlanEvidence{Key: prefix + "_provider_source_type", Value: facts.ProviderSourceType},
+			workflow.PlanEvidence{Key: prefix + "_cloud_validity", Value: facts.CloudValidity},
+			workflow.PlanEvidence{Key: prefix + "_matilda_support", Value: facts.MatildaSupport},
+			workflow.PlanEvidence{Key: prefix + "_pre_selection_metadata_status", Value: facts.MetadataStatus},
+			workflow.PlanEvidence{Key: prefix + "_primary_issue", Value: facts.PrimaryIssue},
+			workflow.PlanEvidence{Key: prefix + "_required_next_action", Value: facts.RequiredNextAction},
+		)
 	}
 	return evidence
+}
+
+type candidateSelectionFacts struct {
+	ProviderSourceType string
+	CloudValidity      string
+	MatildaSupport     string
+	MetadataStatus     string
+	PrimaryIssue       string
+	RequiredNextAction string
+}
+
+func candidatePreSelectionFacts(candidate Export) candidateSelectionFacts {
+	settings := collectCandidateSafeSettings(candidate)
+	switch {
+	case settings.Health == "UNHEALTHY":
+		return blockedCandidateFacts("unsupported", "unhealthy", "AWS reports this export as unhealthy.")
+	case len(settings.Missing) > 0:
+		return blockedCandidateFacts("unverified", "incomplete", "pre-selection metadata is incomplete: missing "+strings.Join(settings.Missing, ", ")+".")
+	case len(settings.Unsupported) > 0:
+		return blockedCandidateFacts("unsupported", "unsupported", "pre-selection metadata has unsupported settings: "+strings.Join(settings.Unsupported, ", ")+".")
+	case settings.Preferred:
+		return candidateSelectionFacts{
+			ProviderSourceType: "aws_data_exports_cur2",
+			CloudValidity:      "cur2_candidate",
+			MatildaSupport:     "preferred",
+			MetadataStatus:     "preferred",
+			PrimaryIssue:       "none",
+			RequiredNextAction: "run full readiness preflight after selection.",
+		}
+	default:
+		return candidateSelectionFacts{
+			ProviderSourceType: "aws_data_exports_cur2",
+			CloudValidity:      "cur2_candidate",
+			MatildaSupport:     "supported",
+			MetadataStatus:     "supported",
+			PrimaryIssue:       "none",
+			RequiredNextAction: "run full readiness preflight after selection.",
+		}
+	}
+}
+
+func blockedCandidateFacts(support string, status string, issue string) candidateSelectionFacts {
+	return candidateSelectionFacts{
+		ProviderSourceType: "aws_data_exports_cur2",
+		CloudValidity:      "cur2_candidate",
+		MatildaSupport:     support,
+		MetadataStatus:     status,
+		PrimaryIssue:       issue,
+		RequiredNextAction: "review the candidate with direct preflight before selection.",
+	}
+}
+
+type candidateSafeSettings struct {
+	Health          string
+	Output          string
+	Compression     string
+	Granularity     string
+	Overwrite       string
+	OutputType      string
+	RefreshCadence  string
+	IncludeResource string
+	Destination     string
+	Missing         []string
+	Unsupported     []string
+	Preferred       bool
+}
+
+func collectCandidateSafeSettings(candidate Export) candidateSafeSettings {
+	tableConfig := cur2TableConfiguration(candidate)
+	settings := candidateSafeSettings{
+		Health:          safeEvidenceValue(normalizedOutputSetting(candidate.HealthStatus)),
+		Output:          safeEvidenceValue(normalizedOutputSetting(candidate.Destination.Output.Format)),
+		Compression:     safeEvidenceValue(normalizedOutputSetting(candidate.Destination.Output.Compression)),
+		Granularity:     safeEvidenceValue(normalizedTableProperty(tableConfig, "TIME_GRANULARITY")),
+		Overwrite:       safeEvidenceValue(normalizedOutputSetting(candidate.Destination.Output.Overwrite)),
+		OutputType:      safeEvidenceValue(normalizedOutputSetting(candidate.Destination.Output.OutputType)),
+		RefreshCadence:  safeEvidenceValue(normalizedOutputSetting(candidate.RefreshCadence)),
+		IncludeResource: safeEvidenceValue(normalizedTableProperty(tableConfig, "INCLUDE_RESOURCES")),
+		Destination:     safeEvidenceValue(candidate.Destination.Region),
+	}
+	settings.Missing = missingCandidateSettings(settings)
+	settings.Unsupported = unsupportedCandidateSettings(settings)
+	settings.Preferred = candidateSettingsPreferred(settings)
+	return settings
+}
+
+func missingCandidateSettings(settings candidateSafeSettings) []string {
+	missing := []string{}
+	if settings.Health == "" {
+		missing = append(missing, "health status")
+	}
+	if settings.Output == "" {
+		missing = append(missing, "output format")
+	}
+	if settings.Compression == "" {
+		missing = append(missing, "compression")
+	}
+	if settings.Granularity == "" {
+		missing = append(missing, "time granularity")
+	}
+	if settings.Overwrite == "" {
+		missing = append(missing, "file versioning")
+	}
+	if settings.OutputType == "" {
+		missing = append(missing, "output type")
+	}
+	if settings.RefreshCadence == "" {
+		missing = append(missing, "refresh cadence")
+	}
+	if settings.Destination == "" {
+		missing = append(missing, "destination region")
+	}
+	return missing
+}
+
+func unsupportedCandidateSettings(settings candidateSafeSettings) []string {
+	unsupported := []string{}
+	if settings.Health != "" && settings.Health != "HEALTHY" && settings.Health != "UNHEALTHY" {
+		unsupported = append(unsupported, "health status "+settings.Health)
+	}
+	if settings.Output != "" && settings.Compression != "" && !supportedCandidateOutput(settings.Output, settings.Compression) {
+		unsupported = append(unsupported, "output/compression "+settings.Output+"/"+settings.Compression)
+	}
+	if settings.Granularity != "" && !supportedCandidateGranularity(settings.Granularity) {
+		unsupported = append(unsupported, "time granularity "+settings.Granularity)
+	}
+	if settings.Overwrite != "" && !supportedCandidateOverwrite(settings.Overwrite) {
+		unsupported = append(unsupported, "file versioning "+settings.Overwrite)
+	}
+	if settings.OutputType != "" && settings.OutputType != "CUSTOM" {
+		unsupported = append(unsupported, "output type "+settings.OutputType)
+	}
+	if settings.RefreshCadence != "" && settings.RefreshCadence != "SYNCHRONOUS" {
+		unsupported = append(unsupported, "refresh cadence "+settings.RefreshCadence)
+	}
+	if settings.IncludeResource != "" && settings.IncludeResource != "TRUE" && settings.IncludeResource != "FALSE" {
+		unsupported = append(unsupported, "include resources "+settings.IncludeResource)
+	}
+	return unsupported
+}
+
+func candidateSettingsPreferred(settings candidateSafeSettings) bool {
+	return settings.Health == "HEALTHY" &&
+		settings.Output == "TEXT_OR_CSV" &&
+		settings.Compression == "GZIP" &&
+		settings.Granularity == "MONTHLY" &&
+		settings.Overwrite == "CREATE_NEW_REPORT" &&
+		settings.OutputType == "CUSTOM" &&
+		settings.RefreshCadence == "SYNCHRONOUS" &&
+		(settings.IncludeResource == "" || settings.IncludeResource == "FALSE") &&
+		settings.Destination != "" &&
+		len(settings.Missing) == 0 &&
+		len(settings.Unsupported) == 0
+}
+
+func supportedCandidateOutput(output string, compression string) bool {
+	return output == "TEXT_OR_CSV" && compression == "GZIP" ||
+		output == "PARQUET" && compression == "PARQUET"
+}
+
+func supportedCandidateGranularity(granularity string) bool {
+	switch granularity {
+	case "HOURLY", "DAILY", "MONTHLY":
+		return true
+	default:
+		return false
+	}
+}
+
+func supportedCandidateOverwrite(overwrite string) bool {
+	switch overwrite {
+	case "CREATE_NEW_REPORT", "OVERWRITE_REPORT":
+		return true
+	default:
+		return false
+	}
 }
 
 func hasFailedFinding(findings []checkFinding) bool {
@@ -755,6 +961,10 @@ func sourceHandles() []workflow.SourceHandle {
 			Label: "AWS SDK Go v2 Read-Only Adapter References",
 			URI:   "docs/references/aws/aws-sdk-go-v2-readonly-adapter.md",
 		},
+		{
+			Label: "AWS CUR 2.0 Guided Selection UX",
+			URI:   "docs/references/aws/aws-cur2-export-selection-guided-ux.md",
+		},
 	}
 }
 
@@ -870,6 +1080,14 @@ func messageFor(status workflow.RunStatus, code string) string {
 			return "AWS CUR 2.0 billing preflight is ready for current previous-month data, but S3 bucket policy could not be inspected for future AWS Data Exports delivery."
 		}
 		return "AWS CUR 2.0 billing preflight could not inspect the S3 bucket policy needed for AWS Data Exports delivery."
+	case "aws_data_exports_throttled":
+		return "AWS Data Exports throttled a read-only preflight check. Wait briefly, then rerun preflight."
+	case "aws_data_exports_transient":
+		return "AWS Data Exports returned a transient provider error during read-only preflight. Wait briefly, then rerun preflight."
+	case "aws_cur2_export_selection_required":
+		return "AWS CUR 2.0 billing preflight found one candidate and is waiting for guided selection."
+	case "aws_cur2_export_health_unverified":
+		return "AWS CUR 2.0 billing preflight could not verify the selected export health status."
 	default:
 		return "AWS CUR 2.0 billing preflight found a blocker."
 	}

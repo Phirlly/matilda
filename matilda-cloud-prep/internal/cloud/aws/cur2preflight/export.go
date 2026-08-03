@@ -25,8 +25,14 @@ func validateExportShape(export Export, returnedTableProperties map[string]strin
 		findings = append(findings, withEvidence(failFinding("aws_cur2_export_invalid_shape", "AWS export health", "AWS export health could not be confirmed from AWS Data Exports status metadata."),
 			exportHealthEvidence(health),
 		))
+	case "UNHEALTHY":
+		findings = append(findings, withEvidence(failFinding("aws_cur2_export_invalid_shape", "AWS export health", "AWS reports the selected export as unhealthy."),
+			exportHealthEvidence(health),
+		))
 	default:
-		findings = append(findings, failFinding("aws_cur2_export_invalid_shape", "AWS export health", "AWS reports the selected export as unhealthy."))
+		findings = append(findings, withEvidence(failFinding("aws_cur2_export_health_unverified", "AWS export health", "AWS export health status is not a verified AWS Data Exports value for this path."),
+			exportHealthEvidence(health),
+		))
 	}
 
 	return findings
