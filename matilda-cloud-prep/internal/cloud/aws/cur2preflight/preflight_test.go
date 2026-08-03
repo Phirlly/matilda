@@ -46,6 +46,7 @@ func TestPreflightReadyUsesCUR2AndSafeEvidence(t *testing.T) {
 	assertCheckEvidence(t, result, "previous_billing_period", "2026-06")
 	assertPlanCheckID(t, result, "aws_s3_delivery_policy_ready")
 	assertSourceHandle(t, result, "docs/references/aws/aws-sdk-go-v2-readonly-adapter.md")
+	assertSourceHandle(t, result, "docs/references/aws/aws-cur2-export-selection-guided-ux.md")
 
 	for _, call := range []string{
 		"CheckConfiguration",
@@ -64,6 +65,39 @@ func TestPreflightReadyUsesCUR2AndSafeEvidence(t *testing.T) {
 			t.Fatalf("%s was not called", call)
 		}
 	}
+}
+
+func TestPreflightGuidedModeReturnsSingleCUR2CandidateBeforeSelectedInspection(t *testing.T) {
+	client := baselineClient()
+	result := runPreflightWithOptions(t, client, workflow.ExecutionOptions{
+		InterfaceMode: workflow.InterfaceModeGuided,
+		Selectors: &workflow.ExecutionSelectors{
+			AWS: &workflow.AWSExecutionSelectors{
+				Profile: "default",
+				Region:  "us-east-1",
+			},
+		},
+	})
+
+	assertBlockedCode(t, result, "aws_cur2_export_selection_required")
+	assertGroupedCandidateEvidence(t, result, 1, cur2ExportRef(client.export.ExportARN), "HEALTHY", "TEXT_OR_CSV", "us-east-1")
+	assertCheckEvidence(t, result, "candidate_1_compression", "GZIP")
+	assertCheckEvidence(t, result, "candidate_1_overwrite", "CREATE_NEW_REPORT")
+	assertCheckEvidence(t, result, "candidate_1_output_type", "CUSTOM")
+	assertCheckEvidence(t, result, "candidate_1_refresh_cadence", "SYNCHRONOUS")
+	assertCheckEvidence(t, result, "candidate_1_include_resources", "FALSE")
+	assertCheckEvidence(t, result, "candidate_1_provider_source_type", "aws_data_exports_cur2")
+	assertCheckEvidence(t, result, "candidate_1_cloud_validity", "cur2_candidate")
+	assertCheckEvidence(t, result, "candidate_1_matilda_support", "preferred")
+	assertCheckEvidence(t, result, "candidate_1_pre_selection_metadata_status", "preferred")
+	assertCheckEvidence(t, result, "candidate_1_primary_issue", "none")
+	assertCheckEvidence(t, result, "candidate_1_required_next_action", "run full readiness preflight after selection")
+	for _, call := range []string{"GetTable", "HeadBucket", "GetBucketPolicy", "ListExecutions", "GetExecution", "ListObjects"} {
+		if client.calls[call] != 0 {
+			t.Fatalf("%s calls = %d, want 0 before guided selected-export inspection", call, client.calls[call])
+		}
+	}
+	assertNoUnsafeAWSOutput(t, result)
 }
 
 func TestPreflightDiscoversCUR2ByInspectingListedExports(t *testing.T) {
@@ -264,9 +298,10 @@ func TestPreflightAmbiguousCUR2ExportsReturnsSafeCandidateRefs(t *testing.T) {
 	secondExport.Name = "finance-cur2"
 	secondExport.ExportARN = secondARN
 	secondExport.SourceARN = secondARN
-	secondExport.HealthStatus = "WARNING"
+	secondExport.HealthStatus = "UNHEALTHY"
 	secondExport.Destination.Output.Format = "PARQUET"
 	secondExport.Destination.Output.Compression = "PARQUET"
+	secondExport.Destination.Output.Overwrite = "OVERWRITE_REPORT"
 	secondExport.TableConfigurations["COST_AND_USAGE_REPORT"]["TIME_GRANULARITY"] = "DAILY"
 	secondExport.Destination.Region = "us-west-2"
 	client.exportsByARN = map[string]Export{
@@ -279,13 +314,226 @@ func TestPreflightAmbiguousCUR2ExportsReturnsSafeCandidateRefs(t *testing.T) {
 	assertBlockedCode(t, result, "aws_cur2_export_ambiguous")
 	assertGroupedCandidateEvidence(t, result, 1, cur2ExportRef(client.export.ExportARN), "HEALTHY", "TEXT_OR_CSV", "us-east-1")
 	assertCheckEvidence(t, result, "candidate_1_compression", "GZIP")
-	assertGroupedCandidateEvidence(t, result, 2, cur2ExportRef(secondARN), "WARNING", "PARQUET", "us-west-2")
+	assertCheckEvidence(t, result, "candidate_1_overwrite", "CREATE_NEW_REPORT")
+	assertGroupedCandidateEvidence(t, result, 2, cur2ExportRef(secondARN), "UNHEALTHY", "PARQUET", "us-west-2")
 	assertCheckEvidence(t, result, "candidate_2_compression", "PARQUET")
+	assertCheckEvidence(t, result, "candidate_2_overwrite", "OVERWRITE_REPORT")
+	assertCheckEvidence(t, result, "candidate_2_matilda_support", "unsupported")
+	assertCheckEvidence(t, result, "candidate_2_pre_selection_metadata_status", "unhealthy")
+	assertCheckEvidence(t, result, "candidate_2_primary_issue", "AWS reports this export as unhealthy.")
 	assertNoCheckEvidenceKey(t, result, "candidate_export_ref")
 	assertNoCheckEvidenceKey(t, result, "candidate_health")
 	assertNoCheckEvidenceKey(t, result, "candidate_output_format")
 	assertNoCheckEvidenceKey(t, result, "candidate_compression")
+	assertNoCheckEvidenceKey(t, result, "candidate_overwrite")
 	assertNoCheckEvidenceKey(t, result, "candidate_destination_region")
+	assertNoUnsafeAWSOutput(t, result)
+}
+
+func TestPreflightGuidedSelectionFactsExposeHiddenUnsupportedOutputSettings(t *testing.T) {
+	tests := []struct {
+		name      string
+		mutate    func(*Export)
+		wantIssue string
+	}{
+		{
+			name: "unsupported output type",
+			mutate: func(export *Export) {
+				export.Destination.Output.OutputType = "ATHENA"
+			},
+			wantIssue: "pre-selection metadata has unsupported settings: output type ATHENA.",
+		},
+		{
+			name: "unsupported refresh cadence",
+			mutate: func(export *Export) {
+				export.RefreshCadence = "ASYNCHRONOUS"
+			},
+			wantIssue: "pre-selection metadata has unsupported settings: refresh cadence ASYNCHRONOUS.",
+		},
+		{
+			name: "unsupported include resources",
+			mutate: func(export *Export) {
+				export.TableConfigurations["COST_AND_USAGE_REPORT"]["INCLUDE_RESOURCES"] = "UNKNOWN"
+			},
+			wantIssue: "pre-selection metadata has unsupported settings: include resources UNKNOWN.",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := baselineClient()
+			tt.mutate(&client.export)
+
+			result := runPreflightWithOptions(t, client, workflow.ExecutionOptions{
+				InterfaceMode: workflow.InterfaceModeGuided,
+				Selectors: &workflow.ExecutionSelectors{
+					AWS: &workflow.AWSExecutionSelectors{
+						Profile: "default",
+						Region:  "us-east-1",
+					},
+				},
+			})
+
+			assertBlockedCode(t, result, "aws_cur2_export_selection_required")
+			assertCheckEvidence(t, result, "candidate_1_pre_selection_metadata_status", "unsupported")
+			assertCheckEvidence(t, result, "candidate_1_matilda_support", "unsupported")
+			assertCheckEvidence(t, result, "candidate_1_primary_issue", tt.wantIssue)
+			if client.calls["GetTable"] != 0 {
+				t.Fatalf("GetTable calls = %d, want 0 before selected-export inspection", client.calls["GetTable"])
+			}
+			assertNoUnsafeAWSOutput(t, result)
+		})
+	}
+}
+
+func TestPreflightGuidedSelectionFactsClassifyCandidateMetadata(t *testing.T) {
+	tests := []struct {
+		name         string
+		mutate       func(*Export)
+		wantStatus   string
+		wantSupport  string
+		wantIssue    string
+		wantAction   string
+		wantEvidence map[string]string
+	}{
+		{
+			name:        "preferred metadata",
+			wantStatus:  "preferred",
+			wantSupport: "preferred",
+			wantIssue:   "none",
+			wantAction:  "run full readiness preflight after selection.",
+			wantEvidence: map[string]string{
+				"candidate_1_output_type":          "CUSTOM",
+				"candidate_1_refresh_cadence":      "SYNCHRONOUS",
+				"candidate_1_include_resources":    "FALSE",
+				"candidate_1_provider_source_type": "aws_data_exports_cur2",
+				"candidate_1_cloud_validity":       "cur2_candidate",
+			},
+		},
+		{
+			name: "supported non-preferred metadata",
+			mutate: func(export *Export) {
+				export.Destination.Output.Format = "PARQUET"
+				export.Destination.Output.Compression = "PARQUET"
+				export.Destination.Output.Overwrite = "OVERWRITE_REPORT"
+				export.TableConfigurations["COST_AND_USAGE_REPORT"]["TIME_GRANULARITY"] = "DAILY"
+				export.TableConfigurations["COST_AND_USAGE_REPORT"]["INCLUDE_RESOURCES"] = "TRUE"
+			},
+			wantStatus:  "supported",
+			wantSupport: "supported",
+			wantIssue:   "none",
+			wantAction:  "run full readiness preflight after selection.",
+			wantEvidence: map[string]string{
+				"candidate_1_output_format":     "PARQUET",
+				"candidate_1_compression":       "PARQUET",
+				"candidate_1_time_granularity":  "DAILY",
+				"candidate_1_overwrite":         "OVERWRITE_REPORT",
+				"candidate_1_include_resources": "TRUE",
+			},
+		},
+		{
+			name: "incomplete metadata",
+			mutate: func(export *Export) {
+				export.HealthStatus = ""
+				export.Destination.Output.Format = ""
+				export.Destination.Output.Compression = ""
+				export.Destination.Output.Overwrite = ""
+				export.Destination.Output.OutputType = ""
+				export.RefreshCadence = ""
+				export.Destination.Region = ""
+				export.TableConfigurations["COST_AND_USAGE_REPORT"]["TIME_GRANULARITY"] = ""
+			},
+			wantStatus:  "incomplete",
+			wantSupport: "unverified",
+			wantIssue:   "pre-selection metadata is incomplete: missing health status, output format, compression, time granularity, file versioning, output type, refresh cadence, destination region.",
+			wantAction:  "review the candidate with direct preflight before selection.",
+		},
+		{
+			name: "unsupported metadata",
+			mutate: func(export *Export) {
+				export.HealthStatus = "WARNING"
+				export.Destination.Output.Format = "JSON"
+				export.Destination.Output.Compression = "ZIP"
+				export.Destination.Output.Overwrite = "APPEND_REPORT"
+				export.Destination.Output.OutputType = "ATHENA"
+				export.RefreshCadence = "ASYNCHRONOUS"
+				export.TableConfigurations["COST_AND_USAGE_REPORT"]["TIME_GRANULARITY"] = "WEEKLY"
+				export.TableConfigurations["COST_AND_USAGE_REPORT"]["INCLUDE_RESOURCES"] = "UNKNOWN"
+			},
+			wantStatus:  "unsupported",
+			wantSupport: "unsupported",
+			wantIssue:   "pre-selection metadata has unsupported settings: health status WARNING, output/compression JSON/ZIP, time granularity WEEKLY, file versioning APPEND_REPORT, output type ATHENA, refresh cadence ASYNCHRONOUS, include resources UNKNOWN.",
+			wantAction:  "review the candidate with direct preflight before selection.",
+		},
+		{
+			name: "unhealthy metadata",
+			mutate: func(export *Export) {
+				export.HealthStatus = "UNHEALTHY"
+			},
+			wantStatus:  "unhealthy",
+			wantSupport: "unsupported",
+			wantIssue:   "AWS reports this export as unhealthy.",
+			wantAction:  "review the candidate with direct preflight before selection.",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := baselineClient()
+			if tt.mutate != nil {
+				tt.mutate(&client.export)
+			}
+
+			result := runPreflightWithOptions(t, client, workflow.ExecutionOptions{
+				InterfaceMode: workflow.InterfaceModeGuided,
+				Selectors: &workflow.ExecutionSelectors{
+					AWS: &workflow.AWSExecutionSelectors{
+						Profile: "default",
+						Region:  "us-east-1",
+					},
+				},
+			})
+
+			assertBlockedCode(t, result, "aws_cur2_export_selection_required")
+			assertCheckEvidence(t, result, "candidate_1_pre_selection_metadata_status", tt.wantStatus)
+			assertCheckEvidence(t, result, "candidate_1_matilda_support", tt.wantSupport)
+			assertCheckEvidence(t, result, "candidate_1_primary_issue", tt.wantIssue)
+			assertCheckEvidence(t, result, "candidate_1_required_next_action", tt.wantAction)
+			for key, value := range tt.wantEvidence {
+				assertCheckEvidence(t, result, key, value)
+			}
+			if client.calls["GetTable"] != 0 {
+				t.Fatalf("GetTable calls = %d, want 0 before selected-export inspection", client.calls["GetTable"])
+			}
+			assertNoUnsafeAWSOutput(t, result)
+		})
+	}
+}
+
+func TestPreflightDataExportsThrottlingMessageIsRetryable(t *testing.T) {
+	client := baselineClient()
+	client.listExportsErr = NewProviderError("aws_data_exports_throttled", "AWS Data Exports request was throttled.")
+
+	result := runPreflight(t, client)
+
+	assertBlockedCode(t, result, "aws_data_exports_throttled")
+	for _, want := range []string{
+		"AWS Data Exports throttled a read-only preflight check.",
+		"Wait briefly, then rerun preflight.",
+	} {
+		if !strings.Contains(result.Message, want) {
+			t.Fatalf("message = %q, want %q", result.Message, want)
+		}
+	}
+	for _, forbidden := range []string{
+		"invalid",
+		"remediation",
+		"found a blocker",
+	} {
+		if strings.Contains(strings.ToLower(result.Message), forbidden) {
+			t.Fatalf("message = %q, want no %q", result.Message, forbidden)
+		}
+	}
 	assertNoUnsafeAWSOutput(t, result)
 }
 

@@ -14,7 +14,7 @@ import (
 )
 
 func handleAWSBillingResult(ctx context.Context, reader *bufio.Scanner, stdout io.Writer, config Config, selected awsVerifiedSource, result workflow.Result) error {
-	if result.Code != "aws_cur2_export_ambiguous" {
+	if !isCUR2CandidateSelectionResult(result) {
 		writeAWSBillingSummary(stdout, selected.Identity.Source, result)
 		return nil
 	}
@@ -25,50 +25,66 @@ func handleAWSBillingResult(ctx context.Context, reader *bufio.Scanner, stdout i
 		return nil
 	}
 
-	fmt.Fprintf(stdout, "Classifying %d CUR 2.0 export candidates\n", len(candidates))
-	classified := classifyCUR2Candidates(ctx, config.Registry, selected.Identity.Source, candidates)
-	selectable := selectableCUR2Candidates(classified)
-	switch len(selectable) {
-	case 0:
-		repairable := repairableCUR2Candidates(classified)
-		if len(repairable) > 0 {
-			writeRepairableCUR2Candidates(stdout, repairable, classified)
+	ranked := rankedCUR2Candidates(candidates)
+	switch len(ranked) {
+	case 1:
+		candidate := ranked[0]
+		if !isAutoSelectableCUR2Candidate(candidate) {
+			writeSingleCUR2CandidateNeedsReview(stdout, selected.Identity.Source, candidate)
 			return nil
 		}
-		fmt.Fprintln(stdout, "No AWS CUR 2.0 export is ready or repairable yet.")
-		writeBlockedClassifications(stdout, classified)
-		return nil
-	case 1:
-		item := selectable[0]
-		fmt.Fprintf(stdout, "Auto-selected CUR 2.0 export %s\n", item.Candidate.Ref)
-		writeSelectableCUR2Candidate(stdout, item)
-		writeBlockedClassifications(stdout, classified)
-		writeAWSBillingSummaryWithoutFacts(stdout, selected.Identity.Source, item.Result)
+		fmt.Fprintf(stdout, "Auto-selected CUR 2.0 export %s\n", candidate.Ref)
+		writeCUR2CandidateSelectionFacts(stdout, candidate, "  ", isRecommendedCUR2Candidate(candidate))
+		fmt.Fprintf(stdout, "Running readiness preflight for selected CUR 2.0 export %s\n", candidate.Ref)
+		selectedResult := runSelectedCUR2Preflight(ctx, config.Registry, selected.Identity.Source, candidate.Ref)
+		writeAWSBillingSummary(stdout, selected.Identity.Source, selectedResult)
 		return nil
 	default:
 		fmt.Fprintln(stdout, "Select AWS CUR 2.0 export")
-		for index, item := range selectable {
-			fmt.Fprintf(stdout, "  %d. %s\n", index+1, candidateLabel(item.Candidate))
-			writeSelectableCUR2CandidateOption(stdout, item)
+		for index, candidate := range ranked {
+			recommended := index == 0 && isRecommendedCUR2Candidate(candidate)
+			fmt.Fprintf(stdout, "  %d. %s\n", index+1, candidateLabel(candidate, recommended))
+			writeCUR2CandidateSelectionFacts(stdout, candidate, "     ", recommended)
 		}
-		index, err := readChoice(reader, stdout, fmt.Sprintf("Select AWS CUR 2.0 export [1-%d]: ", len(selectable)), "AWS CUR 2.0 export", len(selectable))
+		index, err := readChoice(reader, stdout, fmt.Sprintf("Select AWS CUR 2.0 export [1-%d]: ", len(ranked)), "AWS CUR 2.0 export", len(ranked))
 		if err != nil {
 			return err
 		}
-		writeBlockedClassifications(stdout, classified)
-		writeAWSBillingSummary(stdout, selected.Identity.Source, selectable[index].Result)
+		selectedCandidate := ranked[index]
+		fmt.Fprintf(stdout, "Running readiness preflight for selected CUR 2.0 export %s\n", selectedCandidate.Ref)
+		selectedResult := runSelectedCUR2Preflight(ctx, config.Registry, selected.Identity.Source, selectedCandidate.Ref)
+		writeAWSBillingSummary(stdout, selected.Identity.Source, selectedResult)
 		return nil
 	}
 }
 
+func isCUR2CandidateSelectionResult(result workflow.Result) bool {
+	switch result.Code {
+	case "aws_cur2_export_ambiguous", "aws_cur2_export_selection_required":
+		return true
+	default:
+		return false
+	}
+}
+
 type cur2Candidate struct {
-	Index       int
-	Ref         string
-	Health      string
-	Output      string
-	Compression string
-	Granularity string
-	Destination string
+	Index           int
+	Ref             string
+	Health          string
+	Output          string
+	Compression     string
+	Granularity     string
+	Overwrite       string
+	OutputType      string
+	RefreshCadence  string
+	IncludeResource string
+	Destination     string
+	ProviderSource  string
+	CloudValidity   string
+	MatildaSupport  string
+	MetadataStatus  string
+	PrimaryIssue    string
+	RequiredAction  string
 }
 
 type classifiedCUR2Candidate struct {
@@ -105,8 +121,28 @@ func cur2Candidates(result workflow.Result) []cur2Candidate {
 				candidate.Compression = safeCandidateLabelValue(evidence.Value)
 			case "time_granularity":
 				candidate.Granularity = safeCandidateLabelValue(evidence.Value)
+			case "overwrite":
+				candidate.Overwrite = safeCandidateLabelValue(evidence.Value)
+			case "output_type":
+				candidate.OutputType = safeCandidateLabelValue(evidence.Value)
+			case "refresh_cadence":
+				candidate.RefreshCadence = safeCandidateLabelValue(evidence.Value)
+			case "include_resources":
+				candidate.IncludeResource = safeCandidateLabelValue(evidence.Value)
 			case "destination_region":
 				candidate.Destination = safeCandidateLabelValue(evidence.Value)
+			case "provider_source_type":
+				candidate.ProviderSource = safeCandidateLabelValue(evidence.Value)
+			case "cloud_validity":
+				candidate.CloudValidity = safeCandidateLabelValue(evidence.Value)
+			case "matilda_support":
+				candidate.MatildaSupport = safeCandidateLabelValue(evidence.Value)
+			case "pre_selection_metadata_status":
+				candidate.MetadataStatus = safeCandidateLabelValue(evidence.Value)
+			case "primary_issue":
+				candidate.PrimaryIssue = safeCandidateLabelValue(evidence.Value)
+			case "required_next_action":
+				candidate.RequiredAction = safeCandidateLabelValue(evidence.Value)
 			}
 		}
 	}
@@ -125,6 +161,184 @@ func cur2Candidates(result workflow.Result) []cur2Candidate {
 		}
 	}
 	return candidates
+}
+
+func rankedCUR2Candidates(candidates []cur2Candidate) []cur2Candidate {
+	ranked := append([]cur2Candidate(nil), candidates...)
+	sort.SliceStable(ranked, func(i, j int) bool {
+		return cur2CandidatePreferenceScore(ranked[i]) > cur2CandidatePreferenceScore(ranked[j])
+	})
+	return ranked
+}
+
+func cur2CandidatePreferenceScore(candidate cur2Candidate) int {
+	if strings.EqualFold(candidate.Health, "UNHEALTHY") {
+		return -1000 + cur2CandidateShapePreferenceScore(candidate)
+	}
+
+	score := 0
+	switch {
+	case hasSupportedCUR2SelectionMetadata(candidate):
+		score += 3000
+	case hasUnsupportedCUR2SelectionMetadata(candidate):
+		score += 0
+	case hasCompleteCUR2SelectionMetadata(candidate):
+		score += 2000
+	case hasIncompleteCUR2SelectionMetadata(candidate):
+		score += 1000
+	default:
+		score += 0
+	}
+	score += cur2CandidateHealthScore(candidate)
+	score += cur2CandidateShapePreferenceScore(candidate)
+	return score
+}
+
+func cur2CandidateHealthScore(candidate cur2Candidate) int {
+	switch strings.ToUpper(candidate.Health) {
+	case "HEALTHY":
+		return 100
+	default:
+		return 0
+	}
+}
+
+func cur2CandidateShapePreferenceScore(candidate cur2Candidate) int {
+	score := 0
+	if strings.EqualFold(candidate.Output, "TEXT_OR_CSV") && strings.EqualFold(candidate.Compression, "GZIP") {
+		score += 40
+	}
+	if strings.EqualFold(candidate.Output, "PARQUET") && strings.EqualFold(candidate.Compression, "PARQUET") {
+		score += 25
+	}
+	switch strings.ToUpper(candidate.Granularity) {
+	case "MONTHLY":
+		score += 30
+	case "DAILY":
+		score += 15
+	case "HOURLY":
+		score += 5
+	}
+	switch strings.ToUpper(candidate.Overwrite) {
+	case "CREATE_NEW_REPORT":
+		score += 10
+	case "OVERWRITE_REPORT":
+		score += 5
+	}
+	return score
+}
+
+func hasSupportedCUR2SelectionMetadata(candidate cur2Candidate) bool {
+	if candidate.MetadataStatus != "" {
+		return strings.EqualFold(candidate.MetadataStatus, "preferred") ||
+			strings.EqualFold(candidate.MetadataStatus, "supported")
+	}
+	return false
+}
+
+func hasSupportedCUR2Settings(candidate cur2Candidate) bool {
+	return hasSupportedCUR2Output(candidate) &&
+		hasSupportedCUR2Granularity(candidate) &&
+		hasSupportedCUR2Overwrite(candidate) &&
+		hasSupportedCUR2OutputType(candidate) &&
+		hasSupportedCUR2RefreshCadence(candidate) &&
+		hasSupportedCUR2IncludeResources(candidate)
+}
+
+func hasUnsupportedCUR2SelectionMetadata(candidate cur2Candidate) bool {
+	return len(unsupportedCUR2CandidateSettings(candidate)) > 0
+}
+
+func hasCompleteCUR2SelectionMetadata(candidate cur2Candidate) bool {
+	return !hasIncompleteCUR2SelectionMetadata(candidate)
+}
+
+func hasIncompleteCUR2SelectionMetadata(candidate cur2Candidate) bool {
+	return safeCandidateLabelValue(candidate.Health) == "" ||
+		safeCandidateLabelValue(candidate.Output) == "" ||
+		safeCandidateLabelValue(candidate.Compression) == "" ||
+		safeCandidateLabelValue(candidate.Granularity) == "" ||
+		safeCandidateLabelValue(candidate.Overwrite) == "" ||
+		safeCandidateLabelValue(candidate.OutputType) == "" ||
+		safeCandidateLabelValue(candidate.RefreshCadence) == "" ||
+		safeCandidateLabelValue(candidate.Destination) == ""
+}
+
+func hasSupportedCUR2Output(candidate cur2Candidate) bool {
+	return strings.EqualFold(candidate.Output, "TEXT_OR_CSV") && strings.EqualFold(candidate.Compression, "GZIP") ||
+		strings.EqualFold(candidate.Output, "PARQUET") && strings.EqualFold(candidate.Compression, "PARQUET")
+}
+
+func hasSupportedCUR2Granularity(candidate cur2Candidate) bool {
+	switch strings.ToUpper(candidate.Granularity) {
+	case "HOURLY", "DAILY", "MONTHLY":
+		return true
+	default:
+		return false
+	}
+}
+
+func hasSupportedCUR2Overwrite(candidate cur2Candidate) bool {
+	switch strings.ToUpper(candidate.Overwrite) {
+	case "CREATE_NEW_REPORT", "OVERWRITE_REPORT":
+		return true
+	default:
+		return false
+	}
+}
+
+func hasSupportedCUR2OutputType(candidate cur2Candidate) bool {
+	outputType := safeCandidateLabelValue(candidate.OutputType)
+	return strings.EqualFold(outputType, "CUSTOM")
+}
+
+func hasSupportedCUR2RefreshCadence(candidate cur2Candidate) bool {
+	refreshCadence := safeCandidateLabelValue(candidate.RefreshCadence)
+	return strings.EqualFold(refreshCadence, "SYNCHRONOUS")
+}
+
+func hasSupportedCUR2IncludeResources(candidate cur2Candidate) bool {
+	includeResources := safeCandidateLabelValue(candidate.IncludeResource)
+	return includeResources == "" ||
+		strings.EqualFold(includeResources, "TRUE") ||
+		strings.EqualFold(includeResources, "FALSE")
+}
+
+func isRecommendedCUR2Candidate(candidate cur2Candidate) bool {
+	return strings.EqualFold(candidate.MetadataStatus, "preferred") &&
+		strings.EqualFold(candidate.MatildaSupport, "preferred")
+}
+
+func isAutoSelectableCUR2Candidate(candidate cur2Candidate) bool {
+	return hasSupportedCUR2SelectionMetadata(candidate) &&
+		cur2CandidateSelectionBlocker(candidate) == ""
+}
+
+func runSelectedCUR2Preflight(ctx context.Context, registry workflow.Registry, source billingguide.CredentialSource, exportRef string) workflow.Result {
+	options, err := awsBillingOptions(source)
+	if err != nil {
+		return workflow.Result{
+			Status:  workflow.RunStatusBlocked,
+			Code:    "aws_config_invalid_selector",
+			Message: "Selected AWS credential source contains unsafe selector metadata.",
+		}
+	}
+	if options.Selectors == nil {
+		options.Selectors = &workflow.ExecutionSelectors{}
+	}
+	if options.Selectors.AWS == nil {
+		options.Selectors.AWS = &workflow.AWSExecutionSelectors{}
+	}
+	options.Selectors.AWS.CUR2ExportRef = exportRef
+	options, err = workflow.NormalizeExecutionOptions(options)
+	if err != nil {
+		return workflow.Result{
+			Status:  workflow.RunStatusBlocked,
+			Code:    "aws_cur2_export_ref_invalid",
+			Message: "Selected AWS CUR 2.0 export reference is invalid.",
+		}
+	}
+	return registry.ExecuteContext(ctx, awsBillingRequest(), options)
 }
 
 func safeCUR2ExportRef(value string) bool {
@@ -154,40 +368,6 @@ func candidateEvidenceKey(key string) (int, string, bool) {
 		return 0, "", false
 	}
 	return index, parts[1], true
-}
-
-func classifyCUR2Candidates(ctx context.Context, registry workflow.Registry, source billingguide.CredentialSource, candidates []cur2Candidate) []classifiedCUR2Candidate {
-	classified := make([]classifiedCUR2Candidate, 0, len(candidates))
-	for _, candidate := range candidates {
-		options, err := awsBillingOptions(source)
-		if err != nil {
-			continue
-		}
-		if options.Selectors == nil {
-			options.Selectors = &workflow.ExecutionSelectors{}
-		}
-		if options.Selectors.AWS == nil {
-			options.Selectors.AWS = &workflow.AWSExecutionSelectors{}
-		}
-		options.Selectors.AWS.CUR2ExportRef = candidate.Ref
-		options, err = workflow.NormalizeExecutionOptions(options)
-		if err != nil {
-			continue
-		}
-		result := registry.ExecuteContext(ctx, awsBillingRequest(), options)
-		classified = append(classified, classifiedCUR2Candidate{Candidate: candidate, Result: result})
-	}
-	return classified
-}
-
-func selectableCUR2Candidates(classified []classifiedCUR2Candidate) []classifiedCUR2Candidate {
-	selectable := []classifiedCUR2Candidate{}
-	for _, item := range classified {
-		if item.Result.Status == workflow.StatusReady || item.Result.Status == workflow.RunStatusManualSteps {
-			selectable = append(selectable, item)
-		}
-	}
-	return selectable
 }
 
 func repairableCUR2Candidates(classified []classifiedCUR2Candidate) []classifiedCUR2Candidate {
@@ -250,12 +430,112 @@ func writeSelectableCUR2Candidate(stdout io.Writer, item classifiedCUR2Candidate
 	writeCUR2CandidateDetails(stdout, item, selectableCUR2Readiness(item), selectableCUR2NextAction(item))
 }
 
-func writeSelectableCUR2CandidateOption(stdout io.Writer, item classifiedCUR2Candidate) {
-	writeCUR2CandidateFactLines(stdout, item, selectableCUR2Readiness(item), selectableCUR2NextAction(item), "     ")
-}
-
 func writeNonReadyCUR2Candidate(stdout io.Writer, item classifiedCUR2Candidate) {
 	writeCUR2CandidateDetails(stdout, item, "not ready", nonReadyCUR2NextAction(item))
+}
+
+func writeSingleCUR2CandidateNeedsReview(stdout io.Writer, source billingguide.CredentialSource, candidate cur2Candidate) {
+	fmt.Fprintln(stdout, "One AWS CUR 2.0 export candidate needs review.")
+	fmt.Fprintf(stdout, "  %s\n", candidateLabel(candidate))
+	writeCUR2CandidateSelectionFacts(stdout, candidate, "    ", false)
+	fmt.Fprintln(stdout)
+	fmt.Fprintln(stdout, "Review with:")
+	fmt.Fprintf(stdout, "  %s\n", directAWSBillingCommand(source, candidate.Ref))
+}
+
+func writeCUR2CandidateSelectionFacts(stdout io.Writer, candidate cur2Candidate, indent string, recommended bool) {
+	if recommended {
+		fmt.Fprintf(stdout, "%sRecommendation: preferred Rapid Assessment billing export shape.\n", indent)
+	}
+	if reason := cur2CandidateSelectionBlocker(candidate); reason != "" {
+		fmt.Fprintf(stdout, "%sBlocker: %s\n", indent, reason)
+	}
+	switch strings.ToUpper(candidate.Granularity) {
+	case "DAILY":
+		fmt.Fprintf(stdout, "%sNote: daily is valid AWS CUR 2.0; monthly is preferred for Rapid Assessment billing when available.\n", indent)
+	case "HOURLY":
+		fmt.Fprintf(stdout, "%sNote: hourly is valid AWS CUR 2.0; monthly is preferred and hourly can increase file volume.\n", indent)
+	}
+	fmt.Fprintf(stdout, "%sFull readiness checks run after selection.\n", indent)
+}
+
+func cur2CandidateSelectionBlocker(candidate cur2Candidate) string {
+	if candidate.PrimaryIssue != "" && !strings.EqualFold(candidate.PrimaryIssue, "none") {
+		switch strings.ToLower(candidate.MetadataStatus) {
+		case "incomplete", "unsupported", "unhealthy":
+			return candidate.PrimaryIssue
+		}
+	}
+	if strings.EqualFold(safeCandidateLabelValue(candidate.Health), "UNHEALTHY") {
+		return "AWS reports this export as unhealthy."
+	}
+	if unsupported := unsupportedCUR2CandidateSettings(candidate); len(unsupported) > 0 {
+		return "pre-selection metadata has unsupported settings: " + strings.Join(unsupported, ", ") + "."
+	}
+	if missing := missingCUR2CandidateMetadata(candidate); len(missing) > 0 {
+		return "pre-selection metadata is incomplete: missing " + strings.Join(missing, ", ") + "."
+	}
+	return ""
+}
+
+func missingCUR2CandidateMetadata(candidate cur2Candidate) []string {
+	missing := []string{}
+	if safeCandidateLabelValue(candidate.Health) == "" {
+		missing = append(missing, "health status")
+	}
+	if safeCandidateLabelValue(candidate.Output) == "" {
+		missing = append(missing, "output format")
+	}
+	if safeCandidateLabelValue(candidate.Compression) == "" {
+		missing = append(missing, "compression")
+	}
+	if safeCandidateLabelValue(candidate.Granularity) == "" {
+		missing = append(missing, "time granularity")
+	}
+	if safeCandidateLabelValue(candidate.Overwrite) == "" {
+		missing = append(missing, "file versioning")
+	}
+	if safeCandidateLabelValue(candidate.OutputType) == "" {
+		missing = append(missing, "output type")
+	}
+	if safeCandidateLabelValue(candidate.RefreshCadence) == "" {
+		missing = append(missing, "refresh cadence")
+	}
+	if safeCandidateLabelValue(candidate.Destination) == "" {
+		missing = append(missing, "destination region")
+	}
+	return missing
+}
+
+func unsupportedCUR2CandidateSettings(candidate cur2Candidate) []string {
+	unsupported := []string{}
+	health := safeCandidateLabelValue(candidate.Health)
+	if health != "" && !strings.EqualFold(health, "HEALTHY") && !strings.EqualFold(health, "UNHEALTHY") {
+		unsupported = append(unsupported, "health status "+health)
+	}
+	if !hasSupportedCUR2Output(candidate) {
+		output := safeCandidateLabelValue(candidate.Output)
+		compression := safeCandidateLabelValue(candidate.Compression)
+		if output != "" && compression != "" {
+			unsupported = append(unsupported, "output/compression "+output+"/"+compression)
+		}
+	}
+	if granularity := safeCandidateLabelValue(candidate.Granularity); granularity != "" && !hasSupportedCUR2Granularity(candidate) {
+		unsupported = append(unsupported, "time granularity "+granularity)
+	}
+	if overwrite := safeCandidateLabelValue(candidate.Overwrite); overwrite != "" && !hasSupportedCUR2Overwrite(candidate) {
+		unsupported = append(unsupported, "file versioning "+overwrite)
+	}
+	if outputType := safeCandidateLabelValue(candidate.OutputType); outputType != "" && !hasSupportedCUR2OutputType(candidate) {
+		unsupported = append(unsupported, "output type "+outputType)
+	}
+	if refreshCadence := safeCandidateLabelValue(candidate.RefreshCadence); refreshCadence != "" && !hasSupportedCUR2RefreshCadence(candidate) {
+		unsupported = append(unsupported, "refresh cadence "+refreshCadence)
+	}
+	if includeResources := safeCandidateLabelValue(candidate.IncludeResource); includeResources != "" && !hasSupportedCUR2IncludeResources(candidate) {
+		unsupported = append(unsupported, "include resources "+includeResources)
+	}
+	return unsupported
 }
 
 func writeCUR2CandidateDetails(stdout io.Writer, item classifiedCUR2Candidate, readiness string, nextAction string) {
@@ -535,6 +815,8 @@ func nonReadyCUR2NextAction(item classifiedCUR2Candidate) string {
 	switch item.Result.Code {
 	case "aws_cur2_output_settings_blocked":
 		return "review the CUR 2.0 output settings and rerun after they match a Matilda-supported AWS-standard shape."
+	case "aws_data_exports_throttled":
+		return "AWS throttled the Data Exports read-only check. Wait briefly, then rerun preflight."
 	case "aws_data_exports_transient":
 		return "retry preflight after the transient AWS Data Exports issue clears."
 	case "aws_s3_bucket_policy_inaccessible":
@@ -569,8 +851,11 @@ func displayFact(value string) string {
 	return value
 }
 
-func candidateLabel(candidate cur2Candidate) string {
+func candidateLabel(candidate cur2Candidate, recommended ...bool) string {
 	parts := []string{candidate.Ref}
+	if len(recommended) > 0 && recommended[0] {
+		parts = append(parts, "recommended")
+	}
 	if health := safeCandidateLabelValue(candidate.Health); health != "" {
 		parts = append(parts, "health "+health)
 	}
@@ -582,6 +867,9 @@ func candidateLabel(candidate cur2Candidate) string {
 	}
 	if granularity := safeCandidateLabelValue(candidate.Granularity); granularity != "" {
 		parts = append(parts, "granularity "+granularity)
+	}
+	if overwrite := safeCandidateLabelValue(candidate.Overwrite); overwrite != "" {
+		parts = append(parts, "versioning "+overwrite)
 	}
 	if destination := safeCandidateLabelValue(candidate.Destination); destination != "" {
 		parts = append(parts, "region "+destination)

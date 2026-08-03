@@ -10,7 +10,7 @@ import (
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/workflow"
 )
 
-func TestRunAWSBillingClassifiesAmbiguousExportsBeforePrompting(t *testing.T) {
+func TestRunAWSBillingPromptsBeforeSelectedExportPreflight(t *testing.T) {
 	calls := []workflow.ExecutionOptions{}
 	registry := testRegistry(t, workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
 		calls = append(calls, options)
@@ -24,10 +24,20 @@ func TestRunAWSBillingClassifiesAmbiguousExportsBeforePrompting(t *testing.T) {
 				{Key: "candidate_1_export_ref", Value: "cur2-acacacacacacacac"},
 				{Key: "candidate_1_health", Value: "HEALTHY"},
 				{Key: "candidate_1_output_format", Value: "TEXT_OR_CSV"},
+				{Key: "candidate_1_compression", Value: "GZIP"},
+				{Key: "candidate_1_time_granularity", Value: "MONTHLY"},
+				{Key: "candidate_1_overwrite", Value: "CREATE_NEW_REPORT"},
+				{Key: "candidate_1_output_type", Value: "CUSTOM"},
+				{Key: "candidate_1_refresh_cadence", Value: "SYNCHRONOUS"},
 				{Key: "candidate_1_destination_region", Value: "us-east-1"},
 				{Key: "candidate_2_export_ref", Value: "cur2-bdbdbdbdbdbdbdbd"},
 				{Key: "candidate_2_health", Value: "WARNING"},
 				{Key: "candidate_2_output_format", Value: "PARQUET"},
+				{Key: "candidate_2_compression", Value: "PARQUET"},
+				{Key: "candidate_2_time_granularity", Value: "DAILY"},
+				{Key: "candidate_2_overwrite", Value: "OVERWRITE_REPORT"},
+				{Key: "candidate_2_output_type", Value: "CUSTOM"},
+				{Key: "candidate_2_refresh_cadence", Value: "SYNCHRONOUS"},
 				{Key: "candidate_2_destination_region", Value: "us-west-2"},
 			})
 		case "cur2-acacacacacacacac":
@@ -51,30 +61,28 @@ func TestRunAWSBillingClassifiesAmbiguousExportsBeforePrompting(t *testing.T) {
 		},
 	}
 
-	output, err := runGuidedWithConfig("1\n1\ny\n", Config{Registry: registry, AWSBilling: guide})
+	output, err := runGuidedWithConfig("1\n1\ny\n2\n", Config{Registry: registry, AWSBilling: guide})
 
 	if err != nil {
 		t.Fatalf("RunWithConfig returned error: %v", err)
 	}
-	if len(calls) != 3 {
-		t.Fatalf("preflight calls = %d, want initial plus two classification calls", len(calls))
+	if len(calls) != 2 {
+		t.Fatalf("preflight calls = %d, want initial discovery plus selected export preflight", len(calls))
 	}
-	if calls[1].Selectors.AWS.CUR2ExportRef != "cur2-acacacacacacacac" ||
-		calls[2].Selectors.AWS.CUR2ExportRef != "cur2-bdbdbdbdbdbdbdbd" {
-		t.Fatalf("classification refs = %#v, want both candidate refs", calls)
+	if calls[0].Selectors.AWS.CUR2ExportRef != "" {
+		t.Fatalf("initial preflight ref = %q, want empty discovery selector", calls[0].Selectors.AWS.CUR2ExportRef)
 	}
-	if strings.Contains(output, "Select AWS CUR 2.0 export") {
-		t.Fatalf("output prompted even though only one candidate classified as selectable: %s", output)
+	if calls[1].Selectors.AWS.CUR2ExportRef != "cur2-bdbdbdbdbdbdbdbd" {
+		t.Fatalf("selected preflight ref = %q, want selected candidate ref", calls[1].Selectors.AWS.CUR2ExportRef)
 	}
 	for _, want := range []string{
-		"Classifying 2 CUR 2.0 export candidates",
-		"Auto-selected CUR 2.0 export cur2-acacacacacacacac",
-		"Readiness: ready",
-		"Support code: aws_cur2_preflight_ready",
-		"Export: TEXT_OR_CSV / GZIP, MONTHLY, CREATE_NEW_REPORT",
-		"Next action: continue with this CUR 2.0 export.",
+		"Select AWS CUR 2.0 export",
+		"Full readiness checks run after selection.",
+		"Blocker: pre-selection metadata has unsupported settings: health status WARNING.",
+		"Running readiness preflight for selected CUR 2.0 export cur2-bdbdbdbdbdbdbdbd",
+		"Readiness: not ready",
 		"aws_cur2_output_settings_blocked",
-		"--export-ref cur2-acacacacacacacac",
+		"--export-ref cur2-bdbdbdbdbdbdbdbd",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("output = %q, want to contain %q", output, want)
@@ -83,7 +91,7 @@ func TestRunAWSBillingClassifiesAmbiguousExportsBeforePrompting(t *testing.T) {
 	assertGuidedOutputSafe(t, output)
 }
 
-func TestRunAWSBillingPromptsForMultipleSelectableExports(t *testing.T) {
+func TestRunAWSBillingRanksPreferredShapeFirstWithoutFallbackRecommendationLabel(t *testing.T) {
 	calls := []workflow.ExecutionOptions{}
 	registry := testRegistry(t, workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
 		calls = append(calls, options)
@@ -96,28 +104,32 @@ func TestRunAWSBillingPromptsForMultipleSelectableExports(t *testing.T) {
 			return guidedCapabilityReport(got, workflow.RunStatusBlocked, "aws_cur2_export_ambiguous", []workflow.PlanEvidence{
 				{Key: "candidate_1_export_ref", Value: "cur2-aaaaaaaaaaaaaaaa"},
 				{Key: "candidate_1_health", Value: "HEALTHY"},
-				{Key: "candidate_1_output_format", Value: "TEXT_OR_CSV"},
+				{Key: "candidate_1_output_format", Value: "PARQUET"},
+				{Key: "candidate_1_compression", Value: "PARQUET"},
+				{Key: "candidate_1_time_granularity", Value: "DAILY"},
+				{Key: "candidate_1_overwrite", Value: "OVERWRITE_REPORT"},
 				{Key: "candidate_1_destination_region", Value: "us-east-1"},
 				{Key: "candidate_2_export_ref", Value: "cur2-bbbbbbbbbbbbbbbb"},
 				{Key: "candidate_2_health", Value: "HEALTHY"},
 				{Key: "candidate_2_output_format", Value: "TEXT_OR_CSV"},
+				{Key: "candidate_2_compression", Value: "GZIP"},
+				{Key: "candidate_2_time_granularity", Value: "MONTHLY"},
+				{Key: "candidate_2_overwrite", Value: "CREATE_NEW_REPORT"},
 				{Key: "candidate_2_destination_region", Value: "us-west-2"},
 			})
 		case "cur2-aaaaaaaaaaaaaaaa":
+			return guidedCapabilityReport(got, workflow.StatusReady, "aws_cur2_time_granularity_not_preferred", []workflow.PlanEvidence{
+				{Key: "output_format", Value: "PARQUET"},
+				{Key: "compression", Value: "PARQUET"},
+				{Key: "time_granularity", Value: "DAILY"},
+				{Key: "overwrite", Value: "OVERWRITE_REPORT"},
+			})
+		case "cur2-bbbbbbbbbbbbbbbb":
 			return guidedCapabilityReport(got, workflow.StatusReady, "aws_cur2_preflight_ready", []workflow.PlanEvidence{
 				{Key: "output_format", Value: "TEXT_OR_CSV"},
 				{Key: "compression", Value: "GZIP"},
 				{Key: "time_granularity", Value: "MONTHLY"},
 				{Key: "overwrite", Value: "CREATE_NEW_REPORT"},
-			})
-		case "cur2-bbbbbbbbbbbbbbbb":
-			return guidedCapabilityReport(got, workflow.RunStatusManualSteps, "aws_backfill_manual_step_required", []workflow.PlanEvidence{
-				{Key: "output_format", Value: "TEXT_OR_CSV"},
-				{Key: "compression", Value: "GZIP"},
-				{Key: "time_granularity", Value: "DAILY"},
-				{Key: "overwrite", Value: "CREATE_NEW_REPORT"},
-				{Key: "previous_billing_period", Value: "2026-06"},
-				{Key: "missing_previous_month_component", Value: "manifest"},
 			})
 		default:
 			t.Fatalf("unexpected export ref %q", exportRef)
@@ -131,31 +143,479 @@ func TestRunAWSBillingPromptsForMultipleSelectableExports(t *testing.T) {
 		},
 	}
 
-	output, err := runGuidedWithConfig("1\n1\ny\n2\n", Config{Registry: registry, AWSBilling: guide})
+	output, err := runGuidedWithConfig("1\n1\ny\n1\n", Config{Registry: registry, AWSBilling: guide})
 
 	if err != nil {
 		t.Fatalf("RunWithConfig returned error: %v", err)
 	}
-	if len(calls) != 3 {
-		t.Fatalf("preflight calls = %d, want initial plus two classification calls", len(calls))
+	if len(calls) != 2 {
+		t.Fatalf("preflight calls = %d, want initial discovery plus selected export preflight", len(calls))
+	}
+	if calls[1].Selectors.AWS.CUR2ExportRef != "cur2-bbbbbbbbbbbbbbbb" {
+		t.Fatalf("selected preflight ref = %q, want preferred-shape candidate selected first", calls[1].Selectors.AWS.CUR2ExportRef)
+	}
+	firstChoice := "1. cur2-bbbbbbbbbbbbbbbb"
+	nonPreferred := "2. cur2-aaaaaaaaaaaaaaaa"
+	if !strings.Contains(output, firstChoice) || !strings.Contains(output, nonPreferred) {
+		t.Fatalf("output = %q, want preferred-shape candidate first and non-preferred second", output)
+	}
+	if strings.Index(output, firstChoice) > strings.Index(output, nonPreferred) {
+		t.Fatalf("output = %q, want preferred-shape candidate before non-preferred candidate", output)
 	}
 	for _, want := range []string{
 		"Select AWS CUR 2.0 export",
-		"cur2-aaaaaaaaaaaaaaaa, health HEALTHY, output TEXT_OR_CSV, region us-east-1",
-		"cur2-bbbbbbbbbbbbbbbb, health HEALTHY, output TEXT_OR_CSV, region us-west-2",
+		"cur2-bbbbbbbbbbbbbbbb, health HEALTHY, output TEXT_OR_CSV, compression GZIP, granularity MONTHLY, versioning CREATE_NEW_REPORT, region us-west-2",
+		"cur2-aaaaaaaaaaaaaaaa, health HEALTHY, output PARQUET, compression PARQUET, granularity DAILY, versioning OVERWRITE_REPORT, region us-east-1",
+		"Full readiness checks run after selection.",
+		"Running readiness preflight for selected CUR 2.0 export cur2-bbbbbbbbbbbbbbbb",
 		"Readiness: ready",
 		"Support code: aws_cur2_preflight_ready",
-		"Readiness: manual step required",
-		"Support code: aws_backfill_manual_step_required",
 		"Export: TEXT_OR_CSV / GZIP, MONTHLY, CREATE_NEW_REPORT",
-		"Export: TEXT_OR_CSV / GZIP, DAILY, CREATE_NEW_REPORT",
-		"Previous month: 2026-06 missing manifest",
-		"Next action: request or complete previous-month billing data backfill, then rerun preflight.",
-		"aws_backfill_manual_step_required",
 		"--export-ref cur2-bbbbbbbbbbbbbbbb",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("output = %q, want to contain %q", output, want)
+		}
+	}
+	if strings.Contains(output, "recommended") {
+		t.Fatalf("output = %q, want no recommended label without canonical provider preferred facts", output)
+	}
+	assertGuidedOutputSafe(t, output)
+}
+
+func TestRankedCUR2CandidatesPutsCompleteValidShapeBeforeIncompleteMetadata(t *testing.T) {
+	ranked := rankedCUR2Candidates([]cur2Candidate{
+		{
+			Ref:    "cur2-incomplete-health",
+			Health: "HEALTHY",
+		},
+		{
+			Ref:         "cur2-incomplete-health-status",
+			Output:      "TEXT_OR_CSV",
+			Compression: "GZIP",
+			Granularity: "MONTHLY",
+			Overwrite:   "CREATE_NEW_REPORT",
+			Destination: "us-east-1",
+		},
+		{
+			Ref:         "cur2-complete-nonpreferred",
+			Health:      "HEALTHY",
+			Output:      "PARQUET",
+			Compression: "PARQUET",
+			Granularity: "DAILY",
+			Overwrite:   "OVERWRITE_REPORT",
+			Destination: "us-east-1",
+		},
+		{
+			Ref:         "cur2-unhealthy-complete",
+			Health:      "UNHEALTHY",
+			Output:      "TEXT_OR_CSV",
+			Compression: "GZIP",
+			Granularity: "MONTHLY",
+			Overwrite:   "CREATE_NEW_REPORT",
+			Destination: "us-east-1",
+		},
+	})
+
+	if ranked[0].Ref != "cur2-complete-nonpreferred" {
+		t.Fatalf("first ranked ref = %q, want complete valid non-preferred candidate", ranked[0].Ref)
+	}
+	if ranked[len(ranked)-1].Ref != "cur2-unhealthy-complete" {
+		t.Fatalf("last ranked ref = %q, want unhealthy candidate last", ranked[len(ranked)-1].Ref)
+	}
+	incompleteRefs := map[string]bool{
+		ranked[1].Ref: true,
+		ranked[2].Ref: true,
+	}
+	if !incompleteRefs["cur2-incomplete-health"] || !incompleteRefs["cur2-incomplete-health-status"] {
+		t.Fatalf("middle ranked refs = %#v, want both incomplete candidates", []string{ranked[1].Ref, ranked[2].Ref})
+	}
+}
+
+func TestRankedCUR2CandidatesPutsIncompleteMetadataBeforeUnsupportedSettings(t *testing.T) {
+	ranked := rankedCUR2Candidates([]cur2Candidate{
+		{
+			Ref:            "cur2-unsupported-settings",
+			Health:         "HEALTHY",
+			Output:         "TEXT_OR_CSV",
+			Compression:    "ZIP",
+			Granularity:    "MONTHLY",
+			Overwrite:      "CREATE_NEW_REPORT",
+			OutputType:     "CUSTOM",
+			RefreshCadence: "SYNCHRONOUS",
+			Destination:    "us-east-1",
+		},
+		{
+			Ref:    "cur2-incomplete-health",
+			Health: "HEALTHY",
+		},
+	})
+
+	got := []string{ranked[0].Ref, ranked[1].Ref}
+	want := []string{"cur2-incomplete-health", "cur2-unsupported-settings"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ranked refs = %#v, want %#v", got, want)
+	}
+}
+
+func TestRankedCUR2CandidatesRequiresDestinationForSupportedRecommendation(t *testing.T) {
+	ranked := rankedCUR2Candidates([]cur2Candidate{
+		{
+			Ref:            "cur2-missing-destination",
+			Health:         "HEALTHY",
+			Output:         "TEXT_OR_CSV",
+			Compression:    "GZIP",
+			Granularity:    "MONTHLY",
+			Overwrite:      "CREATE_NEW_REPORT",
+			OutputType:     "CUSTOM",
+			RefreshCadence: "SYNCHRONOUS",
+		},
+		{
+			Ref:            "cur2-complete-nonpreferred",
+			Health:         "HEALTHY",
+			Output:         "PARQUET",
+			Compression:    "PARQUET",
+			Granularity:    "DAILY",
+			Overwrite:      "OVERWRITE_REPORT",
+			OutputType:     "CUSTOM",
+			RefreshCadence: "SYNCHRONOUS",
+			Destination:    "us-east-1",
+		},
+	})
+
+	if ranked[0].Ref != "cur2-complete-nonpreferred" {
+		t.Fatalf("first ranked ref = %q, want complete non-preferred candidate ahead of missing destination", ranked[0].Ref)
+	}
+	if isRecommendedCUR2Candidate(ranked[1]) {
+		t.Fatalf("candidate with missing destination was recommended: %#v", ranked[1])
+	}
+}
+
+func TestRunAWSBillingAutoSelectsSingleCandidateAndRunsSelectedPreflight(t *testing.T) {
+	calls := []workflow.ExecutionOptions{}
+	registry := testRegistry(t, workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+		calls = append(calls, options)
+		exportRef := ""
+		if options.Selectors != nil && options.Selectors.AWS != nil {
+			exportRef = options.Selectors.AWS.CUR2ExportRef
+		}
+		switch exportRef {
+		case "":
+			return guidedCapabilityReport(got, workflow.RunStatusBlocked, "aws_cur2_export_selection_required", []workflow.PlanEvidence{
+				{Key: "candidate_1_export_ref", Value: "cur2-cacacacacacacaca"},
+				{Key: "candidate_1_health", Value: "HEALTHY"},
+				{Key: "candidate_1_output_format", Value: "TEXT_OR_CSV"},
+				{Key: "candidate_1_compression", Value: "GZIP"},
+				{Key: "candidate_1_time_granularity", Value: "MONTHLY"},
+				{Key: "candidate_1_overwrite", Value: "CREATE_NEW_REPORT"},
+				{Key: "candidate_1_destination_region", Value: "us-east-1"},
+				{Key: "candidate_1_output_type", Value: "CUSTOM"},
+				{Key: "candidate_1_refresh_cadence", Value: "SYNCHRONOUS"},
+				{Key: "candidate_1_include_resources", Value: "FALSE"},
+				{Key: "candidate_1_pre_selection_metadata_status", Value: "preferred"},
+				{Key: "candidate_1_matilda_support", Value: "preferred"},
+				{Key: "candidate_1_primary_issue", Value: "none"},
+				{Key: "candidate_1_required_next_action", Value: "run full readiness preflight after selection."},
+			})
+		case "cur2-cacacacacacacaca":
+			return guidedCapabilityReport(got, workflow.StatusReady, "aws_cur2_preflight_ready", []workflow.PlanEvidence{
+				{Key: "output_format", Value: "TEXT_OR_CSV"},
+				{Key: "compression", Value: "GZIP"},
+				{Key: "time_granularity", Value: "MONTHLY"},
+				{Key: "overwrite", Value: "CREATE_NEW_REPORT"},
+			})
+		default:
+			t.Fatalf("unexpected export ref %q", exportRef)
+			return workflow.CapabilityReport{}
+		}
+	}))
+	guide := &fakeAWSBillingGuide{
+		sources: []billingguide.CredentialSource{{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}},
+		verified: map[string]billingguide.VerifiedIdentity{
+			"profile:default": {Source: billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}, AccountLabel: "account-ending-9012", CallerRef: "sha256:abcdef123456", Region: "us-east-1"},
+		},
+	}
+
+	output, err := runGuidedWithConfig("1\n1\ny\n", Config{Registry: registry, AWSBilling: guide})
+
+	if err != nil {
+		t.Fatalf("RunWithConfig returned error: %v", err)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("preflight calls = %d, want initial discovery plus selected export preflight", len(calls))
+	}
+	if calls[1].Selectors.AWS.CUR2ExportRef != "cur2-cacacacacacacaca" {
+		t.Fatalf("selected preflight ref = %q, want auto-selected candidate ref", calls[1].Selectors.AWS.CUR2ExportRef)
+	}
+	for _, want := range []string{
+		"Auto-selected CUR 2.0 export cur2-cacacacacacacaca",
+		"Recommendation: preferred Rapid Assessment billing export shape.",
+		"Full readiness checks run after selection.",
+		"Running readiness preflight for selected CUR 2.0 export cur2-cacacacacacacaca",
+		"Result: ready",
+		"Support code: aws_cur2_preflight_ready",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output = %q, want to contain %q", output, want)
+		}
+	}
+	if strings.Contains(output, "Select AWS CUR 2.0 export") {
+		t.Fatalf("output prompted for a single candidate: %s", output)
+	}
+	assertGuidedOutputSafe(t, output)
+}
+
+func TestRunAWSBillingDoesNotAutoSelectUnsafeSingleCandidate(t *testing.T) {
+	tests := []struct {
+		name     string
+		evidence []workflow.PlanEvidence
+		want     string
+	}{
+		{
+			name: "unhealthy",
+			evidence: []workflow.PlanEvidence{
+				{Key: "candidate_1_export_ref", Value: "cur2-eaeaeaeaeaeaeaea"},
+				{Key: "candidate_1_health", Value: "UNHEALTHY"},
+				{Key: "candidate_1_output_format", Value: "TEXT_OR_CSV"},
+				{Key: "candidate_1_compression", Value: "GZIP"},
+				{Key: "candidate_1_time_granularity", Value: "MONTHLY"},
+				{Key: "candidate_1_overwrite", Value: "CREATE_NEW_REPORT"},
+				{Key: "candidate_1_output_type", Value: "CUSTOM"},
+				{Key: "candidate_1_refresh_cadence", Value: "SYNCHRONOUS"},
+				{Key: "candidate_1_destination_region", Value: "us-east-1"},
+			},
+			want: "Blocker: AWS reports this export as unhealthy.",
+		},
+		{
+			name: "incomplete",
+			evidence: []workflow.PlanEvidence{
+				{Key: "candidate_1_export_ref", Value: "cur2-ebebebebebebebeb"},
+				{Key: "candidate_1_health", Value: "HEALTHY"},
+				{Key: "candidate_1_output_format", Value: "TEXT_OR_CSV"},
+				{Key: "candidate_1_compression", Value: "GZIP"},
+				{Key: "candidate_1_time_granularity", Value: "MONTHLY"},
+				{Key: "candidate_1_output_type", Value: "CUSTOM"},
+				{Key: "candidate_1_refresh_cadence", Value: "SYNCHRONOUS"},
+				{Key: "candidate_1_destination_region", Value: "us-east-1"},
+			},
+			want: "Blocker: pre-selection metadata is incomplete: missing file versioning.",
+		},
+		{
+			name: "missing destination",
+			evidence: []workflow.PlanEvidence{
+				{Key: "candidate_1_export_ref", Value: "cur2-edededededededed"},
+				{Key: "candidate_1_health", Value: "HEALTHY"},
+				{Key: "candidate_1_output_format", Value: "TEXT_OR_CSV"},
+				{Key: "candidate_1_compression", Value: "GZIP"},
+				{Key: "candidate_1_time_granularity", Value: "MONTHLY"},
+				{Key: "candidate_1_overwrite", Value: "CREATE_NEW_REPORT"},
+				{Key: "candidate_1_output_type", Value: "CUSTOM"},
+				{Key: "candidate_1_refresh_cadence", Value: "SYNCHRONOUS"},
+			},
+			want: "Blocker: pre-selection metadata is incomplete: missing destination region.",
+		},
+		{
+			name: "unsupported",
+			evidence: []workflow.PlanEvidence{
+				{Key: "candidate_1_export_ref", Value: "cur2-eccececcececcece"},
+				{Key: "candidate_1_health", Value: "WARNING"},
+				{Key: "candidate_1_output_format", Value: "TEXT_OR_CSV"},
+				{Key: "candidate_1_compression", Value: "GZIP"},
+				{Key: "candidate_1_time_granularity", Value: "MONTHLY"},
+				{Key: "candidate_1_overwrite", Value: "CREATE_NEW_REPORT"},
+				{Key: "candidate_1_output_type", Value: "CUSTOM"},
+				{Key: "candidate_1_refresh_cadence", Value: "SYNCHRONOUS"},
+				{Key: "candidate_1_destination_region", Value: "us-east-1"},
+			},
+			want: "Blocker: pre-selection metadata has unsupported settings: health status WARNING.",
+		},
+		{
+			name: "unsupported output type",
+			evidence: []workflow.PlanEvidence{
+				{Key: "candidate_1_export_ref", Value: "cur2-efefefefefefefef"},
+				{Key: "candidate_1_health", Value: "HEALTHY"},
+				{Key: "candidate_1_output_format", Value: "TEXT_OR_CSV"},
+				{Key: "candidate_1_compression", Value: "GZIP"},
+				{Key: "candidate_1_time_granularity", Value: "MONTHLY"},
+				{Key: "candidate_1_overwrite", Value: "CREATE_NEW_REPORT"},
+				{Key: "candidate_1_destination_region", Value: "us-east-1"},
+				{Key: "candidate_1_output_type", Value: "ATHENA"},
+				{Key: "candidate_1_refresh_cadence", Value: "SYNCHRONOUS"},
+			},
+			want: "Blocker: pre-selection metadata has unsupported settings: output type ATHENA.",
+		},
+		{
+			name: "missing output type",
+			evidence: []workflow.PlanEvidence{
+				{Key: "candidate_1_export_ref", Value: "cur2-eieieieieieieiei"},
+				{Key: "candidate_1_health", Value: "HEALTHY"},
+				{Key: "candidate_1_output_format", Value: "TEXT_OR_CSV"},
+				{Key: "candidate_1_compression", Value: "GZIP"},
+				{Key: "candidate_1_time_granularity", Value: "MONTHLY"},
+				{Key: "candidate_1_overwrite", Value: "CREATE_NEW_REPORT"},
+				{Key: "candidate_1_refresh_cadence", Value: "SYNCHRONOUS"},
+				{Key: "candidate_1_destination_region", Value: "us-east-1"},
+			},
+			want: "Blocker: pre-selection metadata is incomplete: missing output type.",
+		},
+		{
+			name: "unsupported refresh cadence",
+			evidence: []workflow.PlanEvidence{
+				{Key: "candidate_1_export_ref", Value: "cur2-eggeggeggeggegeg"},
+				{Key: "candidate_1_health", Value: "HEALTHY"},
+				{Key: "candidate_1_output_format", Value: "TEXT_OR_CSV"},
+				{Key: "candidate_1_compression", Value: "GZIP"},
+				{Key: "candidate_1_time_granularity", Value: "MONTHLY"},
+				{Key: "candidate_1_overwrite", Value: "CREATE_NEW_REPORT"},
+				{Key: "candidate_1_destination_region", Value: "us-east-1"},
+				{Key: "candidate_1_output_type", Value: "CUSTOM"},
+				{Key: "candidate_1_refresh_cadence", Value: "ASYNCHRONOUS"},
+			},
+			want: "Blocker: pre-selection metadata has unsupported settings: refresh cadence ASYNCHRONOUS.",
+		},
+		{
+			name: "missing refresh cadence",
+			evidence: []workflow.PlanEvidence{
+				{Key: "candidate_1_export_ref", Value: "cur2-ejejejejejejejej"},
+				{Key: "candidate_1_health", Value: "HEALTHY"},
+				{Key: "candidate_1_output_format", Value: "TEXT_OR_CSV"},
+				{Key: "candidate_1_compression", Value: "GZIP"},
+				{Key: "candidate_1_time_granularity", Value: "MONTHLY"},
+				{Key: "candidate_1_overwrite", Value: "CREATE_NEW_REPORT"},
+				{Key: "candidate_1_output_type", Value: "CUSTOM"},
+				{Key: "candidate_1_destination_region", Value: "us-east-1"},
+			},
+			want: "Blocker: pre-selection metadata is incomplete: missing refresh cadence.",
+		},
+		{
+			name: "unsupported include resources",
+			evidence: []workflow.PlanEvidence{
+				{Key: "candidate_1_export_ref", Value: "cur2-eheheheheheheheh"},
+				{Key: "candidate_1_health", Value: "HEALTHY"},
+				{Key: "candidate_1_output_format", Value: "TEXT_OR_CSV"},
+				{Key: "candidate_1_compression", Value: "GZIP"},
+				{Key: "candidate_1_time_granularity", Value: "MONTHLY"},
+				{Key: "candidate_1_overwrite", Value: "CREATE_NEW_REPORT"},
+				{Key: "candidate_1_destination_region", Value: "us-east-1"},
+				{Key: "candidate_1_include_resources", Value: "UNKNOWN"},
+			},
+			want: "Blocker: pre-selection metadata has unsupported settings: include resources UNKNOWN.",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := []workflow.ExecutionOptions{}
+			registry := testRegistry(t, workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+				calls = append(calls, options)
+				if options.Selectors != nil && options.Selectors.AWS != nil && options.Selectors.AWS.CUR2ExportRef != "" {
+					t.Fatalf("selected preflight should not run for unsafe single candidate: %#v", options.Selectors.AWS)
+				}
+				return guidedCapabilityReport(got, workflow.RunStatusBlocked, "aws_cur2_export_selection_required", tt.evidence)
+			}))
+			guide := &fakeAWSBillingGuide{
+				sources: []billingguide.CredentialSource{{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}},
+				verified: map[string]billingguide.VerifiedIdentity{
+					"profile:default": {Source: billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}, AccountLabel: "account-ending-9012", CallerRef: "sha256:abcdef123456", Region: "us-east-1"},
+				},
+			}
+
+			output, err := runGuidedWithConfig("1\n1\ny\n", Config{Registry: registry, AWSBilling: guide})
+
+			if err != nil {
+				t.Fatalf("RunWithConfig returned error: %v", err)
+			}
+			if len(calls) != 1 {
+				t.Fatalf("preflight calls = %d, want initial discovery only", len(calls))
+			}
+			for _, want := range []string{
+				"One AWS CUR 2.0 export candidate needs review.",
+				tt.want,
+				"Full readiness checks run after selection.",
+				"Review with:",
+				"matilda-prep rapid-assessment billing aws preflight --profile default --region us-east-1 --export-ref",
+			} {
+				if !strings.Contains(output, want) {
+					t.Fatalf("output = %q, want to contain %q", output, want)
+				}
+			}
+			for _, forbidden := range []string{
+				"Auto-selected CUR 2.0 export",
+				"Running readiness preflight for selected CUR 2.0 export",
+			} {
+				if strings.Contains(output, forbidden) {
+					t.Fatalf("output = %q, want no %q", output, forbidden)
+				}
+			}
+			assertGuidedOutputSafe(t, output)
+		})
+	}
+}
+
+func TestRunAWSBillingSelectedExportThrottlingIsRetryable(t *testing.T) {
+	registry := testRegistry(t, workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+		exportRef := ""
+		if options.Selectors != nil && options.Selectors.AWS != nil {
+			exportRef = options.Selectors.AWS.CUR2ExportRef
+		}
+		switch exportRef {
+		case "":
+			return guidedCapabilityReport(got, workflow.RunStatusBlocked, "aws_cur2_export_selection_required", []workflow.PlanEvidence{
+				{Key: "candidate_1_export_ref", Value: "cur2-dadadadadadadada"},
+				{Key: "candidate_1_health", Value: "HEALTHY"},
+				{Key: "candidate_1_output_format", Value: "TEXT_OR_CSV"},
+				{Key: "candidate_1_compression", Value: "GZIP"},
+				{Key: "candidate_1_time_granularity", Value: "MONTHLY"},
+				{Key: "candidate_1_overwrite", Value: "CREATE_NEW_REPORT"},
+				{Key: "candidate_1_destination_region", Value: "us-east-1"},
+				{Key: "candidate_1_output_type", Value: "CUSTOM"},
+				{Key: "candidate_1_refresh_cadence", Value: "SYNCHRONOUS"},
+				{Key: "candidate_1_include_resources", Value: "FALSE"},
+				{Key: "candidate_1_pre_selection_metadata_status", Value: "supported"},
+				{Key: "candidate_1_matilda_support", Value: "supported"},
+				{Key: "candidate_1_primary_issue", Value: "none"},
+				{Key: "candidate_1_required_next_action", Value: "run full readiness preflight after selection."},
+			})
+		case "cur2-dadadadadadadada":
+			report := guidedCapabilityReport(got, workflow.RunStatusBlocked, "aws_data_exports_throttled", nil)
+			report.Message = "AWS Data Exports throttled a read-only preflight check. Wait briefly, then rerun preflight."
+			return report
+		default:
+			t.Fatalf("unexpected export ref %q", exportRef)
+			return workflow.CapabilityReport{}
+		}
+	}))
+	guide := &fakeAWSBillingGuide{
+		sources: []billingguide.CredentialSource{{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}},
+		verified: map[string]billingguide.VerifiedIdentity{
+			"profile:default": {Source: billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}, AccountLabel: "account-ending-9012", CallerRef: "sha256:abcdef123456", Region: "us-east-1"},
+		},
+	}
+
+	output, err := runGuidedWithConfig("1\n1\ny\n", Config{Registry: registry, AWSBilling: guide})
+
+	if err != nil {
+		t.Fatalf("RunWithConfig returned error: %v", err)
+	}
+	for _, want := range []string{
+		"Running readiness preflight for selected CUR 2.0 export cur2-dadadadadadadada",
+		"Result: blocked",
+		"Support code: aws_data_exports_throttled",
+		"AWS Data Exports throttled a read-only preflight check.",
+		"Wait briefly, then rerun preflight.",
+		"--export-ref cur2-dadadadadadadada",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output = %q, want to contain %q", output, want)
+		}
+	}
+	for _, forbidden := range []string{
+		"remediation",
+		"invalid",
+		"not a CUR",
+	} {
+		if strings.Contains(strings.ToLower(output), forbidden) {
+			t.Fatalf("output = %q, want no %q", output, forbidden)
 		}
 	}
 	assertGuidedOutputSafe(t, output)
@@ -169,10 +629,12 @@ func TestCur2CandidatesSanitizesMetadataAtDisplayBoundary(t *testing.T) {
 			{Key: "candidate_1_output_format", Value: "PARQUET"},
 			{Key: "candidate_1_compression", Value: "PARQUET"},
 			{Key: "candidate_1_time_granularity", Value: "DAILY"},
+			{Key: "candidate_1_overwrite", Value: "OVERWRITE_REPORT"},
 			{Key: "candidate_1_destination_region", Value: "us-east-1"},
 			{Key: "candidate_2_export_ref", Value: "cur2-bbbbbbbbbbbbbbbb"},
 			{Key: "candidate_2_health", Value: "arn:aws:iam::123456789012:role/operator"},
 			{Key: "candidate_2_output_format", Value: "private_key=/Users/example/key.pem"},
+			{Key: "candidate_2_overwrite", Value: "token=plain-token"},
 			{Key: "candidate_2_destination_region", Value: "token=plain-token"},
 			{Key: "candidate_3_export_ref", Value: "cur2-cccccccccccccccc"},
 			{Key: "candidate_3_health", Value: "123456789012"},
@@ -196,7 +658,7 @@ func TestCur2CandidatesSanitizesMetadataAtDisplayBoundary(t *testing.T) {
 		candidateLabel(candidates[4]),
 	}, "\n")
 	for _, want := range []string{
-		"cur2-aaaaaaaaaaaaaaaa, health HEALTHY, output PARQUET, compression PARQUET, granularity DAILY, region us-east-1",
+		"cur2-aaaaaaaaaaaaaaaa, health HEALTHY, output PARQUET, compression PARQUET, granularity DAILY, versioning OVERWRITE_REPORT, region us-east-1",
 		"cur2-bbbbbbbbbbbbbbbb",
 		"cur2-cccccccccccccccc",
 		"cur2-dddddddddddddddd",
@@ -219,6 +681,253 @@ func TestCur2CandidatesSanitizesMetadataAtDisplayBoundary(t *testing.T) {
 		if strings.Contains(output, forbidden) {
 			t.Fatalf("output leaked unsafe candidate metadata %q: %s", forbidden, output)
 		}
+	}
+}
+
+func TestRecommendationRequiresCanonicalProviderPreferredFacts(t *testing.T) {
+	for _, candidate := range []cur2Candidate{
+		{
+			Ref:         "cur2-aaaaaaaaaaaaaaaa",
+			Health:      "WARNING",
+			Output:      "TEXT_OR_CSV",
+			Compression: "GZIP",
+			Granularity: "MONTHLY",
+			Overwrite:   "CREATE_NEW_REPORT",
+			Destination: "us-east-1",
+		},
+		{
+			Ref:         "cur2-bbbbbbbbbbbbbbbb",
+			Output:      "TEXT_OR_CSV",
+			Compression: "GZIP",
+			Granularity: "MONTHLY",
+			Overwrite:   "CREATE_NEW_REPORT",
+			Destination: "us-east-1",
+		},
+		{
+			Ref:            "cur2-cccccccccccccccc",
+			Health:         "HEALTHY",
+			Output:         "TEXT_OR_CSV",
+			Compression:    "GZIP",
+			Granularity:    "MONTHLY",
+			Overwrite:      "CREATE_NEW_REPORT",
+			OutputType:     "CUSTOM",
+			RefreshCadence: "SYNCHRONOUS",
+			Destination:    "us-east-1",
+		},
+		{
+			Ref:            "cur2-dddddddddddddddd",
+			Health:         "HEALTHY",
+			Output:         "TEXT_OR_CSV",
+			Compression:    "GZIP",
+			Granularity:    "MONTHLY",
+			Overwrite:      "CREATE_NEW_REPORT",
+			OutputType:     "CUSTOM",
+			RefreshCadence: "SYNCHRONOUS",
+			Destination:    "us-east-1",
+			MetadataStatus: "supported",
+			MatildaSupport: "supported",
+		},
+		{
+			Ref:            "cur2-ecececececececec",
+			Health:         "HEALTHY",
+			Output:         "TEXT_OR_CSV",
+			Compression:    "GZIP",
+			Granularity:    "MONTHLY",
+			Overwrite:      "CREATE_NEW_REPORT",
+			OutputType:     "CUSTOM",
+			RefreshCadence: "SYNCHRONOUS",
+			Destination:    "us-east-1",
+			MetadataStatus: "preferred",
+		},
+		{
+			Ref:            "cur2-edededededededed",
+			Health:         "HEALTHY",
+			Output:         "TEXT_OR_CSV",
+			Compression:    "GZIP",
+			Granularity:    "MONTHLY",
+			Overwrite:      "CREATE_NEW_REPORT",
+			OutputType:     "CUSTOM",
+			RefreshCadence: "SYNCHRONOUS",
+			Destination:    "us-east-1",
+			MetadataStatus: "preferred",
+			MatildaSupport: "supported",
+		},
+	} {
+		if isRecommendedCUR2Candidate(candidate) {
+			t.Fatalf("isRecommendedCUR2Candidate(%#v) = true, want false without canonical preferred provider facts", candidate)
+		}
+	}
+
+	canonicalPreferred := cur2Candidate{
+		Ref:            "cur2-eeeeeeeeeeeeeeee",
+		Health:         "HEALTHY",
+		Output:         "TEXT_OR_CSV",
+		Compression:    "GZIP",
+		Granularity:    "MONTHLY",
+		Overwrite:      "CREATE_NEW_REPORT",
+		OutputType:     "CUSTOM",
+		RefreshCadence: "SYNCHRONOUS",
+		Destination:    "us-east-1",
+		MetadataStatus: "preferred",
+		MatildaSupport: "preferred",
+	}
+	if !isRecommendedCUR2Candidate(canonicalPreferred) {
+		t.Fatalf("isRecommendedCUR2Candidate(%#v) = false, want true for canonical preferred provider facts", canonicalPreferred)
+	}
+
+	inconsistentPreferred := canonicalPreferred
+	inconsistentPreferred.MetadataStatus = "incomplete"
+	inconsistentPreferred.PrimaryIssue = "pre-selection metadata is incomplete: missing destination region."
+	if isRecommendedCUR2Candidate(inconsistentPreferred) {
+		t.Fatalf("isRecommendedCUR2Candidate(%#v) = true, want false without canonical preferred status", inconsistentPreferred)
+	}
+}
+
+func TestWriteCUR2CandidateSelectionFactsShowsHourlyAsValidButNonPreferred(t *testing.T) {
+	var output strings.Builder
+
+	writeCUR2CandidateSelectionFacts(&output, cur2Candidate{Granularity: "HOURLY"}, "  ", false)
+
+	text := output.String()
+	for _, want := range []string{
+		"hourly is valid AWS CUR 2.0",
+		"monthly is preferred",
+		"Full readiness checks run after selection.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("selection facts = %q, want %q", text, want)
+		}
+	}
+	assertGuidedOutputSafe(t, text)
+}
+
+func TestWriteCUR2CandidateSelectionFactsExplainsBlockedMetadata(t *testing.T) {
+	tests := []struct {
+		name      string
+		candidate cur2Candidate
+		want      string
+	}{
+		{
+			name: "unhealthy",
+			candidate: cur2Candidate{
+				Health:      "UNHEALTHY",
+				Output:      "TEXT_OR_CSV",
+				Compression: "GZIP",
+				Granularity: "MONTHLY",
+				Overwrite:   "CREATE_NEW_REPORT",
+				Destination: "us-east-1",
+			},
+			want: "Blocker: AWS reports this export as unhealthy.",
+		},
+		{
+			name: "unsupported health",
+			candidate: cur2Candidate{
+				Health:         "WARNING",
+				Output:         "TEXT_OR_CSV",
+				Compression:    "GZIP",
+				Granularity:    "MONTHLY",
+				Overwrite:      "CREATE_NEW_REPORT",
+				OutputType:     "CUSTOM",
+				RefreshCadence: "SYNCHRONOUS",
+				Destination:    "us-east-1",
+			},
+			want: "Blocker: pre-selection metadata has unsupported settings: health status WARNING.",
+		},
+		{
+			name: "missing health",
+			candidate: cur2Candidate{
+				Output:         "TEXT_OR_CSV",
+				Compression:    "GZIP",
+				Granularity:    "MONTHLY",
+				Overwrite:      "CREATE_NEW_REPORT",
+				OutputType:     "CUSTOM",
+				RefreshCadence: "SYNCHRONOUS",
+				Destination:    "us-east-1",
+			},
+			want: "Blocker: pre-selection metadata is incomplete: missing health status.",
+		},
+		{
+			name: "missing setting",
+			candidate: cur2Candidate{
+				Health:         "HEALTHY",
+				Output:         "TEXT_OR_CSV",
+				Compression:    "GZIP",
+				Granularity:    "MONTHLY",
+				OutputType:     "CUSTOM",
+				RefreshCadence: "SYNCHRONOUS",
+				Destination:    "us-east-1",
+			},
+			want: "Blocker: pre-selection metadata is incomplete: missing file versioning.",
+		},
+		{
+			name: "missing destination",
+			candidate: cur2Candidate{
+				Health:         "HEALTHY",
+				Output:         "TEXT_OR_CSV",
+				Compression:    "GZIP",
+				Granularity:    "MONTHLY",
+				Overwrite:      "CREATE_NEW_REPORT",
+				OutputType:     "CUSTOM",
+				RefreshCadence: "SYNCHRONOUS",
+			},
+			want: "Blocker: pre-selection metadata is incomplete: missing destination region.",
+		},
+		{
+			name: "unsupported settings",
+			candidate: cur2Candidate{
+				Health:         "HEALTHY",
+				Output:         "TEXT_OR_CSV",
+				Compression:    "ZIP",
+				Granularity:    "MONTHLY",
+				Overwrite:      "CREATE_NEW_REPORT",
+				OutputType:     "CUSTOM",
+				RefreshCadence: "SYNCHRONOUS",
+				Destination:    "us-east-1",
+			},
+			want: "Blocker: pre-selection metadata has unsupported settings: output/compression TEXT_OR_CSV/ZIP.",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var output strings.Builder
+
+			writeCUR2CandidateSelectionFacts(&output, tt.candidate, "  ", false)
+
+			text := output.String()
+			if !strings.Contains(text, tt.want) {
+				t.Fatalf("selection facts = %q, want %q", text, tt.want)
+			}
+			if !strings.Contains(text, "Full readiness checks run after selection.") {
+				t.Fatalf("selection facts = %q, want deferred readiness note", text)
+			}
+			assertGuidedOutputSafe(t, text)
+		})
+	}
+}
+
+func TestRunSelectedCUR2PreflightFailsClosedForUnsafeSelectors(t *testing.T) {
+	registry := testRegistry(t, workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+		t.Fatal("registry should not run for unsafe selectors")
+		return workflow.CapabilityReport{}
+	}))
+
+	unsafeSource := runSelectedCUR2Preflight(context.Background(), registry, billingguide.CredentialSource{
+		Kind:    billingguide.CredentialSourceProfile,
+		Profile: "../default",
+		Region:  "us-east-1",
+	}, "cur2-aaaaaaaaaaaaaaaa")
+	if unsafeSource.Code != "aws_config_invalid_selector" {
+		t.Fatalf("unsafe source code = %q, want aws_config_invalid_selector", unsafeSource.Code)
+	}
+
+	unsafeRef := runSelectedCUR2Preflight(context.Background(), registry, billingguide.CredentialSource{
+		Kind:    billingguide.CredentialSourceProfile,
+		Profile: "default",
+		Region:  "us-east-1",
+	}, "bad-ref")
+	if unsafeRef.Code != "aws_cur2_export_ref_invalid" {
+		t.Fatalf("unsafe ref code = %q, want aws_cur2_export_ref_invalid", unsafeRef.Code)
 	}
 }
 
@@ -1000,8 +1709,10 @@ func TestPlanCheckCodePrefersSemanticIDAndFallsBackToLegacyEvidence(t *testing.T
 	}
 }
 
-func TestRunAWSBillingShowsRepairableCUR2CandidatesWhenNoneReady(t *testing.T) {
+func TestRunAWSBillingRunsSelectedPreflightAndShowsRepairableResult(t *testing.T) {
+	calls := []workflow.ExecutionOptions{}
 	registry := testRegistry(t, workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+		calls = append(calls, options)
 		exportRef := ""
 		if options.Selectors != nil && options.Selectors.AWS != nil {
 			exportRef = options.Selectors.AWS.CUR2ExportRef
@@ -1013,10 +1724,12 @@ func TestRunAWSBillingShowsRepairableCUR2CandidatesWhenNoneReady(t *testing.T) {
 				{Key: "candidate_1_output_format", Value: "TEXT_OR_CSV"},
 				{Key: "candidate_1_compression", Value: "GZIP"},
 				{Key: "candidate_1_time_granularity", Value: "MONTHLY"},
+				{Key: "candidate_1_overwrite", Value: "CREATE_NEW_REPORT"},
 				{Key: "candidate_2_export_ref", Value: "cur2-dddddddddddddddd"},
 				{Key: "candidate_2_output_format", Value: "PARQUET"},
 				{Key: "candidate_2_compression", Value: "PARQUET"},
 				{Key: "candidate_2_time_granularity", Value: "DAILY"},
+				{Key: "candidate_2_overwrite", Value: "OVERWRITE_REPORT"},
 			})
 		case "cur2-cccccccccccccccc":
 			return guidedCapabilityReport(got, workflow.RunStatusBlocked, "aws_s3_delivery_policy_missing", []workflow.PlanEvidence{
@@ -1042,20 +1755,21 @@ func TestRunAWSBillingShowsRepairableCUR2CandidatesWhenNoneReady(t *testing.T) {
 		},
 	}
 
-	output, err := runGuidedWithConfig("1\n1\ny\n", Config{Registry: registry, AWSBilling: guide})
+	output, err := runGuidedWithConfig("1\n1\ny\n1\n", Config{Registry: registry, AWSBilling: guide})
 
 	if err != nil {
 		t.Fatalf("RunWithConfig returned error: %v", err)
 	}
-	if strings.Contains(output, "Select AWS CUR 2.0 export") {
-		t.Fatalf("output prompted even though no candidate was selectable: %s", output)
+	if len(calls) != 2 {
+		t.Fatalf("preflight calls = %d, want initial discovery plus selected export preflight", len(calls))
 	}
-	if strings.Contains(output, "No selectable CUR 2.0 export candidate was found.") {
-		t.Fatalf("output used ambiguous no-selectable wording for repairable candidates: %s", output)
+	if calls[1].Selectors.AWS.CUR2ExportRef != "cur2-cccccccccccccccc" {
+		t.Fatalf("selected preflight ref = %q, want chosen candidate ref", calls[1].Selectors.AWS.CUR2ExportRef)
 	}
 	for _, want := range []string{
-		"No AWS CUR 2.0 export is ready yet.",
-		"Repairable CUR 2.0 export candidates",
+		"Select AWS CUR 2.0 export",
+		"Full readiness checks run after selection.",
+		"Running readiness preflight for selected CUR 2.0 export cur2-cccccccccccccccc",
 		"cur2-cccccccccccccccc",
 		"Readiness: repair required",
 		"Support code: aws_s3_delivery_policy_missing",
@@ -1064,12 +1778,6 @@ func TestRunAWSBillingShowsRepairableCUR2CandidatesWhenNoneReady(t *testing.T) {
 		"Previous month: 2026-06 missing data partition, manifest",
 		"Blocker: S3 delivery policy does not satisfy the expected aws:SourceAccount condition.",
 		"Next action: update the S3 delivery policy to include the expected aws:SourceAccount condition, then rerun preflight.",
-		"Other CUR 2.0 candidates",
-		"cur2-dddddddddddddddd",
-		"Readiness: not ready",
-		"Support code: aws_data_exports_transient",
-		"Export: PARQUET / PARQUET, DAILY",
-		"Next action: retry preflight after the transient AWS Data Exports issue clears.",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("output = %q, want to contain %q", output, want)
@@ -1080,6 +1788,9 @@ func TestRunAWSBillingShowsRepairableCUR2CandidatesWhenNoneReady(t *testing.T) {
 	}
 	if strings.Contains(output, "data_partition") {
 		t.Fatalf("output exposed raw previous-month component enum: %s", output)
+	}
+	if strings.Contains(output, "Other CUR 2.0 candidates") {
+		t.Fatalf("output used old pre-selection repairable/other grouping: %s", output)
 	}
 	assertGuidedOutputSafe(t, output)
 }
@@ -1148,6 +1859,30 @@ func TestNonReadyCUR2NextActionExplainsOutputSettingsWithoutOverwriteFact(t *tes
 	const want = "review the CUR 2.0 output settings and rerun after they match a Matilda-supported AWS-standard shape."
 	if got != want {
 		t.Fatalf("nonReadyCUR2NextAction() = %q, want %q", got, want)
+	}
+	assertGuidedOutputSafe(t, got)
+}
+
+func TestNonReadyCUR2NextActionExplainsDataExportsThrottlingAsRetryable(t *testing.T) {
+	item := classifiedCUR2Candidate{
+		Candidate: cur2Candidate{Ref: "cur2-fqqqqqqqqqqqqqqq"},
+		Result:    workflow.Result{Status: workflow.RunStatusBlocked, Code: "aws_data_exports_throttled"},
+	}
+
+	got := nonReadyCUR2NextAction(item)
+
+	const want = "AWS throttled the Data Exports read-only check. Wait briefly, then rerun preflight."
+	if got != want {
+		t.Fatalf("nonReadyCUR2NextAction() = %q, want %q", got, want)
+	}
+	for _, forbidden := range []string{
+		"remediation",
+		"invalid",
+		"not a CUR",
+	} {
+		if strings.Contains(strings.ToLower(got), forbidden) {
+			t.Fatalf("nonReadyCUR2NextAction() = %q, want no %q", got, forbidden)
+		}
 	}
 	assertGuidedOutputSafe(t, got)
 }

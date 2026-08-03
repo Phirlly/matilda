@@ -180,6 +180,13 @@ func TestPreflightClassifiesAdditionalQueryAndShapeFailures(t *testing.T) {
 			code: "aws_cur2_export_invalid_shape",
 		},
 		{
+			name: "unknown export health fails closed without calling it unhealthy",
+			mutate: func(client *fakeClient) {
+				client.export.HealthStatus = "WARNING"
+			},
+			code: "aws_cur2_export_health_unverified",
+		},
+		{
 			name: "missing export health fails closed",
 			mutate: func(client *fakeClient) {
 				client.export.HealthStatus = ""
@@ -196,6 +203,12 @@ func TestPreflightClassifiesAdditionalQueryAndShapeFailures(t *testing.T) {
 			result := runPreflight(t, client)
 
 			assertBlockedCode(t, result, tt.code)
+			if tt.name == "unknown export health fails closed without calling it unhealthy" {
+				if strings.Contains(result.Message, "unhealthy") {
+					t.Fatalf("message = %q, want unknown health not described as unhealthy", result.Message)
+				}
+				assertCheckEvidence(t, result, "export_health", "WARNING")
+			}
 			assertNoUnsafeAWSOutput(t, result)
 		})
 	}
