@@ -43,10 +43,16 @@ func TestPreflightReadyUsesCUR2AndSafeEvidence(t *testing.T) {
 	assertCheckEvidence(t, result, "caller_account", "account-ending-9012")
 	assertCheckEvidence(t, result, "caller_ref", "sha256:")
 	assertCheckEvidence(t, result, "cur_version", "CUR2.0")
+	assertCheckEvidence(t, result, "s3_bucket", "matilda-cur2-billing")
+	assertCheckEvidence(t, result, "s3_prefix", "matilda/cur2")
+	assertCheckEvidence(t, result, "s3_region", "us-east-1")
 	assertCheckEvidence(t, result, "previous_billing_period", "2026-06")
+	assertCheckEvidence(t, result, "cur2_data_prefix", "matilda/cur2/matilda-cur2/data/BILLING_PERIOD=2026-06/")
+	assertCheckEvidence(t, result, "cur2_manifest_prefix", "matilda/cur2/matilda-cur2/metadata/BILLING_PERIOD=2026-06/")
 	assertPlanCheckID(t, result, "aws_s3_delivery_policy_ready")
 	assertSourceHandle(t, result, "docs/references/aws/aws-sdk-go-v2-readonly-adapter.md")
 	assertSourceHandle(t, result, "docs/references/aws/aws-cur2-export-selection-guided-ux.md")
+	assertSourceHandle(t, result, "docs/references/aws/aws-rapid-assessment-billing-handoff-schema.md")
 
 	for _, call := range []string{
 		"CheckConfiguration",
@@ -629,12 +635,24 @@ func TestSafeEvidenceValueRejectsSensitiveIdentifierShapesWithoutOverblocking(t 
 			value: "123456789012",
 		},
 		{
+			name:  "embedded account id",
+			value: "cur2123456789012billing",
+		},
+		{
 			name:  "access key id shape",
 			value: "AKIAIOSFODNN7EXAMPLE",
 		},
 		{
+			name:  "embedded access key id shape",
+			value: "prefix-AKIAIOSFODNN7EXAMPLE-safe",
+		},
+		{
 			name:  "temporary access key id shape",
 			value: "ASIAIOSFODNN7EXAMPLE",
+		},
+		{
+			name:  "embedded temporary access key id shape",
+			value: "prefix-ASIAIOSFODNN7EXAMPLE-safe",
 		},
 		{
 			name:  "non account id numeric-looking metadata",
@@ -2536,9 +2554,6 @@ func assertNoUnsafeAWSOutput(t *testing.T, result workflow.Result) {
 	for _, forbidden := range []string{
 		"arn:aws",
 		"/Users/",
-		"matilda-cur2-billing",
-		"matilda/cur2/matilda-cur2/data/BILLING_PERIOD=2026-06/",
-		"matilda/cur2/matilda-cur2/metadata/BILLING_PERIOD=2026-06/",
 		"matilda/cur2/matilda-cur2/data/BILLING_PERIOD=2026-06/part-000.gz",
 		"matilda/cur2/matilda-cur2/metadata/BILLING_PERIOD=2026-06/Manifest.json",
 		"AKIA",

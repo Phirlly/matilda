@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/cloud/aws/billingguide"
+	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/cloud/aws/s3handoff"
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/workflow"
 )
 
@@ -565,6 +566,9 @@ func writeCUR2CandidateFactLinesWithOptions(stdout io.Writer, item classifiedCUR
 	if facts.PreviousBillingPeriod != "" && len(facts.MissingPreviousMonth) > 0 {
 		fmt.Fprintf(stdout, "%sPrevious month: %s missing %s\n", indent, facts.PreviousBillingPeriod, strings.Join(facts.MissingPreviousMonth, ", "))
 	}
+	if shouldRenderCUR2HandoffLocationFacts(item) {
+		writeCUR2HandoffLocationFacts(stdout, facts, indent)
+	}
 	if facts.Blocker != "" {
 		fmt.Fprintf(stdout, "%sBlocker: %s\n", indent, facts.Blocker)
 	}
@@ -600,7 +604,7 @@ func resultHasCUR2PlanFacts(result workflow.Result) bool {
 		}
 		for _, evidence := range check.Evidence {
 			switch evidence.Key {
-			case "output_format", "compression", "time_granularity", "overwrite", "previous_billing_period", "missing_previous_month_component", "policy_gap":
+			case "output_format", "compression", "time_granularity", "overwrite", "previous_billing_period", "missing_previous_month_component", "s3_bucket", "s3_prefix", "s3_region", "cur2_data_prefix", "cur2_manifest_prefix", "policy_gap":
 				return true
 			}
 		}
@@ -625,6 +629,14 @@ func summaryCUR2ReadinessAndNextAction(item classifiedCUR2Candidate) (string, st
 	return "not ready", nonReadyCUR2NextAction(item)
 }
 
+func shouldRenderCUR2HandoffLocationFacts(item classifiedCUR2Candidate) bool {
+	if item.Result.Status == workflow.StatusReady {
+		return true
+	}
+	return item.Result.Status == workflow.RunStatusManualSteps &&
+		item.Result.Code == "aws_backfill_manual_step_required"
+}
+
 type cur2CandidateFacts struct {
 	Format                string
 	Compression           string
@@ -635,6 +647,12 @@ type cur2CandidateFacts struct {
 	PreviousMonthStatus   string
 	PreviousBillingPeriod string
 	MissingPreviousMonth  []string
+	S3Bucket              string
+	S3Prefix              string
+	S3Region              string
+	DataPrefix            string
+	ManifestPrefix        string
+	UnsafeHandoffEvidence bool
 	PolicyGap             string
 	Blocker               string
 }
@@ -652,6 +670,43 @@ func cur2CandidateFactsFromResult(item classifiedCUR2Candidate) cur2CandidateFac
 		checkCode := planCheckCode(check)
 		facts.observeCheck(check, checkCode)
 		for _, evidence := range check.Evidence {
+			switch evidence.Key {
+			case "s3_bucket":
+				if value := s3handoff.Bucket(evidence.Value); value != "" {
+					facts.S3Bucket = value
+				} else if strings.TrimSpace(evidence.Value) != "" {
+					facts.UnsafeHandoffEvidence = true
+				}
+				continue
+			case "s3_prefix":
+				if value := s3handoff.ConfiguredPrefix(evidence.Value); value != "" {
+					facts.S3Prefix = value
+				} else if strings.TrimSpace(evidence.Value) != "" {
+					facts.UnsafeHandoffEvidence = true
+				}
+				continue
+			case "s3_region":
+				if value := s3handoff.Region(evidence.Value); value != "" {
+					facts.S3Region = value
+				} else if strings.TrimSpace(evidence.Value) != "" {
+					facts.UnsafeHandoffEvidence = true
+				}
+				continue
+			case "cur2_data_prefix":
+				if value := s3handoff.ReportPrefix(evidence.Value); value != "" {
+					facts.DataPrefix = value
+				} else if strings.TrimSpace(evidence.Value) != "" {
+					facts.UnsafeHandoffEvidence = true
+				}
+				continue
+			case "cur2_manifest_prefix":
+				if value := s3handoff.ReportPrefix(evidence.Value); value != "" {
+					facts.ManifestPrefix = value
+				} else if strings.TrimSpace(evidence.Value) != "" {
+					facts.UnsafeHandoffEvidence = true
+				}
+				continue
+			}
 			value := safeCandidateLabelValue(evidence.Value)
 			if value == "" {
 				continue
@@ -929,40 +984,11 @@ func safeCandidateLabelValue(value string) string {
 			return ""
 		}
 	}
-	if sensitiveCandidateIdentifierLikeValue(value) {
+	if s3handoff.SensitiveIdentifierLike(value) {
 		return ""
 	}
 	if strings.ContainsAny(value, `/\`) {
 		return ""
 	}
 	return value
-}
-
-func sensitiveCandidateIdentifierLikeValue(value string) bool {
-	value = strings.TrimSpace(value)
-	if len(value) == 12 && allDigits(value) {
-		return true
-	}
-	upper := strings.ToUpper(value)
-	return len(upper) == 20 &&
-		(strings.HasPrefix(upper, "AKIA") || strings.HasPrefix(upper, "ASIA")) &&
-		allUpperAlphaNumeric(upper)
-}
-
-func allDigits(value string) bool {
-	for _, r := range value {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return value != ""
-}
-
-func allUpperAlphaNumeric(value string) bool {
-	for _, r := range value {
-		if (r < '0' || r > '9') && (r < 'A' || r > 'Z') {
-			return false
-		}
-	}
-	return value != ""
 }
