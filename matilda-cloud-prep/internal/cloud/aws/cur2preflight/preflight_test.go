@@ -2029,7 +2029,7 @@ func TestPreflightClassifiesDeliveryStatus(t *testing.T) {
 		{
 			name: "AWS delivery success passes",
 			mutate: func(client *fakeClient) {
-				client.executionPages = []ExecutionPage{{Executions: []Execution{{ID: "execution-1"}}}}
+				client.executionPages = []ExecutionPage{{Executions: []Execution{{ID: "execution-1", StatusObservedAt: fixedNow().Add(-1 * time.Hour)}}}}
 				client.execution = Execution{ID: "execution-1", Status: "DELIVERY_SUCCESS", StatusObservedAt: fixedNow().Add(-1 * time.Hour)}
 			},
 			code:       "aws_cur2_preflight_ready",
@@ -2038,7 +2038,7 @@ func TestPreflightClassifiesDeliveryStatus(t *testing.T) {
 		{
 			name: "AWS delivery in progress warns",
 			mutate: func(client *fakeClient) {
-				client.executionPages = []ExecutionPage{{Executions: []Execution{{ID: "execution-1"}}}}
+				client.executionPages = []ExecutionPage{{Executions: []Execution{{ID: "execution-1", StatusObservedAt: fixedNow().Add(-1 * time.Hour)}}}}
 				client.execution = Execution{ID: "execution-1", Status: "DELIVERY_IN_PROCESS"}
 			},
 			code:       "aws_cur2_delivery_not_started",
@@ -2047,7 +2047,7 @@ func TestPreflightClassifiesDeliveryStatus(t *testing.T) {
 		{
 			name: "AWS delivery failure blocks",
 			mutate: func(client *fakeClient) {
-				client.executionPages = []ExecutionPage{{Executions: []Execution{{ID: "execution-1"}}}}
+				client.executionPages = []ExecutionPage{{Executions: []Execution{{ID: "execution-1", StatusObservedAt: fixedNow().Add(-1 * time.Hour)}}}}
 				client.execution = Execution{ID: "execution-1", Status: "DELIVERY_FAILURE"}
 			},
 			code:       "aws_cur2_export_invalid_shape",
@@ -2056,7 +2056,7 @@ func TestPreflightClassifiesDeliveryStatus(t *testing.T) {
 		{
 			name: "unverified success-like status warns",
 			mutate: func(client *fakeClient) {
-				client.executionPages = []ExecutionPage{{Executions: []Execution{{ID: "execution-1"}}}}
+				client.executionPages = []ExecutionPage{{Executions: []Execution{{ID: "execution-1", StatusObservedAt: fixedNow().Add(-1 * time.Hour)}}}}
 				client.execution = Execution{ID: "execution-1", Status: "SUCCEEDED"}
 			},
 			code:       "aws_cur2_delivery_not_started",
@@ -2092,9 +2092,167 @@ func TestPreflightClassifiesDeliveryStatus(t *testing.T) {
 			if result.Code != tt.code {
 				t.Fatalf("Code = %q, want %q", result.Code, tt.code)
 			}
+			if tt.name == "new export with no executions warns" && client.calls["GetExecution"] != 0 {
+				t.Fatalf("GetExecution calls = %d, want 0 when no executions are listed", client.calls["GetExecution"])
+			}
 			assertNoUnsafeAWSOutput(t, result)
 		})
 	}
+}
+
+func TestPreflightInspectsOnlyLatestExecutionDetail(t *testing.T) {
+	client := baselineClient()
+	client.executionPages = []ExecutionPage{{Executions: []Execution{
+		{ID: "older", StatusObservedAt: fixedNow().Add(-4 * time.Hour)},
+		{ID: "newer", StatusObservedAt: fixedNow().Add(-1 * time.Hour)},
+		{ID: "middle", StatusObservedAt: fixedNow().Add(-2 * time.Hour)},
+	}}}
+	client.executionsByID = map[string]Execution{
+		"older":  {ID: "older", Status: "DELIVERY_SUCCESS", StatusObservedAt: fixedNow().Add(-4 * time.Hour)},
+		"middle": {ID: "middle", Status: "DELIVERY_SUCCESS", StatusObservedAt: fixedNow().Add(-2 * time.Hour)},
+		"newer":  {ID: "newer", Status: "DELIVERY_SUCCESS", StatusObservedAt: fixedNow().Add(-1 * time.Hour)},
+	}
+
+	result := runPreflight(t, client)
+
+	if result.Status != workflow.StatusReady {
+		t.Fatalf("Status = %q, want %q; code=%q", result.Status, workflow.StatusReady, result.Code)
+	}
+	if client.calls["GetExecution"] != 1 {
+		t.Fatalf("GetExecution calls = %d, want 1 for latest execution detail only", client.calls["GetExecution"])
+	}
+	if got := client.getExecutionIDs; !reflect.DeepEqual(got, []string{"newer"}) {
+		t.Fatalf("GetExecution IDs = %#v, want only latest execution", got)
+	}
+	assertNoUnsafeAWSOutput(t, result)
+}
+
+func TestPreflightDoesNotFailWhenOlderExecutionDetailIsThrottled(t *testing.T) {
+	client := baselineClient()
+	client.executionPages = []ExecutionPage{{Executions: []Execution{
+		{ID: "older", StatusObservedAt: fixedNow().Add(-3 * time.Hour)},
+		{ID: "newer", StatusObservedAt: fixedNow().Add(-30 * time.Minute)},
+	}}}
+	client.executionsByID = map[string]Execution{
+		"newer": {ID: "newer", Status: "DELIVERY_SUCCESS", StatusObservedAt: fixedNow().Add(-30 * time.Minute)},
+	}
+	client.getExecutionErrsByID = map[string]error{
+		"older": NewProviderError("aws_data_exports_throttled", "older execution detail throttled."),
+	}
+
+	result := runPreflight(t, client)
+
+	if result.Status != workflow.StatusReady {
+		t.Fatalf("Status = %q, want %q; code=%q", result.Status, workflow.StatusReady, result.Code)
+	}
+	if result.Code != "aws_cur2_preflight_ready" {
+		t.Fatalf("Code = %q, want aws_cur2_preflight_ready", result.Code)
+	}
+	if client.calls["GetExecution"] != 1 {
+		t.Fatalf("GetExecution calls = %d, want 1 for latest execution detail only", client.calls["GetExecution"])
+	}
+	if got := client.getExecutionIDs; !reflect.DeepEqual(got, []string{"newer"}) {
+		t.Fatalf("GetExecution IDs = %#v, want only latest execution", got)
+	}
+	assertNoUnsafeAWSOutput(t, result)
+}
+
+func TestPreflightLatestExecutionDetailThrottlingIsRetryable(t *testing.T) {
+	client := baselineClient()
+	client.executionPages = []ExecutionPage{{Executions: []Execution{
+		{ID: "older", StatusObservedAt: fixedNow().Add(-3 * time.Hour)},
+		{ID: "newer", StatusObservedAt: fixedNow().Add(-30 * time.Minute)},
+	}}}
+	client.getExecutionErrsByID = map[string]error{
+		"newer": NewProviderError("aws_data_exports_throttled", "latest execution detail throttled."),
+	}
+
+	result := runPreflight(t, client)
+
+	assertBlockedCode(t, result, "aws_data_exports_throttled")
+	if client.calls["GetExecution"] != 1 {
+		t.Fatalf("GetExecution calls = %d, want 1 for latest execution detail only", client.calls["GetExecution"])
+	}
+	if got := client.getExecutionIDs; !reflect.DeepEqual(got, []string{"newer"}) {
+		t.Fatalf("GetExecution IDs = %#v, want only latest execution", got)
+	}
+	for _, want := range []string{
+		"AWS Data Exports throttled a read-only preflight check.",
+		"Wait briefly, then rerun preflight.",
+	} {
+		if !strings.Contains(result.Message, want) {
+			t.Fatalf("message = %q, want %q", result.Message, want)
+		}
+	}
+	assertNoUnsafeAWSOutput(t, result)
+}
+
+func TestPreflightDeliveryStatusIsInconclusiveWhenExecutionTimestampsAreMissing(t *testing.T) {
+	client := baselineClient()
+	client.executionPages = []ExecutionPage{{Executions: []Execution{
+		{ID: "first"},
+		{ID: "second"},
+	}}}
+
+	result := runPreflight(t, client)
+
+	if result.Status != workflow.StatusReady {
+		t.Fatalf("Status = %q, want %q; code=%q", result.Status, workflow.StatusReady, result.Code)
+	}
+	if result.Code != "aws_cur2_delivery_not_started" {
+		t.Fatalf("Code = %q, want aws_cur2_delivery_not_started", result.Code)
+	}
+	if client.calls["GetExecution"] != 0 {
+		t.Fatalf("GetExecution calls = %d, want 0 when latest cannot be proven by timestamps", client.calls["GetExecution"])
+	}
+	assertNoUnsafeAWSOutput(t, result)
+}
+
+func TestPreflightDeliveryStatusIsInconclusiveWhenAnyExecutionTimestampIsMissing(t *testing.T) {
+	client := baselineClient()
+	client.executionPages = []ExecutionPage{{Executions: []Execution{
+		{ID: "untimestamped"},
+		{ID: "timestamped", StatusObservedAt: fixedNow().Add(-30 * time.Minute)},
+	}}}
+	client.executionsByID = map[string]Execution{
+		"timestamped": {ID: "timestamped", Status: "DELIVERY_SUCCESS", StatusObservedAt: fixedNow().Add(-30 * time.Minute)},
+	}
+
+	result := runPreflight(t, client)
+
+	if result.Status != workflow.StatusReady {
+		t.Fatalf("Status = %q, want %q; code=%q", result.Status, workflow.StatusReady, result.Code)
+	}
+	if result.Code != "aws_cur2_delivery_not_started" {
+		t.Fatalf("Code = %q, want aws_cur2_delivery_not_started", result.Code)
+	}
+	if client.calls["GetExecution"] != 0 {
+		t.Fatalf("GetExecution calls = %d, want 0 when any execution timestamp is missing", client.calls["GetExecution"])
+	}
+	assertNoUnsafeAWSOutput(t, result)
+}
+
+func TestPreflightDeliveryStatusIsInconclusiveWhenLatestExecutionTimestampTies(t *testing.T) {
+	client := baselineClient()
+	tiedObservedAt := fixedNow().Add(-30 * time.Minute)
+	client.executionPages = []ExecutionPage{{Executions: []Execution{
+		{ID: "older", StatusObservedAt: fixedNow().Add(-3 * time.Hour)},
+		{ID: "first-tied", StatusObservedAt: tiedObservedAt},
+		{ID: "second-tied", StatusObservedAt: tiedObservedAt},
+	}}}
+
+	result := runPreflight(t, client)
+
+	if result.Status != workflow.StatusReady {
+		t.Fatalf("Status = %q, want %q; code=%q", result.Status, workflow.StatusReady, result.Code)
+	}
+	if result.Code != "aws_cur2_delivery_not_started" {
+		t.Fatalf("Code = %q, want aws_cur2_delivery_not_started", result.Code)
+	}
+	if client.calls["GetExecution"] != 0 {
+		t.Fatalf("GetExecution calls = %d, want 0 when latest execution timestamp is ambiguous", client.calls["GetExecution"])
+	}
+	assertNoUnsafeAWSOutput(t, result)
 }
 
 func TestPreflightChoosesLatestExecutionByStatusObservationTime(t *testing.T) {
@@ -2494,6 +2652,8 @@ type fakeClient struct {
 	executionsByID       map[string]Execution
 	executionErr         error
 	getExecutionErr      error
+	getExecutionErrsByID map[string]error
+	getExecutionIDs      []string
 	objectPages          []ObjectPage
 	objectRequests       []objectListRequest
 	objectErr            error
@@ -2589,6 +2749,12 @@ func (f *fakeClient) ListExecutions(_ context.Context, exportARN string, token s
 
 func (f *fakeClient) GetExecution(_ context.Context, exportARN string, executionID string) (Execution, error) {
 	f.record("GetExecution")
+	f.getExecutionIDs = append(f.getExecutionIDs, executionID)
+	if f.getExecutionErrsByID != nil {
+		if err := f.getExecutionErrsByID[executionID]; err != nil {
+			return Execution{}, err
+		}
+	}
 	if f.getExecutionErr != nil {
 		return Execution{}, f.getExecutionErr
 	}
