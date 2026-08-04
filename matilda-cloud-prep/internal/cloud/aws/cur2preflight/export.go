@@ -3,6 +3,7 @@ package cur2preflight
 import (
 	"strings"
 
+	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/cloud/aws/s3handoff"
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/workflow"
 )
 
@@ -215,6 +216,8 @@ func validateDestination(destination S3Destination) []checkFinding {
 		return findings
 	}
 
-	findings = append(findings, passFinding("aws_cur2_s3_destination_ready", "CUR 2.0 S3 destination", "CUR 2.0 export has S3 bucket, prefix, and region configured."))
+	findings = append(findings, withEvidence(passFinding("aws_cur2_s3_destination_ready", "CUR 2.0 S3 destination", "CUR 2.0 export has S3 bucket, prefix, and region configured."),
+		s3handoff.DestinationEvidence(destination.Bucket, destination.Prefix, destination.Region)...,
+	))
 	return findings
 }

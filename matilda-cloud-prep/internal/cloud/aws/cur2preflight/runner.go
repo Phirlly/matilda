@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/assessment"
+	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/cloud/aws/s3handoff"
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/workflow"
 )
 
@@ -634,42 +635,13 @@ func safeEvidenceValue(value string) string {
 			return ""
 		}
 	}
-	if sensitiveEvidenceIdentifierLikeValue(value) {
+	if s3handoff.SensitiveIdentifierLike(value) {
 		return ""
 	}
 	if strings.ContainsAny(value, `/\`) {
 		return ""
 	}
 	return value
-}
-
-func sensitiveEvidenceIdentifierLikeValue(value string) bool {
-	value = strings.TrimSpace(value)
-	if len(value) == 12 && allDigits(value) {
-		return true
-	}
-	upper := strings.ToUpper(value)
-	return len(upper) == 20 &&
-		(strings.HasPrefix(upper, "AKIA") || strings.HasPrefix(upper, "ASIA")) &&
-		allUpperAlphaNumeric(upper)
-}
-
-func allDigits(value string) bool {
-	for _, r := range value {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return value != ""
-}
-
-func allUpperAlphaNumeric(value string) bool {
-	for _, r := range value {
-		if (r < '0' || r > '9') && (r < 'A' || r > 'Z') {
-			return false
-		}
-	}
-	return value != ""
 }
 
 func hasCUR2TableConfiguration(export Export) bool {
@@ -829,11 +801,11 @@ func (runner Runner) previousMonthFinding(ctx context.Context, client Client, ex
 	}
 	if dataFound && manifestFound {
 		return withEvidence(passFinding("aws_cur2_previous_month_ready", "AWS previous-month billing data", "Previous-month CUR 2.0 billing partition and manifest are present."),
-			workflow.PlanEvidence{Key: "previous_billing_period", Value: period},
+			s3handoff.PreviousMonthEvidence(period, dataPrefix, manifestPrefix)...,
 		)
 	}
 
-	evidence := []workflow.PlanEvidence{{Key: "previous_billing_period", Value: period}}
+	evidence := s3handoff.PreviousMonthEvidence(period, dataPrefix, manifestPrefix)
 	if !dataFound {
 		evidence = append(evidence, workflow.PlanEvidence{Key: "missing_previous_month_component", Value: "data_partition"})
 	}
@@ -974,6 +946,10 @@ func sourceHandles() []workflow.SourceHandle {
 		{
 			Label: "AWS CUR 2.0 Guided Selection UX",
 			URI:   "docs/references/aws/aws-cur2-export-selection-guided-ux.md",
+		},
+		{
+			Label: "AWS Rapid Assessment Billing Handoff Schema",
+			URI:   "docs/references/aws/aws-rapid-assessment-billing-handoff-schema.md",
 		},
 	}
 }

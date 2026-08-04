@@ -1038,9 +1038,9 @@ func assertGuidedOutputSafe(t *testing.T, output string) {
 	for _, forbidden := range []string{
 		"arn:aws",
 		"123456789012",
-		"matilda-cur2-billing",
 		"matilda/cur2/private-prefix",
 		"BILLING_PERIOD=2026-06/part-000.gz",
+		"Manifest.json",
 		"AKIA",
 		"access_key",
 		"secret_key",

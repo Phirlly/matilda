@@ -1211,6 +1211,253 @@ func TestWriteSelectableCUR2CandidateShowsOverwriteAsReady(t *testing.T) {
 	assertGuidedOutputSafe(t, text)
 }
 
+func TestWriteSelectableCUR2CandidateShowsSafeHandoffLocations(t *testing.T) {
+	item := classifiedCUR2Candidate{
+		Candidate: cur2Candidate{Ref: "cur2-frrrrrrrrrrrrrrr"},
+		Result: workflow.Result{
+			Status: workflow.StatusReady,
+			Code:   "aws_cur2_preflight_ready",
+			Plan: &workflow.ExecutionPlan{Checks: []workflow.PlanCheck{
+				cur2PlanCheck(workflow.CheckPass, "aws_cur2_output_format_ready",
+					workflow.PlanEvidence{Key: "output_format", Value: "TEXT_OR_CSV"}),
+				cur2PlanCheck(workflow.CheckPass, "aws_cur2_compression_ready",
+					workflow.PlanEvidence{Key: "compression", Value: "GZIP"}),
+				cur2PlanCheck(workflow.CheckPass, "aws_cur2_time_granularity_ready",
+					workflow.PlanEvidence{Key: "time_granularity", Value: "MONTHLY"}),
+				cur2PlanCheck(workflow.CheckPass, "aws_cur2_overwrite_ready",
+					workflow.PlanEvidence{Key: "overwrite", Value: "CREATE_NEW_REPORT"}),
+				cur2PlanCheck(workflow.CheckPass, "aws_cur2_s3_destination_ready",
+					workflow.PlanEvidence{Key: "s3_bucket", Value: "matilda-cur2-billing"},
+					workflow.PlanEvidence{Key: "s3_prefix", Value: "matilda/cur2"},
+					workflow.PlanEvidence{Key: "s3_region", Value: "us-east-1"}),
+				cur2PlanCheck(workflow.CheckPass, "aws_cur2_previous_month_ready",
+					workflow.PlanEvidence{Key: "previous_billing_period", Value: "2026-06"},
+					workflow.PlanEvidence{Key: "cur2_data_prefix", Value: "matilda/cur2/matilda-cur2/data/BILLING_PERIOD=2026-06/"},
+					workflow.PlanEvidence{Key: "cur2_manifest_prefix", Value: "matilda/cur2/matilda-cur2/metadata/BILLING_PERIOD=2026-06/"}),
+			}},
+		},
+	}
+	var output strings.Builder
+
+	writeSelectableCUR2Candidate(&output, item)
+
+	text := output.String()
+	for _, want := range []string{
+		"Report location: s3://matilda-cur2-billing/matilda/cur2",
+		"Billing data prefix: s3://matilda-cur2-billing/matilda/cur2/matilda-cur2/data/BILLING_PERIOD=2026-06/",
+		"Manifest prefix: s3://matilda-cur2-billing/matilda/cur2/matilda-cur2/metadata/BILLING_PERIOD=2026-06/",
+		"Destination region: us-east-1",
+		"Matilda next step: use an AWS cloud account with Skip Configuration, then create Rapid Assessment - Billing Based and provide the CUR 2.0 billing data from this S3 location.",
+		"Large data note: CSV and Parquet are supported; if direct upload size is too large, use Matilda's larger-file utility path after this tool completes.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("handoff output = %q, want %q", text, want)
+		}
+	}
+	assertGuidedOutputSafe(t, text)
+}
+
+func TestWriteSelectableCUR2CandidateShowsSafePrefixesWhenBucketWithheld(t *testing.T) {
+	item := classifiedCUR2Candidate{
+		Candidate: cur2Candidate{Ref: "cur2-fsafetyprefix"},
+		Result: workflow.Result{
+			Status: workflow.StatusReady,
+			Code:   "aws_cur2_preflight_ready",
+			Plan: &workflow.ExecutionPlan{Checks: []workflow.PlanCheck{
+				cur2PlanCheck(workflow.CheckPass, "aws_cur2_s3_destination_ready",
+					workflow.PlanEvidence{Key: "s3_prefix", Value: "matilda-rapid-cur2"},
+					workflow.PlanEvidence{Key: "s3_region", Value: "us-east-1"}),
+				cur2PlanCheck(workflow.CheckPass, "aws_cur2_previous_month_ready",
+					workflow.PlanEvidence{Key: "previous_billing_period", Value: "2026-07"},
+					workflow.PlanEvidence{Key: "cur2_data_prefix", Value: "matilda-rapid-cur2/matilda-rapid-cur2/data/BILLING_PERIOD=2026-07/"},
+					workflow.PlanEvidence{Key: "cur2_manifest_prefix", Value: "matilda-rapid-cur2/matilda-rapid-cur2/metadata/BILLING_PERIOD=2026-07/"}),
+			}},
+		},
+	}
+	var output strings.Builder
+
+	writeSelectableCUR2Candidate(&output, item)
+
+	text := output.String()
+	for _, want := range []string{
+		"S3 bucket: not shown because the bucket value may contain a sensitive identifier.",
+		"Configured report prefix: matilda-rapid-cur2",
+		"Billing data prefix: matilda-rapid-cur2/matilda-rapid-cur2/data/BILLING_PERIOD=2026-07/",
+		"Manifest prefix: matilda-rapid-cur2/matilda-rapid-cur2/metadata/BILLING_PERIOD=2026-07/",
+		"Destination region: us-east-1",
+		"Matilda next step: use an AWS cloud account with Skip Configuration, then create Rapid Assessment - Billing Based and provide the CUR 2.0 billing data from the selected export destination.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("handoff output = %q, want %q", text, want)
+		}
+	}
+	if strings.Contains(text, "s3://") {
+		t.Fatalf("handoff output built a full S3 URI without a safe bucket: %s", text)
+	}
+	assertGuidedOutputSafe(t, text)
+}
+
+func TestWriteSelectableCUR2CandidateSuppressesUnsafeHandoffLocationEvidence(t *testing.T) {
+	item := classifiedCUR2Candidate{
+		Candidate: cur2Candidate{Ref: "cur2-fsssssssssssssss"},
+		Result: workflow.Result{
+			Status: workflow.StatusReady,
+			Code:   "aws_cur2_preflight_ready",
+			Plan: &workflow.ExecutionPlan{Checks: []workflow.PlanCheck{
+				cur2PlanCheck(workflow.CheckPass, "aws_cur2_s3_destination_ready",
+					workflow.PlanEvidence{Key: "s3_bucket", Value: "token=plain-token"},
+					workflow.PlanEvidence{Key: "s3_prefix", Value: "matilda/cur2/private-prefix"},
+					workflow.PlanEvidence{Key: "s3_region", Value: "us-east-1"}),
+				cur2PlanCheck(workflow.CheckPass, "aws_cur2_previous_month_ready",
+					workflow.PlanEvidence{Key: "cur2_data_prefix", Value: "matilda/cur2/private-prefix/BILLING_PERIOD=2026-06/part-000.gz"},
+					workflow.PlanEvidence{Key: "cur2_manifest_prefix", Value: "matilda/cur2/private-prefix/metadata/BILLING_PERIOD=2026-06/Manifest.json"}),
+			}},
+		},
+	}
+	var output strings.Builder
+
+	writeSelectableCUR2Candidate(&output, item)
+
+	text := output.String()
+	for _, forbidden := range []string{
+		"Report location:",
+		"Billing data prefix:",
+		"Manifest prefix:",
+		"token=plain-token",
+		"matilda/cur2/private-prefix",
+		"part-000.gz",
+		"Manifest.json",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("handoff output leaked unsafe value %q: %s", forbidden, text)
+		}
+	}
+	assertGuidedOutputSafe(t, text)
+}
+
+func TestWriteSelectableCUR2CandidateShowsExpectedLocationForManualBackfill(t *testing.T) {
+	item := classifiedCUR2Candidate{
+		Candidate: cur2Candidate{Ref: "cur2-fttttttttttttttt"},
+		Result: workflow.Result{
+			Status: workflow.RunStatusManualSteps,
+			Code:   "aws_backfill_manual_step_required",
+			Plan: &workflow.ExecutionPlan{Checks: []workflow.PlanCheck{
+				cur2PlanCheck(workflow.CheckPass, "aws_cur2_s3_destination_ready",
+					workflow.PlanEvidence{Key: "s3_bucket", Value: "matilda-cur2-billing"},
+					workflow.PlanEvidence{Key: "s3_prefix", Value: "matilda/cur2"},
+					workflow.PlanEvidence{Key: "s3_region", Value: "us-east-1"}),
+				cur2PlanCheck(workflow.CheckWarn, "aws_backfill_manual_step_required",
+					workflow.PlanEvidence{Key: "previous_billing_period", Value: "2026-06"},
+					workflow.PlanEvidence{Key: "missing_previous_month_component", Value: "data_partition"},
+					workflow.PlanEvidence{Key: "missing_previous_month_component", Value: "manifest"},
+					workflow.PlanEvidence{Key: "cur2_data_prefix", Value: "matilda/cur2/matilda-cur2/data/BILLING_PERIOD=2026-06/"},
+					workflow.PlanEvidence{Key: "cur2_manifest_prefix", Value: "matilda/cur2/matilda-cur2/metadata/BILLING_PERIOD=2026-06/"}),
+			}},
+		},
+	}
+	var output strings.Builder
+
+	writeSelectableCUR2Candidate(&output, item)
+
+	text := output.String()
+	for _, want := range []string{
+		"Readiness: manual step required",
+		"Previous month: 2026-06 missing data partition, manifest",
+		"Report location: s3://matilda-cur2-billing/matilda/cur2",
+		"Expected billing data prefix: s3://matilda-cur2-billing/matilda/cur2/matilda-cur2/data/BILLING_PERIOD=2026-06/",
+		"Expected manifest prefix: s3://matilda-cur2-billing/matilda/cur2/matilda-cur2/metadata/BILLING_PERIOD=2026-06/",
+		"Matilda next step: complete previous-month billing data backfill first; after preflight is ready, use an AWS cloud account with Skip Configuration and provide the CUR 2.0 billing data from this S3 location.",
+		"Next action: request or complete previous-month billing data backfill, then rerun preflight.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("manual handoff output = %q, want %q", text, want)
+		}
+	}
+	if strings.Contains(text, "then create Rapid Assessment - Billing Based and provide the CUR 2.0 billing data from this S3 location.") {
+		t.Fatalf("manual handoff output implied data was ready: %s", text)
+	}
+	assertGuidedOutputSafe(t, text)
+}
+
+func TestWriteSelectableCUR2CandidateShowsSafePrefixesForManualBackfillWhenBucketWithheld(t *testing.T) {
+	item := classifiedCUR2Candidate{
+		Candidate: cur2Candidate{Ref: "cur2-fmanualprefix"},
+		Result: workflow.Result{
+			Status: workflow.RunStatusManualSteps,
+			Code:   "aws_backfill_manual_step_required",
+			Plan: &workflow.ExecutionPlan{Checks: []workflow.PlanCheck{
+				cur2PlanCheck(workflow.CheckPass, "aws_cur2_s3_destination_ready",
+					workflow.PlanEvidence{Key: "s3_prefix", Value: "matilda-rapid-cur2"},
+					workflow.PlanEvidence{Key: "s3_region", Value: "us-east-1"}),
+				cur2PlanCheck(workflow.CheckWarn, "aws_backfill_manual_step_required",
+					workflow.PlanEvidence{Key: "previous_billing_period", Value: "2026-07"},
+					workflow.PlanEvidence{Key: "missing_previous_month_component", Value: "manifest"},
+					workflow.PlanEvidence{Key: "cur2_data_prefix", Value: "matilda-rapid-cur2/matilda-rapid-cur2/data/BILLING_PERIOD=2026-07/"},
+					workflow.PlanEvidence{Key: "cur2_manifest_prefix", Value: "matilda-rapid-cur2/matilda-rapid-cur2/metadata/BILLING_PERIOD=2026-07/"}),
+			}},
+		},
+	}
+	var output strings.Builder
+
+	writeSelectableCUR2Candidate(&output, item)
+
+	text := output.String()
+	for _, want := range []string{
+		"Readiness: manual step required",
+		"S3 bucket: not shown because the bucket value may contain a sensitive identifier.",
+		"Configured report prefix: matilda-rapid-cur2",
+		"Previous month: 2026-07 missing manifest",
+		"Expected billing data prefix: matilda-rapid-cur2/matilda-rapid-cur2/data/BILLING_PERIOD=2026-07/",
+		"Expected manifest prefix: matilda-rapid-cur2/matilda-rapid-cur2/metadata/BILLING_PERIOD=2026-07/",
+		"Matilda next step: complete previous-month billing data backfill first; after preflight is ready, use an AWS cloud account with Skip Configuration and provide the CUR 2.0 billing data from the selected export destination.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("manual prefix-only handoff output = %q, want %q", text, want)
+		}
+	}
+	if strings.Contains(text, "s3://") {
+		t.Fatalf("manual prefix-only handoff output built a full S3 URI without a safe bucket: %s", text)
+	}
+	assertGuidedOutputSafe(t, text)
+}
+
+func TestWriteSelectableCUR2CandidateSuppressesUnsafeRegionEvidence(t *testing.T) {
+	item := classifiedCUR2Candidate{
+		Candidate: cur2Candidate{Ref: "cur2-funsafe-region"},
+		Result: workflow.Result{
+			Status: workflow.StatusReady,
+			Code:   "aws_cur2_preflight_ready",
+			Plan: &workflow.ExecutionPlan{Checks: []workflow.PlanCheck{
+				cur2PlanCheck(workflow.CheckPass, "aws_cur2_s3_destination_ready",
+					workflow.PlanEvidence{Key: "s3_prefix", Value: "matilda-rapid-cur2"},
+					workflow.PlanEvidence{Key: "s3_region", Value: "us_east_1"}),
+				cur2PlanCheck(workflow.CheckPass, "aws_cur2_previous_month_ready",
+					workflow.PlanEvidence{Key: "previous_billing_period", Value: "2026-07"},
+					workflow.PlanEvidence{Key: "cur2_data_prefix", Value: "matilda-rapid-cur2/matilda-rapid-cur2/data/BILLING_PERIOD=2026-07/"},
+					workflow.PlanEvidence{Key: "cur2_manifest_prefix", Value: "matilda-rapid-cur2/matilda-rapid-cur2/metadata/BILLING_PERIOD=2026-07/"}),
+			}},
+		},
+	}
+	var output strings.Builder
+
+	writeSelectableCUR2Candidate(&output, item)
+
+	text := output.String()
+	for _, forbidden := range []string{
+		"us_east_1",
+		"Configured report prefix:",
+		"Billing data prefix:",
+		"Manifest prefix:",
+		"Matilda next step:",
+		"Large data note:",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("unsafe region output leaked handoff value %q: %s", forbidden, text)
+		}
+	}
+	assertGuidedOutputSafe(t, text)
+}
+
 func TestWriteSelectableCUR2CandidateIncludesPolicyActionWhenTopLevelCodeIsAnotherWarning(t *testing.T) {
 	item := classifiedCUR2Candidate{
 		Candidate: cur2Candidate{Ref: "cur2-fdddddddddddddd"},
@@ -1272,6 +1519,55 @@ func TestWriteRepairableCUR2CandidateShowsFallbacksWhenFactsAreMissing(t *testin
 	}
 	if strings.Contains(text, "Previous month:") || strings.Contains(text, "Policy:") {
 		t.Fatalf("repairable fallback output should omit unknown previous-month and policy facts: %s", text)
+	}
+	assertGuidedOutputSafe(t, text)
+}
+
+func TestWriteRepairableCUR2CandidateDoesNotPrintHandoffInstructions(t *testing.T) {
+	item := classifiedCUR2Candidate{
+		Candidate: cur2Candidate{Ref: "cur2-frepairblocked"},
+		Result: workflow.Result{
+			Status: workflow.RunStatusBlocked,
+			Code:   "aws_s3_delivery_policy_missing",
+			Plan: &workflow.ExecutionPlan{Checks: []workflow.PlanCheck{
+				cur2PlanCheck(workflow.CheckPass, "aws_cur2_s3_destination_ready",
+					workflow.PlanEvidence{Key: "s3_bucket", Value: "matilda-cur2-billing"},
+					workflow.PlanEvidence{Key: "s3_prefix", Value: "matilda/cur2"},
+					workflow.PlanEvidence{Key: "s3_region", Value: "us-east-1"}),
+				cur2PlanCheck(workflow.CheckPass, "aws_cur2_previous_month_ready",
+					workflow.PlanEvidence{Key: "previous_billing_period", Value: "2026-06"},
+					workflow.PlanEvidence{Key: "cur2_data_prefix", Value: "matilda/cur2/matilda-cur2/data/BILLING_PERIOD=2026-06/"},
+					workflow.PlanEvidence{Key: "cur2_manifest_prefix", Value: "matilda/cur2/matilda-cur2/metadata/BILLING_PERIOD=2026-06/"}),
+				cur2PlanCheck(workflow.CheckWarn, "aws_s3_delivery_policy_missing",
+					workflow.PlanEvidence{Key: "policy_gap", Value: "source_account_condition_missing"}),
+			}},
+		},
+	}
+	var output strings.Builder
+
+	writeRepairableCUR2Candidate(&output, item)
+
+	text := output.String()
+	for _, want := range []string{
+		"Readiness: repair required",
+		"S3 delivery policy: action needed",
+		"Blocker: S3 delivery policy does not satisfy the expected aws:SourceAccount condition.",
+		"Next action: update the S3 delivery policy to include the expected aws:SourceAccount condition, then rerun preflight.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("repairable blocked output = %q, want %q", text, want)
+		}
+	}
+	for _, forbidden := range []string{
+		"Report location:",
+		"Billing data prefix:",
+		"Manifest prefix:",
+		"Matilda next step:",
+		"Large data note:",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("repairable blocked output contains forbidden value %q: %s", forbidden, text)
+		}
 	}
 	assertGuidedOutputSafe(t, text)
 }
@@ -1449,6 +1745,14 @@ func TestWriteBlockedCUR2CandidateDoesNotTreatOverwriteAsBlocker(t *testing.T) {
 					workflow.PlanEvidence{Key: "compression", Value: "PARQUET"}),
 				cur2PlanCheck(workflow.CheckPass, "aws_cur2_overwrite_supported",
 					workflow.PlanEvidence{Key: "overwrite", Value: "OVERWRITE_REPORT"}),
+				cur2PlanCheck(workflow.CheckPass, "aws_cur2_s3_destination_ready",
+					workflow.PlanEvidence{Key: "s3_bucket", Value: "matilda-cur2-billing"},
+					workflow.PlanEvidence{Key: "s3_prefix", Value: "matilda/cur2"},
+					workflow.PlanEvidence{Key: "s3_region", Value: "us-east-1"}),
+				cur2PlanCheck(workflow.CheckPass, "aws_cur2_previous_month_ready",
+					workflow.PlanEvidence{Key: "previous_billing_period", Value: "2026-06"},
+					workflow.PlanEvidence{Key: "cur2_data_prefix", Value: "matilda/cur2/matilda-cur2/data/BILLING_PERIOD=2026-06/"},
+					workflow.PlanEvidence{Key: "cur2_manifest_prefix", Value: "matilda/cur2/matilda-cur2/metadata/BILLING_PERIOD=2026-06/"}),
 				cur2PlanCheck(workflow.CheckFail, "aws_cur2_output_settings_blocked",
 					workflow.PlanEvidence{Key: "output_format", Value: "JSON"}),
 			}},
@@ -1477,6 +1781,11 @@ func TestWriteBlockedCUR2CandidateDoesNotTreatOverwriteAsBlocker(t *testing.T) {
 		"overwrite file versioning is not verified",
 		"confirm Matilda support for OVERWRITE_REPORT",
 		"Blocker: overwrite",
+		"Report location:",
+		"Billing data prefix:",
+		"Manifest prefix:",
+		"Matilda next step:",
+		"Large data note:",
 	} {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("overwrite output contains forbidden value %q: %s", forbidden, text)
@@ -1707,12 +2016,24 @@ func TestSafeCandidateLabelValueRejectsSensitiveIdentifierShapesWithoutOverblock
 			value: "123456789012",
 		},
 		{
+			name:  "embedded account id",
+			value: "cur2123456789012billing",
+		},
+		{
 			name:  "access key id shape",
 			value: "AKIAIOSFODNN7EXAMPLE",
 		},
 		{
+			name:  "embedded access key id shape",
+			value: "prefix-AKIAIOSFODNN7EXAMPLE-safe",
+		},
+		{
 			name:  "temporary access key id shape",
 			value: "ASIAIOSFODNN7EXAMPLE",
+		},
+		{
+			name:  "embedded temporary access key id shape",
+			value: "prefix-ASIAIOSFODNN7EXAMPLE-safe",
 		},
 		{
 			name:  "lowercase access key id shape",
