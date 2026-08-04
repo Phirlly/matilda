@@ -1218,7 +1218,7 @@ func TestWriteSelectableCUR2CandidateIncludesPolicyActionWhenTopLevelCodeIsAnoth
 			Status: workflow.StatusReady,
 			Code:   "aws_cur2_delivery_not_started",
 			Plan: &workflow.ExecutionPlan{Checks: []workflow.PlanCheck{
-				cur2PlanCheck(workflow.CheckWarn, "aws_cur2_delivery_not_started"),
+				cur2PlanCheckWithMessage(workflow.CheckWarn, "aws_cur2_delivery_not_started", "Latest AWS Data Exports delivery is still in progress."),
 				cur2PlanCheck(workflow.CheckPass, "aws_cur2_previous_month_ready",
 					workflow.PlanEvidence{Key: "previous_billing_period", Value: "2026-06"}),
 				cur2PlanCheck(workflow.CheckWarn, "aws_s3_delivery_policy_missing",
@@ -1494,7 +1494,7 @@ func TestWriteSelectableCUR2CandidateShowsEvidenceDerivedDeliveryAndPolicyStatus
 			Plan: &workflow.ExecutionPlan{Checks: []workflow.PlanCheck{
 				cur2PlanCheck(workflow.CheckPass, "aws_cur2_output_format_ready",
 					workflow.PlanEvidence{Key: "output_format", Value: "TEXT_OR_CSV"}),
-				cur2PlanCheck(workflow.CheckWarn, "aws_cur2_delivery_not_started"),
+				cur2PlanCheckWithMessage(workflow.CheckWarn, "aws_cur2_delivery_not_started", "Latest AWS Data Exports delivery is still in progress."),
 				cur2PlanCheck(workflow.CheckPass, "aws_s3_delivery_policy_ready"),
 				cur2PlanCheck(workflow.CheckPass, "aws_cur2_previous_month_ready",
 					workflow.PlanEvidence{Key: "previous_billing_period", Value: "2026-06"}),
@@ -1525,6 +1525,70 @@ func TestWriteSelectableCUR2CandidateShowsEvidenceDerivedDeliveryAndPolicyStatus
 		t.Fatalf("evidence status output combines readiness and support code: %s", text)
 	}
 	assertGuidedOutputSafe(t, text)
+}
+
+func TestWriteSelectableCUR2CandidateDistinguishesDeliveryWarningMessages(t *testing.T) {
+	tests := []struct {
+		name      string
+		message   string
+		want      string
+		forbidden []string
+	}{
+		{
+			name:      "inconclusive",
+			message:   "AWS Data Exports delivery status is not conclusive yet.",
+			want:      "AWS delivery: not conclusive",
+			forbidden: []string{"AWS delivery: in progress"},
+		},
+		{
+			name:      "in progress",
+			message:   "Latest AWS Data Exports delivery is still in progress.",
+			want:      "AWS delivery: in progress",
+			forbidden: []string{"AWS delivery: not conclusive", "AWS delivery: not started yet"},
+		},
+		{
+			name:      "not started yet",
+			message:   "No AWS Data Exports delivery execution has started yet.",
+			want:      "AWS delivery: not started yet",
+			forbidden: []string{"AWS delivery: in progress"},
+		},
+		{
+			name:      "unknown warning falls back",
+			message:   "AWS CUR 2.0 test check.",
+			want:      "AWS delivery: not conclusive",
+			forbidden: []string{"AWS delivery: in progress"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			item := classifiedCUR2Candidate{
+				Candidate: cur2Candidate{Ref: "cur2-fkkkkkkkkkkkkkkk"},
+				Result: workflow.Result{
+					Status: workflow.StatusReady,
+					Code:   "aws_cur2_delivery_not_started",
+					Plan: &workflow.ExecutionPlan{Checks: []workflow.PlanCheck{
+						cur2PlanCheckWithMessage(workflow.CheckWarn, "aws_cur2_delivery_not_started", tt.message),
+						cur2PlanCheck(workflow.CheckPass, "aws_s3_delivery_policy_ready"),
+					}},
+				},
+			}
+			var output strings.Builder
+
+			writeSelectableCUR2Candidate(&output, item)
+
+			text := output.String()
+			if !strings.Contains(text, tt.want) {
+				t.Fatalf("delivery warning output = %q, want %q", text, tt.want)
+			}
+			for _, forbidden := range tt.forbidden {
+				if strings.Contains(text, forbidden) {
+					t.Fatalf("delivery warning output contains forbidden value %q: %s", forbidden, text)
+				}
+			}
+			assertGuidedOutputSafe(t, text)
+		})
+	}
 }
 
 func TestWriteNonReadyCUR2CandidateShowsDeliveryNotStartedStatus(t *testing.T) {
@@ -1684,6 +1748,12 @@ func cur2PlanCheck(status workflow.CheckStatus, code string, evidence ...workflo
 		Evidence:      evidence,
 		SourceHandles: guidedTestSourceHandles(),
 	}
+}
+
+func cur2PlanCheckWithMessage(status workflow.CheckStatus, code string, message string, evidence ...workflow.PlanEvidence) workflow.PlanCheck {
+	check := cur2PlanCheck(status, code, evidence...)
+	check.Message = message
+	return check
 }
 
 func TestPlanCheckCodePrefersSemanticIDAndFallsBackToLegacyEvidence(t *testing.T) {

@@ -650,7 +650,7 @@ func cur2CandidateFactsFromResult(item classifiedCUR2Candidate) cur2CandidateFac
 	}
 	for _, check := range item.Result.Plan.Checks {
 		checkCode := planCheckCode(check)
-		facts.observeCheck(check.Status, checkCode)
+		facts.observeCheck(check, checkCode)
 		for _, evidence := range check.Evidence {
 			value := safeCandidateLabelValue(evidence.Value)
 			if value == "" {
@@ -690,35 +690,49 @@ func planCheckCode(check workflow.PlanCheck) string {
 	return ""
 }
 
-func (facts *cur2CandidateFacts) observeCheck(status workflow.CheckStatus, code string) {
+func (facts *cur2CandidateFacts) observeCheck(check workflow.PlanCheck, code string) {
 	switch code {
 	case "aws_cur2_delivery_ready":
-		if status == workflow.CheckPass {
+		if check.Status == workflow.CheckPass {
 			facts.DeliveryStatus = "ready"
 		}
 	case "aws_cur2_delivery_not_started":
-		if status == workflow.CheckWarn {
-			facts.DeliveryStatus = "in progress"
+		if check.Status == workflow.CheckWarn {
+			facts.DeliveryStatus = deliveryWarningLabel(check.Message)
 		}
-		if status == workflow.CheckFail {
+		if check.Status == workflow.CheckFail {
 			facts.DeliveryStatus = "not started"
 		}
 	case "aws_s3_delivery_policy_ready":
-		if status == workflow.CheckPass {
+		if check.Status == workflow.CheckPass {
 			facts.PolicyStatus = "ready"
 		}
 	case "aws_s3_bucket_policy_inaccessible":
-		if status == workflow.CheckWarn || status == workflow.CheckFail {
+		if check.Status == workflow.CheckWarn || check.Status == workflow.CheckFail {
 			facts.PolicyStatus = "not inspected"
 		}
 	case "aws_s3_delivery_policy_missing":
-		if status == workflow.CheckWarn || status == workflow.CheckFail {
+		if check.Status == workflow.CheckWarn || check.Status == workflow.CheckFail {
 			facts.PolicyStatus = "action needed"
 		}
 	case "aws_cur2_previous_month_ready":
-		if status == workflow.CheckPass {
+		if check.Status == workflow.CheckPass {
 			facts.PreviousMonthStatus = "ready"
 		}
+	}
+}
+
+func deliveryWarningLabel(message string) string {
+	normalized := strings.ToLower(strings.TrimSpace(message))
+	switch {
+	case strings.Contains(normalized, "still in progress"):
+		return "in progress"
+	case strings.Contains(normalized, "has started yet"):
+		return "not started yet"
+	case strings.Contains(normalized, "not conclusive"):
+		return "not conclusive"
+	default:
+		return "not conclusive"
 	}
 }
 
