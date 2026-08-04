@@ -701,19 +701,17 @@ func (runner Runner) deliveryFindings(ctx context.Context, client Client, export
 		return []checkFinding{warnFinding("aws_cur2_delivery_not_started", "AWS export delivery status", "No AWS Data Exports delivery execution has started yet.", true)}
 	}
 
-	inspectedExecutions := make([]Execution, 0, len(executions))
-	for _, execution := range executions {
-		if execution.ID != "" {
-			inspected, err := client.GetExecution(ctx, export.ExportARN, execution.ID)
-			if err != nil {
-				return []checkFinding{failFinding(providerErrorCode(err, "aws_data_exports_access_denied"), "AWS export delivery status", "AWS Data Exports delivery execution could not be inspected.")}
-			}
-			execution = inspected
-		}
-		inspectedExecutions = append(inspectedExecutions, execution)
+	latest, ok := latestObservedExecution(executions)
+	if !ok {
+		return []checkFinding{warnFinding("aws_cur2_delivery_not_started", "AWS export delivery status", "AWS Data Exports delivery status is not conclusive yet.", true)}
 	}
-
-	latest := latestExecution(inspectedExecutions)
+	if latest.ID != "" {
+		inspected, err := client.GetExecution(ctx, export.ExportARN, latest.ID)
+		if err != nil {
+			return []checkFinding{failFinding(providerErrorCode(err, "aws_data_exports_access_denied"), "AWS export delivery status", "AWS Data Exports delivery execution could not be inspected.")}
+		}
+		latest = inspected
+	}
 	switch strings.ToUpper(strings.TrimSpace(latest.Status)) {
 	case "DELIVERY_SUCCESS":
 		return []checkFinding{passFinding("aws_cur2_delivery_ready", "AWS export delivery status", "Latest AWS Data Exports delivery status is healthy.")}
@@ -725,14 +723,26 @@ func (runner Runner) deliveryFindings(ctx context.Context, client Client, export
 	return []checkFinding{warnFinding("aws_cur2_delivery_not_started", "AWS export delivery status", "AWS Data Exports delivery status is not conclusive yet.", true)}
 }
 
-func latestExecution(executions []Execution) Execution {
-	latest := executions[0]
-	for _, execution := range executions[1:] {
-		if execution.StatusObservedAt.After(latest.StatusObservedAt) {
+func latestObservedExecution(executions []Execution) (Execution, bool) {
+	var latest Execution
+	ambiguous := false
+	for _, execution := range executions {
+		if execution.StatusObservedAt.IsZero() {
+			return Execution{}, false
+		}
+		if latest.StatusObservedAt.IsZero() || execution.StatusObservedAt.After(latest.StatusObservedAt) {
 			latest = execution
+			ambiguous = false
+			continue
+		}
+		if execution.StatusObservedAt.Equal(latest.StatusObservedAt) {
+			ambiguous = true
 		}
 	}
-	return latest
+	if latest.StatusObservedAt.IsZero() || ambiguous {
+		return Execution{}, false
+	}
+	return latest, true
 }
 
 func listAllExecutions(ctx context.Context, client Client, exportARN string) ([]Execution, error) {
