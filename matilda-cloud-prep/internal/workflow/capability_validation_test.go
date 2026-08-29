@@ -24,14 +24,6 @@ func TestNewRegistryRejectsInvalidCapabilityRegistrations(t *testing.T) {
 			want: "not supported",
 		},
 		{
-			name: "package capability blocked",
-			capability: Capability{
-				Request: Request{Goal: assessment.RapidAssessment, CollectionPath: assessment.CollectionBilling, Provider: assessment.ProviderAWS, Action: assessment.ActionPackage},
-				Runner:  RunnerFunc(func(context.Context, Request, ExecutionOptions) CapabilityReport { return CapabilityReport{} }),
-			},
-			want: "package schema",
-		},
-		{
 			name: "nil runner",
 			capability: Capability{
 				Request: awsBillingPreflightRequest(),
@@ -119,6 +111,12 @@ func TestRegistryRejectsInvalidCapabilityReportFields(t *testing.T) {
 			},
 		},
 		{
+			name: "handoff from non package action",
+			mutate: func(report *CapabilityReport) {
+				report.Handoff = sampleStructuredHandoff()
+			},
+		},
+		{
 			name: "warning with empty code",
 			mutate: func(report *CapabilityReport) {
 				report.Warnings = []handoff.Warning{{Message: "warning message"}}
@@ -159,6 +157,68 @@ func TestRegistryRejectsInvalidCapabilityReportFields(t *testing.T) {
 				t.Fatalf("invalid result message leaked unsafe content: %q", result.Message)
 			}
 		})
+	}
+}
+
+func TestRegistryAcceptsSafeHandoffFromPackageCapability(t *testing.T) {
+	request := awsBillingPackageRequest()
+	registry, err := NewRegistry(Capability{
+		Request: request,
+		Runner: RunnerFunc(func(context.Context, Request, ExecutionOptions) CapabilityReport {
+			report := sampleCapabilityReport(request, StatusReady, SupportSupported, "aws_cur2_package_handoff_ready")
+			report.Handoff = sampleStructuredHandoff()
+			return report
+		}),
+	})
+	if err != nil {
+		t.Fatalf("NewRegistry returned error: %v", err)
+	}
+
+	result := registry.Execute(request)
+
+	if result.Status != StatusReady {
+		t.Fatalf("Status = %q, want %q", result.Status, StatusReady)
+	}
+	if result.Handoff == nil {
+		t.Fatal("package capability result did not include handoff payload")
+	}
+	if result.Manifest != nil {
+		t.Fatalf("package capability returned manifest %#v, want nil", result.Manifest)
+	}
+}
+
+func TestRegistrySanitizesPackageExecutionOptionsOnInvalidCapabilityResult(t *testing.T) {
+	request := awsBillingPackageRequest()
+	registry, err := NewRegistry(Capability{
+		Request: request,
+		Runner: RunnerFunc(func(context.Context, Request, ExecutionOptions) CapabilityReport {
+			report := sampleCapabilityReport(request, StatusReady, SupportSupported, "aws_cur2_package_handoff_ready")
+			report.Handoff = sampleStructuredHandoff()
+			report.Handoff.Fields[0].Value = "arn:aws:iam::123456789012:role/operator"
+			return report
+		}),
+	})
+	if err != nil {
+		t.Fatalf("NewRegistry returned error: %v", err)
+	}
+
+	result := registry.ExecuteContext(context.Background(), request, ExecutionOptions{
+		InterfaceMode:  InterfaceModeDirect,
+		TimeoutSeconds: 45,
+		Selectors: &ExecutionSelectors{
+			AWS: &AWSExecutionSelectors{
+				Profile:       "default",
+				Region:        "us-east-1",
+				CUR2ExportRef: "cur2-abcdefghijklmnop",
+			},
+		},
+	})
+
+	if result.Status != RunStatusFailed {
+		t.Fatalf("Status = %q, want failed", result.Status)
+	}
+	if result.ExecutionOptions.Selectors != nil {
+		t.Fatalf("ExecutionOptions.Selectors = %#v, want nil for package failure output", result.ExecutionOptions.Selectors)
 	}
 }
 

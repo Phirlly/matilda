@@ -35,9 +35,10 @@ func CoverageStatuses() []CoverageStatus {
 type PackageSchemaStatus string
 
 const (
-	PackageSchemaNone                   PackageSchemaStatus = "none"
-	PackageSchemaMinimalV0              PackageSchemaStatus = "minimal_v0"
-	PackageSchemaProviderSchemaRequired PackageSchemaStatus = "provider_schema_required"
+	PackageSchemaNone                    PackageSchemaStatus = "none"
+	PackageSchemaMinimalV0               PackageSchemaStatus = "minimal_v0"
+	PackageSchemaProviderSchemaRequired  PackageSchemaStatus = "provider_schema_required"
+	PackageSchemaStructuredStdoutHandoff PackageSchemaStatus = "structured_stdout_handoff"
 )
 
 const (
@@ -255,10 +256,10 @@ func validateCoverageRecommendation(recommendation CoverageRecommendation) error
 
 func validatePackageSchemaStatus(status PackageSchemaStatus) error {
 	switch status {
-	case PackageSchemaNone, PackageSchemaMinimalV0, PackageSchemaProviderSchemaRequired:
+	case PackageSchemaNone, PackageSchemaMinimalV0, PackageSchemaProviderSchemaRequired, PackageSchemaStructuredStdoutHandoff:
 		return nil
 	default:
-		return fmt.Errorf("package_schema_status = %q, want one of none, minimal_v0, provider_schema_required", status)
+		return fmt.Errorf("package_schema_status = %q, want one of none, minimal_v0, provider_schema_required, structured_stdout_handoff", status)
 	}
 }
 

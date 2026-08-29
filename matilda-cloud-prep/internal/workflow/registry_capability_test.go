@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/assessment"
+	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/handoff"
 )
 
 func TestRegistryDispatchesInjectedCapability(t *testing.T) {
@@ -63,6 +64,68 @@ func TestRegistryDispatchesInjectedCapability(t *testing.T) {
 		t.Fatal("provider capability result did not include validated execution plan")
 	}
 	assertSafeSourceHandles(t, result.SourceHandles)
+}
+
+func TestRegistryDispatchesPackageCapabilityBeforeMinimalFallback(t *testing.T) {
+	request := awsBillingPackageRequest()
+	called := false
+
+	registry, err := NewRegistry(Capability{
+		Request: request,
+		Runner: RunnerFunc(func(ctx context.Context, got Request, options ExecutionOptions) CapabilityReport {
+			called = true
+			report := sampleCapabilityReport(got, StatusReady, SupportSupported, "aws_cur2_package_handoff_ready")
+			report.Handoff = sampleStructuredHandoff()
+			return report
+		}),
+	})
+	if err != nil {
+		t.Fatalf("NewRegistry returned error: %v", err)
+	}
+
+	result := registry.Execute(request)
+
+	if !called {
+		t.Fatal("package capability was not called")
+	}
+	if result.Code != "aws_cur2_package_handoff_ready" {
+		t.Fatalf("Code = %q, want aws_cur2_package_handoff_ready", result.Code)
+	}
+	if result.Handoff == nil {
+		t.Fatal("package capability did not return handoff payload")
+	}
+	if result.Manifest != nil {
+		t.Fatalf("provider-specific package result Manifest = %#v, want nil", result.Manifest)
+	}
+}
+
+func TestRegistryKeepsUnregisteredPackageOnMinimalFallback(t *testing.T) {
+	registry, err := NewRegistry(Capability{
+		Request: awsBillingPreflightRequest(),
+		Runner: RunnerFunc(func(ctx context.Context, got Request, options ExecutionOptions) CapabilityReport {
+			return sampleCapabilityReport(got, StatusReady, SupportSupported, "aws_cur2_preflight_ready")
+		}),
+	})
+	if err != nil {
+		t.Fatalf("NewRegistry returned error: %v", err)
+	}
+
+	result := registry.Execute(Request{
+		Goal:           assessment.RapidAssessment,
+		CollectionPath: assessment.CollectionBilling,
+		Provider:       assessment.ProviderGCP,
+		Action:         assessment.ActionPackage,
+	})
+
+	if result.Code != "minimal_manifest_ready" {
+		t.Fatalf("Code = %q, want minimal_manifest_ready", result.Code)
+	}
+	if result.Manifest == nil {
+		t.Fatal("unregistered package fallback did not return minimal manifest")
+	}
+	if result.Handoff != nil {
+		t.Fatalf("unregistered package fallback returned handoff %#v, want nil", result.Handoff)
+	}
 }
 
 func TestRegistryPreservesCallerSuppliedDeadline(t *testing.T) {
@@ -372,6 +435,32 @@ func awsBillingPreflightRequest() Request {
 		Provider:       assessment.ProviderAWS,
 		Action:         assessment.ActionPreflight,
 	}
+}
+
+func awsBillingPackageRequest() Request {
+	return Request{
+		Goal:           assessment.RapidAssessment,
+		CollectionPath: assessment.CollectionBilling,
+		Provider:       assessment.ProviderAWS,
+		Action:         assessment.ActionPackage,
+	}
+}
+
+func sampleStructuredHandoff() *handoff.Output {
+	output := handoff.BuildOutput(handoff.Output{
+		HandoffType:    "aws_rapid_assessment_billing_cur2",
+		Assessment:     "rapid-assessment",
+		CollectionPath: "billing",
+		Provider:       "aws",
+		Summary:        "AWS CUR 2.0 billing handoff is ready.",
+		Fields: []handoff.Field{{
+			Key:   "selected_export_ref",
+			Label: "Selected CUR 2.0 export",
+			Value: "cur2-abcdefghijklmnop",
+		}},
+		NextSteps: []string{"Use Skip Configuration in Matilda SaaS."},
+	})
+	return &output
 }
 
 func sampleCapabilityReport(request Request, status RunStatus, support SupportStatus, code string) CapabilityReport {

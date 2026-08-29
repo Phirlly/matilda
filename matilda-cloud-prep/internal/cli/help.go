@@ -36,6 +36,7 @@ Actions:
 `)
 	writeAWSBillingPreflightHelp(stdout)
 	writeAWSBillingApplyPrereqsHelp(stdout)
+	writeAWSBillingPackageHelp(stdout)
 	fmt.Fprint(stdout, `
 Use matilda-prep start for guided setup.
 `)
@@ -44,6 +45,16 @@ Use matilda-prep start for guided setup.
 func writeAWSBillingPreflightHelp(stdout io.Writer) {
 	fmt.Fprint(stdout, `
 AWS Rapid Assessment - Billing Based preflight/backfill selection options:
+  --profile <aws-profile-name>
+  --region <aws-region>
+  --export-ref <cur2-ref-from-previous-output>
+  --timeout <duration>
+`)
+}
+
+func writeAWSBillingPackageHelp(stdout io.Writer) {
+	fmt.Fprint(stdout, `
+AWS Rapid Assessment - Billing Based package handoff options:
   --profile <aws-profile-name>
   --region <aws-region>
   --export-ref <cur2-ref-from-previous-output>
@@ -81,6 +92,8 @@ func writeActionHelp(stdout io.Writer, request workflow.Request) {
 		writeAWSBillingPreflightHelp(stdout)
 	case isAWSBillingApplyPrereqsRequest(request):
 		writeAWSBillingApplyPrereqsHelp(stdout)
+	case isAWSBillingPackageRequest(request):
+		writeAWSBillingPackageHelp(stdout)
 	}
 	fmt.Fprintln(stdout)
 	fmt.Fprintln(stdout, "Use matilda-prep start for guided setup.")
@@ -108,7 +121,7 @@ func mutationHelp(level workflow.MutationLevel) string {
 	case workflow.MutationCloud:
 		return "yes, only after explicit approval in implemented provider paths"
 	case workflow.MutationLocalOnly:
-		return "local files only"
+		return "local output only"
 	default:
 		return "unknown"
 	}
@@ -126,6 +139,13 @@ func isAWSBillingPreflightRequest(request workflow.Request) bool {
 		request.CollectionPath == assessment.CollectionBilling &&
 		request.Provider == assessment.ProviderAWS &&
 		request.Action == assessment.ActionPreflight
+}
+
+func isAWSBillingPackageRequest(request workflow.Request) bool {
+	return request.Goal == assessment.RapidAssessment &&
+		request.CollectionPath == assessment.CollectionBilling &&
+		request.Provider == assessment.ProviderAWS &&
+		request.Action == assessment.ActionPackage
 }
 
 func writeProviderFirstCorrection(stderr io.Writer, provider string) {

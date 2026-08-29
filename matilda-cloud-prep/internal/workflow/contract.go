@@ -97,13 +97,15 @@ var actionContracts = map[assessment.Action]ActionContract{
 		Action:         assessment.ActionPackage,
 		MutationLevel:  MutationLocalOnly,
 		Purpose:        "Builds a whitelisted handoff artifact.",
-		RequiredResult: "Provider-neutral minimal manifest until a provider-specific package schema is approved.",
+		RequiredResult: "Whitelisted handoff output. Written files and archives require an approved package schema.",
 		MustNotDo: []string{
 			"include credentials",
 			"include private keys",
 			"include raw logs",
 			"include live inventory",
+			"include customer data",
 			"include cloud state",
+			"include raw billing data",
 		},
 	},
 }
