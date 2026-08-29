@@ -6,6 +6,7 @@ import (
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/cloud/aws/billingcur2setup"
 	billingcur2setupawsclient "github.com/Phirlly/matilda/matilda-cloud-prep/internal/cloud/aws/billingcur2setup/awsclient"
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/cloud/aws/billingguide"
+	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/cloud/aws/billinghandoff"
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/cloud/aws/billingprereqs"
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/cloud/aws/cur2preflight"
 	cur2preflightawsclient "github.com/Phirlly/matilda/matilda-cloud-prep/internal/cloud/aws/cur2preflight/awsclient"
@@ -46,6 +47,15 @@ func Registry(config RegistryConfig) workflow.Registry {
 			Runner: cur2preflight.NewRunner(cur2preflight.RunnerConfig{
 				Client:        config.AWSBillingPreflightClient,
 				ClientFactory: config.AWSBillingPreflightClientFactory,
+			}),
+		},
+		workflow.Capability{
+			Request: billinghandoff.AWSBillingPackageRequest(),
+			Runner: billinghandoff.NewRunner(billinghandoff.RunnerConfig{
+				PreflightRunner: cur2preflight.NewRunner(cur2preflight.RunnerConfig{
+					Client:        config.AWSBillingPreflightClient,
+					ClientFactory: config.AWSBillingPreflightClientFactory,
+				}),
 			}),
 		},
 		workflow.Capability{

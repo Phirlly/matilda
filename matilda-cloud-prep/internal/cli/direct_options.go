@@ -65,7 +65,7 @@ func parseExecutionOptions(request workflow.Request, args []string) (workflow.Ex
 
 	awsSelectorUsed := provided["profile"] || provided["region"] || provided["export-ref"]
 	if awsSelectorUsed && !isAWSBillingSelectorCommand(request) {
-		return workflow.ExecutionOptions{}, fmt.Errorf("AWS selector flags are supported only for matilda-prep rapid-assessment billing aws preflight or apply-prereqs")
+		return workflow.ExecutionOptions{}, fmt.Errorf("AWS selector flags are supported only for matilda-prep rapid-assessment billing aws preflight, apply-prereqs, or package")
 	}
 
 	createOperationUsed := provided["create-cur2-export"]
@@ -81,7 +81,7 @@ func parseExecutionOptions(request workflow.Request, args []string) (workflow.Ex
 		return workflow.ExecutionOptions{}, fmt.Errorf("aws_billing_prereqs_operation_conflict")
 	}
 	if createCUR2Export && provided["export-ref"] {
-		return workflow.ExecutionOptions{}, fmt.Errorf("export-ref applies only to AWS CUR 2.0 preflight and request-backfill")
+		return workflow.ExecutionOptions{}, fmt.Errorf("export-ref selects an existing AWS CUR 2.0 export for preflight, package handoff, or apply-prereqs --request-backfill; it cannot be used with --create-cur2-export")
 	}
 	if confirmCreateSupportCase && !requestBackfill {
 		return workflow.ExecutionOptions{}, fmt.Errorf("AWS backfill support case confirmation requires --request-backfill")
@@ -178,7 +178,7 @@ func isAWSBillingSelectorCommand(request workflow.Request) bool {
 	return request.Goal == assessment.RapidAssessment &&
 		request.CollectionPath == assessment.CollectionBilling &&
 		request.Provider == assessment.ProviderAWS &&
-		(request.Action == assessment.ActionPreflight || request.Action == assessment.ActionApplyPrereqs)
+		(request.Action == assessment.ActionPreflight || request.Action == assessment.ActionApplyPrereqs || request.Action == assessment.ActionPackage)
 }
 
 func isAWSBillingApplyPrereqs(request workflow.Request) bool {

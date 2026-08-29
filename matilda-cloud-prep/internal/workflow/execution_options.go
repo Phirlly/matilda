@@ -122,7 +122,7 @@ func NormalizeExecutionOptionsForRequest(request Request, input ExecutionOptions
 		return ExecutionOptions{}, err
 	}
 	if options.Selectors != nil && options.Selectors.AWS != nil && !requestAllowsAWSBillingSelectors(request) {
-		return ExecutionOptions{}, fmt.Errorf("AWS selector flags are supported only for matilda-prep rapid-assessment billing aws preflight or apply-prereqs")
+		return ExecutionOptions{}, fmt.Errorf("AWS selector flags are supported only for matilda-prep rapid-assessment billing aws preflight, apply-prereqs, or package")
 	}
 	if options.AWSBillingOperation != "" && !requestAllowsAWSBillingApplyPrereqs(request) {
 		return ExecutionOptions{}, fmt.Errorf("AWS billing operation flags are supported only for matilda-prep rapid-assessment billing aws apply-prereqs")
@@ -322,7 +322,7 @@ func requestAllowsAWSBillingSelectors(request Request) bool {
 	return request.Goal == "rapid-assessment" &&
 		request.CollectionPath == "billing" &&
 		request.Provider == "aws" &&
-		(request.Action == "preflight" || request.Action == "apply-prereqs")
+		(request.Action == "preflight" || request.Action == "apply-prereqs" || request.Action == "package")
 }
 
 func requestAllowsAWSBillingApplyPrereqs(request Request) bool {

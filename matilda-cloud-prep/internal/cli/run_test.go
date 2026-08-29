@@ -13,6 +13,7 @@ import (
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/bootstrap"
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/cloud/aws/billingguide"
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/guided"
+	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/handoff"
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/workflow"
 )
 
@@ -612,7 +613,6 @@ func TestAWSSelectorFlagsAreScopedToAWSBillingPreflightAndApplyPrereqs(t *testin
 		{"rapid-assessment", "billing", "gcp", "preflight", "--region", "us-west-2"},
 		{"deep-discovery", "aws", "preflight", "--export-ref", "cur2-abcdefghijklmnop"},
 		{"rapid-assessment", "billing", "aws", "validate", "--profile", "default"},
-		{"rapid-assessment", "billing", "aws", "package", "--profile", "default"},
 	}
 
 	for _, args := range tests {
@@ -625,7 +625,7 @@ func TestAWSSelectorFlagsAreScopedToAWSBillingPreflightAndApplyPrereqs(t *testin
 			if stdout != "" {
 				t.Fatalf("stdout = %q, want empty", stdout)
 			}
-			if !strings.Contains(stderr, "AWS selector flags are supported only for matilda-prep rapid-assessment billing aws preflight or apply-prereqs") {
+			if !strings.Contains(stderr, "AWS selector flags are supported only for matilda-prep rapid-assessment billing aws preflight, apply-prereqs, or package") {
 				t.Fatalf("stderr = %q, want AWS selector scope message", stderr)
 			}
 		})
@@ -721,7 +721,7 @@ func TestAWSBillingCreateCUR2ExportFlagsAreScopedAndConflictChecked(t *testing.T
 		{
 			name: "create cur2 does not accept selected export ref",
 			args: []string{"rapid-assessment", "billing", "aws", "apply-prereqs", "--create-cur2-export", "--export-ref", "cur2-abcdefghijklmnop"},
-			want: "export-ref applies only to AWS CUR 2.0 preflight and request-backfill",
+			want: "export-ref selects an existing AWS CUR 2.0 export for preflight, package handoff, or apply-prereqs --request-backfill; it cannot be used with --create-cur2-export",
 		},
 	}
 
@@ -931,8 +931,8 @@ func TestPreflightJSONIncludesExecutionPlan(t *testing.T) {
 	}
 }
 
-func TestPackageProducesMinimalManifest(t *testing.T) {
-	code, stdout, stderr := runCLI("rapid-assessment", "billing", "aws", "package")
+func TestUnregisteredPackageProducesMinimalManifest(t *testing.T) {
+	code, stdout, stderr := runCLI("rapid-assessment", "billing", "gcp", "package")
 
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr: %s", code, stderr)
@@ -958,6 +958,109 @@ func TestPackageProducesMinimalManifest(t *testing.T) {
 		strings.Contains(strings.ToLower(stdout), "token") ||
 		strings.Contains(strings.ToLower(stdout), "raw_billing") {
 		t.Fatalf("package output contains forbidden sensitive/raw fields: %s", stdout)
+	}
+}
+
+func TestAWSBillingPackageRequiresSelectedExportRef(t *testing.T) {
+	code, stdout, stderr := runCLI("rapid-assessment", "billing", "aws", "package")
+
+	if code != 4 {
+		t.Fatalf("exit code = %d, want 4; stderr: %s", code, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty structured blocked output", stderr)
+	}
+
+	doc := decodeJSON(t, stdout)
+	if doc["status"] != "blocked" {
+		t.Fatalf("status = %v, want blocked", doc["status"])
+	}
+	if doc["code"] != "aws_cur2_package_export_ref_required" {
+		t.Fatalf("code = %v, want aws_cur2_package_export_ref_required", doc["code"])
+	}
+	if _, ok := doc["handoff"]; ok {
+		t.Fatalf("handoff present in blocked package output: %s", stdout)
+	}
+	if _, ok := doc["manifest"]; ok {
+		t.Fatalf("manifest present in AWS package output: %s", stdout)
+	}
+}
+
+func TestAWSBillingPackageFlagsReachRunnerAndJSON(t *testing.T) {
+	request := workflow.Request{
+		Goal:           assessment.RapidAssessment,
+		CollectionPath: assessment.CollectionBilling,
+		Provider:       assessment.ProviderAWS,
+		Action:         assessment.ActionPackage,
+	}
+	var gotOptions workflow.ExecutionOptions
+	registry, err := workflow.NewRegistry(workflow.Capability{
+		Request: request,
+		Runner: workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+			gotOptions = options
+			report := cliCapabilityReport(got, workflow.StatusReady, workflow.SupportSupported, "aws_cur2_package_handoff_ready")
+			output := handoff.BuildOutput(handoff.Output{
+				HandoffType:    "aws_rapid_assessment_billing_cur2",
+				Assessment:     "rapid-assessment",
+				CollectionPath: "billing",
+				Provider:       "aws",
+				Summary:        "AWS CUR 2.0 billing handoff is ready.",
+				Fields: []handoff.Field{{
+					Key:   "selected_export_ref",
+					Label: "Selected CUR 2.0 export",
+					Value: "cur2-abcdefghijklmnop",
+				}},
+				NextSteps: []string{"Use Skip Configuration in Matilda SaaS."},
+			})
+			report.Handoff = &output
+			return report
+		}),
+	})
+	if err != nil {
+		t.Fatalf("NewRegistry returned error: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := RunWithRegistry([]string{
+		"rapid-assessment", "billing", "aws", "package",
+		"--profile", "default",
+		"--region", "us-east-1",
+		"--export-ref", "cur2-abcdefghijklmnop",
+	}, strings.NewReader(""), &stdout, &stderr, registry)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr: %s", code, stderr.String())
+	}
+	if stderr.String() != "" {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	if gotOptions.Selectors == nil || gotOptions.Selectors.AWS == nil {
+		t.Fatalf("runner AWS selectors missing: %#v", gotOptions)
+	}
+	if gotOptions.Selectors.AWS.Profile != "default" ||
+		gotOptions.Selectors.AWS.Region != "us-east-1" ||
+		gotOptions.Selectors.AWS.CUR2ExportRef != "cur2-abcdefghijklmnop" {
+		t.Fatalf("runner AWS selectors = %#v, want package selectors", gotOptions.Selectors.AWS)
+	}
+
+	doc := decodeJSON(t, stdout.String())
+	executionOptions, ok := doc["execution_options"].(map[string]any)
+	if !ok {
+		t.Fatalf("execution_options missing or wrong type in %s", stdout.String())
+	}
+	if _, ok := executionOptions["selectors"]; ok {
+		t.Fatalf("AWS package output included execution selectors: %s", stdout.String())
+	}
+	if _, ok := doc["manifest"]; ok {
+		t.Fatalf("AWS package output included manifest: %s", stdout.String())
+	}
+	handoffDoc, ok := doc["handoff"].(map[string]any)
+	if !ok {
+		t.Fatalf("handoff missing or wrong type in %s", stdout.String())
+	}
+	if handoffDoc["handoff_type"] != "aws_rapid_assessment_billing_cur2" {
+		t.Fatalf("handoff_type = %v, want aws_rapid_assessment_billing_cur2", handoffDoc["handoff_type"])
 	}
 }
 
@@ -1163,6 +1266,12 @@ func TestActionHelpDoesNotExecuteWorkflow(t *testing.T) {
 			args:        []string{"rapid-assessment", "billing", "gcp", "package", "--help"},
 			wantCommand: "matilda-prep rapid-assessment billing gcp package",
 			wantPurpose: "Builds a whitelisted handoff artifact.",
+		},
+		{
+			name:        "aws billing package help",
+			args:        []string{"rapid-assessment", "billing", "aws", "package", "--help"},
+			wantCommand: "matilda-prep rapid-assessment billing aws package",
+			wantPurpose: "--export-ref",
 		},
 		{
 			name:        "deep discovery action help",

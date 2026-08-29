@@ -31,6 +31,7 @@ type Result struct {
 	MissingSourceOfTruth          []string          `json:"missing_source_of_truth,omitempty"`
 	Plan                          *ExecutionPlan    `json:"plan,omitempty"`
 	Manifest                      *handoff.Manifest `json:"manifest,omitempty"`
+	Handoff                       *handoff.Output   `json:"handoff,omitempty"`
 	Warnings                      []handoff.Warning `json:"warnings,omitempty"`
 }
 
@@ -60,11 +61,11 @@ func (registry Registry) ExecuteContext(ctx context.Context, request Request, re
 	ctx, cancel = contextWithExecutionTimeout(ctx, options)
 	defer cancel()
 
-	if request.Action == assessment.ActionPackage {
-		return packageMinimalManifest(request, options)
-	}
 	if runner := registry.runners[request]; runner != nil {
 		return buildCapabilityResult(request, options, runner.Run(ctx, request, options))
+	}
+	if request.Action == assessment.ActionPackage {
+		return packageMinimalManifest(request, options)
 	}
 
 	contract := mustActionContract(request.Action)
@@ -140,6 +141,7 @@ func executionOptionsInvalidResult(request Request, options ExecutionOptions, op
 
 func packageMinimalManifest(request Request, options ExecutionOptions) Result {
 	contract := mustActionContract(request.Action)
+	resultOptions := resultExecutionOptions(request, options)
 	warnings := []handoff.Warning{
 		{
 			Code:    "provider_schema_required",
@@ -167,7 +169,7 @@ func packageMinimalManifest(request Request, options ExecutionOptions) Result {
 		Mutated:                       false,
 		ProviderCapabilityImplemented: false,
 		Request:                       request,
-		ExecutionOptions:              options,
+		ExecutionOptions:              resultOptions,
 		SourceHandles:                 providerNeutralSourceHandles(),
 		MissingSourceOfTruth:          packageSchemaMissingSourceOfTruth(),
 		Manifest:                      &manifest,

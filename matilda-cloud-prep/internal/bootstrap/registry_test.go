@@ -77,6 +77,44 @@ func TestRegistryFactoryReceivesAWSExecutionOptions(t *testing.T) {
 	}
 }
 
+func TestRegistryAWSBillingPackageFactoryReceivesAWSExecutionOptions(t *testing.T) {
+	request := workflow.Request{
+		Goal:           assessment.RapidAssessment,
+		CollectionPath: assessment.CollectionBilling,
+		Provider:       assessment.ProviderAWS,
+		Action:         assessment.ActionPackage,
+	}
+	var gotOptions workflow.ExecutionOptions
+	registry := Registry(RegistryConfig{
+		AWSBillingPreflightClientFactory: func(options workflow.ExecutionOptions) cur2preflight.Client {
+			gotOptions = options
+			return nil
+		},
+	})
+
+	result := registry.ExecuteContext(context.Background(), request, workflow.ExecutionOptions{
+		InterfaceMode:  workflow.InterfaceModeDirect,
+		TimeoutSeconds: 45,
+		Selectors: &workflow.ExecutionSelectors{
+			AWS: &workflow.AWSExecutionSelectors{
+				Profile:       "default",
+				Region:        "us-west-2",
+				CUR2ExportRef: "cur2-abcdefghijklmnop",
+			},
+		},
+	})
+
+	if result.Code != "aws_provider_capability_blocked" {
+		t.Fatalf("Code = %q, want aws_provider_capability_blocked", result.Code)
+	}
+	if gotOptions.Selectors == nil || gotOptions.Selectors.AWS == nil {
+		t.Fatalf("factory options missing AWS selectors: %#v", gotOptions)
+	}
+	if gotOptions.Selectors.AWS.Profile != "default" || gotOptions.Selectors.AWS.Region != "us-west-2" || gotOptions.Selectors.AWS.CUR2ExportRef != "cur2-abcdefghijklmnop" {
+		t.Fatalf("factory AWS selectors = %#v, want supplied package selectors", gotOptions.Selectors.AWS)
+	}
+}
+
 func TestRegistryDefaultAWSBillingApplyPrereqsGuidesWithoutProviderDependency(t *testing.T) {
 	request := billingprereqs.AWSBillingApplyPrereqsRequest()
 

@@ -36,6 +36,7 @@ type CapabilityReport struct {
 	MissingSourceOfTruth []string
 	PlanInput            *ExecutionPlanInput
 	Manifest             *handoff.Manifest
+	Handoff              *handoff.Output
 	Warnings             []handoff.Warning
 }
 
@@ -44,9 +45,6 @@ func NewRegistry(capabilities ...Capability) (Registry, error) {
 	for _, capability := range capabilities {
 		if _, ok := ActionContractFor(capability.Request.Action); !ok {
 			return Registry{}, fmt.Errorf("capability action %q is not supported", capability.Request.Action)
-		}
-		if capability.Request.Action == assessment.ActionPackage {
-			return Registry{}, fmt.Errorf("provider package capabilities require an approved package schema first")
 		}
 		if capability.Runner == nil {
 			return Registry{}, fmt.Errorf("capability runner is required")
@@ -61,6 +59,7 @@ func NewRegistry(capabilities ...Capability) (Registry, error) {
 
 func buildCapabilityResult(request Request, options ExecutionOptions, report CapabilityReport) Result {
 	contract := mustActionContract(request.Action)
+	resultOptions := resultExecutionOptions(request, options)
 	sourceHandles, err := safeSourceHandles("capability result source handles", report.SourceHandles)
 	if err != nil {
 		return invalidCapabilityResult(request, options, contract)
@@ -82,7 +81,7 @@ func buildCapabilityResult(request Request, options ExecutionOptions, report Cap
 
 	planInput := *report.PlanInput
 	planInput.Request = request
-	planInput.ExecutionOptions = options
+	planInput.ExecutionOptions = resultOptions
 	plan, err := BuildExecutionPlan(planInput)
 	if err != nil {
 		return invalidCapabilityResult(request, options, contract)
@@ -99,12 +98,23 @@ func buildCapabilityResult(request Request, options ExecutionOptions, report Cap
 		Mutated:                       report.Mutated,
 		ProviderCapabilityImplemented: true,
 		Request:                       request,
-		ExecutionOptions:              options,
+		ExecutionOptions:              resultOptions,
 		SourceHandles:                 sourceHandles,
 		MissingSourceOfTruth:          missingSourceOfTruth,
 		Plan:                          &plan,
+		Handoff:                       report.Handoff,
 		Warnings:                      warnings,
 	}
+}
+
+func resultExecutionOptions(request Request, options ExecutionOptions) ExecutionOptions {
+	if request.Action != assessment.ActionPackage {
+		return options
+	}
+	options.Selectors = nil
+	options.AWSBillingOperation = ""
+	options.Approvals = nil
+	return options
 }
 
 func validateCapabilityReport(contract ActionContract, report CapabilityReport) error {
@@ -128,6 +138,14 @@ func validateCapabilityReport(contract ActionContract, report CapabilityReport) 
 	}
 	if report.Manifest != nil {
 		return fmt.Errorf("provider manifest requires an approved package schema")
+	}
+	if report.Handoff != nil {
+		if contract.Action != assessment.ActionPackage {
+			return fmt.Errorf("handoff output is allowed only for package capabilities")
+		}
+		if err := handoff.ValidateOutput(report.Handoff); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -172,6 +190,7 @@ func safeWarnings(warnings []handoff.Warning) ([]handoff.Warning, error) {
 }
 
 func invalidCapabilityResult(request Request, options ExecutionOptions, contract ActionContract) Result {
+	resultOptions := resultExecutionOptions(request, options)
 	return Result{
 		SchemaVersion:                 resultSchemaVersion,
 		Status:                        RunStatusFailed,
@@ -183,7 +202,7 @@ func invalidCapabilityResult(request Request, options ExecutionOptions, contract
 		Mutated:                       false,
 		ProviderCapabilityImplemented: false,
 		Request:                       request,
-		ExecutionOptions:              options,
+		ExecutionOptions:              resultOptions,
 		SourceHandles:                 providerNeutralSourceHandles(),
 		MissingSourceOfTruth: []string{
 			"Provider capability output must pass cached-source-handle, mutation, and safe-text validation.",
