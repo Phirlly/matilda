@@ -21,47 +21,62 @@ func isAWSBilling(outcome outcomeOption, cloud cloudOption) bool {
 }
 
 func runAWSBilling(reader *bufio.Scanner, stdout io.Writer, config Config) error {
+	fmt.Fprintln(stdout)
+	fmt.Fprintln(stdout, "Connect AWS account")
+
+	for attempt := 0; ; attempt++ {
+		selection, err := discoverAndSelectAWSSource(reader, stdout, config, attempt)
+		if err != nil {
+			return err
+		}
+		switch selection.Action {
+		case awsSourceSelectionRescan:
+			continue
+		case awsSourceSelectionProceed:
+			fmt.Fprintln(stdout)
+			fmt.Fprintln(stdout, "Inspect AWS CUR 2.0 billing exports")
+			options, err := awsBillingOptions(selection.Source.Identity.Source)
+			if err != nil {
+				fmt.Fprintln(stdout, "Selected AWS credential source contains unsafe selector metadata.")
+				return nil
+			}
+
+			ctx, cancel := guidedContext(config)
+			result := config.Registry.ExecuteContext(ctx, awsBillingRequest(), options)
+			err = handleAWSBillingResult(ctx, reader, stdout, config, selection.Source, result)
+			cancel()
+			return err
+		default:
+			return nil
+		}
+	}
+}
+
+func discoverAndSelectAWSSource(reader *bufio.Scanner, stdout io.Writer, config Config, attempt int) (awsSourceSelection, error) {
 	ctx, cancel := guidedContext(config)
 	defer cancel()
 
-	fmt.Fprintln(stdout)
-	fmt.Fprintln(stdout, "Connect AWS account")
-	fmt.Fprintln(stdout, "Discovering safe local AWS credential sources.")
+	if attempt == 0 {
+		fmt.Fprintln(stdout, "Discovering safe local AWS credential sources.")
+	} else {
+		fmt.Fprintln(stdout)
+		fmt.Fprintln(stdout, "Re-scanning safe local AWS credential sources.")
+	}
 
 	sources, err := config.AWSBilling.DiscoverCredentialSources(ctx)
 	if err != nil {
 		writeAWSDiscoveryError(stdout, err)
-		return nil
+		return awsSourceSelection{Action: awsSourceSelectionStop}, nil
 	}
 	if len(sources) == 0 {
 		fmt.Fprintln(stdout, "No AWS credential sources were found.")
-		fmt.Fprintln(stdout, "Sign in or configure an AWS profile, then run matilda-prep start again.")
-		return nil
 	}
 
 	verified, deferred, blocked := inspectAWSSources(ctx, config.AWSBilling, sources)
 	if len(verified) == 0 && len(deferred) == 0 {
 		writeNoVerifiedAWSSources(stdout, blocked)
-		return nil
 	}
-
-	selected, proceed, err := selectAWSSource(ctx, reader, stdout, config.AWSBilling, verified, deferred)
-	if err != nil {
-		return err
-	}
-	if !proceed {
-		return nil
-	}
-
-	fmt.Fprintln(stdout)
-	fmt.Fprintln(stdout, "Inspect AWS CUR 2.0 billing exports")
-	options, err := awsBillingOptions(selected.Identity.Source)
-	if err != nil {
-		fmt.Fprintln(stdout, "Selected AWS credential source contains unsafe selector metadata.")
-		return nil
-	}
-	result := config.Registry.ExecuteContext(ctx, awsBillingRequest(), options)
-	return handleAWSBillingResult(ctx, reader, stdout, config, selected, result)
+	return selectAWSSource(reader, stdout, config, verified, deferred)
 }
 
 func guidedContext(config Config) (context.Context, context.CancelFunc) {
@@ -82,6 +97,20 @@ type awsBlockedSource struct {
 	Code           string
 	UnsafeSource   bool
 	CanRunAWSLogin bool
+}
+
+type awsSourceSelectionAction int
+
+const (
+	awsSourceSelectionStop awsSourceSelectionAction = iota
+	awsSourceSelectionRetry
+	awsSourceSelectionRescan
+	awsSourceSelectionProceed
+)
+
+type awsSourceSelection struct {
+	Source awsVerifiedSource
+	Action awsSourceSelectionAction
 }
 
 func inspectAWSSources(ctx context.Context, guide AWSBillingGuide, sources []billingguide.CredentialSource) ([]awsVerifiedSource, []billingguide.CredentialSource, []awsBlockedSource) {
@@ -157,19 +186,55 @@ func writeNoVerifiedAWSSources(stdout io.Writer, blocked []awsBlockedSource) {
 		}
 	}
 	if len(blocked) == 0 {
-		fmt.Fprintln(stdout, "  Configure an AWS profile or environment credentials, then run matilda-prep start again.")
+		fmt.Fprintln(stdout, "  Sign in or configure an AWS profile outside this tool, then choose re-scan.")
 	}
 }
 
-func selectAWSSource(ctx context.Context, reader *bufio.Scanner, stdout io.Writer, guide AWSBillingGuide, verified []awsVerifiedSource, deferred []billingguide.CredentialSource) (awsVerifiedSource, bool, error) {
-	if len(deferred) == 0 {
-		return selectAWSIdentity(reader, stdout, verified)
+func selectAWSSource(reader *bufio.Scanner, stdout io.Writer, config Config, verified []awsVerifiedSource, deferred []billingguide.CredentialSource) (awsSourceSelection, error) {
+	if len(verified) == 1 && len(deferred) == 0 {
+		selected, proceed, err := confirmAWSIdentity(reader, stdout, verified[0])
+		if err != nil {
+			return awsSourceSelection{}, err
+		}
+		if proceed {
+			return awsSourceSelection{Source: selected, Action: awsSourceSelectionProceed}, nil
+		}
+		fmt.Fprintln(stdout, "Choose how to connect another AWS account.")
 	}
 	if len(verified) == 0 && len(deferred) == 1 {
-		return verifyDeferredAWSSource(ctx, reader, stdout, guide, deferred[0], "Verify this AWS credential source now? [y/N] ")
+		selected, proceed, err := verifyDeferredAWSSource(reader, stdout, config, deferred[0], "Verify this AWS credential source now? [y/N] ")
+		if err != nil {
+			return awsSourceSelection{}, err
+		}
+		if proceed {
+			return awsSourceSelection{Source: selected, Action: awsSourceSelectionProceed}, nil
+		}
+		fmt.Fprintln(stdout, "Choose how to connect another AWS account.")
 	}
 
-	fmt.Fprintln(stdout, "Select AWS credential source")
+	for {
+		selection, err := selectAWSIdentity(reader, stdout, config, verified, deferred)
+		if err != nil {
+			return awsSourceSelection{}, err
+		}
+		switch selection.Action {
+		case awsSourceSelectionProceed, awsSourceSelectionRescan, awsSourceSelectionStop:
+			return selection, nil
+		}
+		fmt.Fprintln(stdout, "Choose how to connect another AWS account.")
+	}
+}
+
+func selectAWSIdentity(reader *bufio.Scanner, stdout io.Writer, config Config, verified []awsVerifiedSource, deferred []billingguide.CredentialSource) (awsSourceSelection, error) {
+	sourceCount := len(verified) + len(deferred)
+	rescanIndex := sourceCount
+	manualIndex := sourceCount + 1
+	choiceCount := sourceCount + 2
+	if sourceCount == 0 {
+		fmt.Fprintln(stdout, "Select AWS credential source")
+	} else {
+		fmt.Fprintln(stdout, "Select AWS account")
+	}
 	for index, item := range verified {
 		fmt.Fprintf(stdout, "  %d. %s\n", index+1, credentialSourceLabel(item.Identity.Source))
 		fmt.Fprintf(stdout, "     %s, caller %s\n", item.Identity.AccountLabel, item.Identity.CallerRef)
@@ -178,35 +243,81 @@ func selectAWSSource(ctx context.Context, reader *bufio.Scanner, stdout io.Write
 		fmt.Fprintf(stdout, "  %d. %s\n", len(verified)+index+1, credentialSourceLabel(source))
 		fmt.Fprintln(stdout, "     Verification requires confirmation before this source is used.")
 	}
+	fmt.Fprintf(stdout, "  %d. Sign in or configure another AWS profile, then re-scan\n", rescanIndex+1)
+	fmt.Fprintf(stdout, "  %d. Use an existing AWS profile name manually (advanced)\n", manualIndex+1)
 
-	index, err := readChoice(reader, stdout, fmt.Sprintf("Select AWS credential source [1-%d]: ", len(verified)+len(deferred)), "AWS credential source", len(verified)+len(deferred))
+	promptName := "AWS account"
+	if sourceCount == 0 {
+		promptName = "AWS credential source"
+	}
+	index, err := readChoice(reader, stdout, fmt.Sprintf("Select %s [1-%d]: ", promptName, choiceCount), promptName, choiceCount)
 	if err != nil {
-		return awsVerifiedSource{}, false, err
+		return awsSourceSelection{}, err
 	}
 	if index < len(verified) {
-		return verified[index], true, nil
+		selected, proceed, err := confirmAWSIdentity(reader, stdout, verified[index])
+		if err != nil {
+			return awsSourceSelection{}, err
+		}
+		if proceed {
+			return awsSourceSelection{Source: selected, Action: awsSourceSelectionProceed}, nil
+		}
+		return awsSourceSelection{Action: awsSourceSelectionRetry}, nil
 	}
-	return verifyDeferredAWSSource(ctx, reader, stdout, guide, deferred[index-len(verified)], "Verify selected AWS credential source now? [y/N] ")
-}
+	if index < sourceCount {
+		selected, proceed, err := verifyDeferredAWSSource(reader, stdout, config, deferred[index-len(verified)], "Verify selected AWS credential source now? [y/N] ")
+		if err != nil {
+			return awsSourceSelection{}, err
+		}
+		if proceed {
+			return awsSourceSelection{Source: selected, Action: awsSourceSelectionProceed}, nil
+		}
+		return awsSourceSelection{Action: awsSourceSelectionRetry}, nil
+	}
+	if index == rescanIndex {
+		if err := waitForAWSCredentialRescan(reader, stdout); err != nil {
+			return awsSourceSelection{}, err
+		}
+		return awsSourceSelection{Action: awsSourceSelectionRescan}, nil
+	}
 
-func selectAWSIdentity(reader *bufio.Scanner, stdout io.Writer, verified []awsVerifiedSource) (awsVerifiedSource, bool, error) {
-	if len(verified) == 1 {
-		return confirmAWSIdentity(reader, stdout, verified[0])
-	}
-
-	fmt.Fprintln(stdout, "Select AWS account")
-	for index, item := range verified {
-		fmt.Fprintf(stdout, "  %d. %s\n", index+1, credentialSourceLabel(item.Identity.Source))
-		fmt.Fprintf(stdout, "     %s, caller %s\n", item.Identity.AccountLabel, item.Identity.CallerRef)
-	}
-	index, err := readChoice(reader, stdout, fmt.Sprintf("Select AWS account [1-%d]: ", len(verified)), "AWS account", len(verified))
+	source, ok, err := readManualAWSProfileSource(reader, stdout)
 	if err != nil {
-		return awsVerifiedSource{}, false, err
+		return awsSourceSelection{}, err
 	}
-	return verified[index], true, nil
+	if !ok {
+		return awsSourceSelection{Action: awsSourceSelectionRetry}, nil
+	}
+	selected, proceed, err := verifyManualAWSProfile(reader, stdout, config, source)
+	if err != nil {
+		return awsSourceSelection{}, err
+	}
+	if proceed {
+		return awsSourceSelection{Source: selected, Action: awsSourceSelectionProceed}, nil
+	}
+	return awsSourceSelection{Action: awsSourceSelectionRetry}, nil
 }
 
-func verifyDeferredAWSSource(ctx context.Context, reader *bufio.Scanner, stdout io.Writer, guide AWSBillingGuide, source billingguide.CredentialSource, prompt string) (awsVerifiedSource, bool, error) {
+func waitForAWSCredentialRescan(reader *bufio.Scanner, stdout io.Writer) error {
+	fmt.Fprintln(stdout, "Sign in or configure the AWS profile for the account you want outside this tool.")
+	fmt.Fprintln(stdout, "For AWS login profiles, run: aws login --profile <profile-name>")
+	fmt.Fprintln(stdout, "This tool will not run login, launch a browser, read login caches, or capture credential output.")
+	fmt.Fprint(stdout, "Press Enter after the AWS profile is ready to re-scan, or type cancel: ")
+	if !reader.Scan() {
+		if err := reader.Err(); err != nil {
+			return fmt.Errorf("%w: guided setup cancelled while waiting to re-scan AWS credentials: %v", ErrInputCancelled, err)
+		}
+		return fmt.Errorf("%w: guided setup cancelled before AWS credential re-scan", ErrInputCancelled)
+	}
+	switch strings.ToLower(strings.TrimSpace(reader.Text())) {
+	case "q", "quit", "cancel":
+		return fmt.Errorf("%w: guided setup cancelled by user", ErrInputCancelled)
+	default:
+		return nil
+	}
+}
+
+func verifyDeferredAWSSource(reader *bufio.Scanner, stdout io.Writer, config Config, source billingguide.CredentialSource, prompt string) (awsVerifiedSource, bool, error) {
 	fmt.Fprintf(stdout, "AWS credential source requires verification: %s\n", credentialSourceLabel(source))
 	fmt.Fprintln(stdout, "This source uses a configured credential process; verification may run that local credential command.")
 	ok, err := readConfirmation(reader, stdout, prompt)
@@ -214,11 +325,13 @@ func verifyDeferredAWSSource(ctx context.Context, reader *bufio.Scanner, stdout 
 		return awsVerifiedSource{}, false, err
 	}
 	if !ok {
-		fmt.Fprintln(stdout, "AWS billing preflight was not run.")
 		return awsVerifiedSource{}, false, nil
 	}
 
-	identity, err := guide.VerifyIdentity(ctx, source)
+	ctx, cancel := guidedContext(config)
+	defer cancel()
+
+	identity, err := config.AWSBilling.VerifyIdentity(ctx, source)
 	if err != nil {
 		code := verificationCode(err)
 		writeNoVerifiedAWSSources(stdout, []awsBlockedSource{{
@@ -235,6 +348,90 @@ func verifyDeferredAWSSource(ctx context.Context, reader *bufio.Scanner, stdout 
 	return confirmAWSIdentity(reader, stdout, awsVerifiedSource{Source: source, Identity: identity})
 }
 
+func readManualAWSProfileSource(reader *bufio.Scanner, stdout io.Writer) (billingguide.CredentialSource, bool, error) {
+	profile, err := readPromptLine(reader, stdout, "Enter AWS profile name: ", "AWS profile name", false)
+	if err != nil {
+		return billingguide.CredentialSource{}, false, err
+	}
+	source := billingguide.CredentialSource{
+		Kind:    billingguide.CredentialSourceProfile,
+		Profile: profile,
+	}
+	if _, ok := safeAWSCredentialSource(source); !ok {
+		fmt.Fprintln(stdout, "AWS profile name is not safe to use.")
+		return billingguide.CredentialSource{}, false, nil
+	}
+
+	region, err := readPromptLine(reader, stdout, "Enter AWS region for this profile [leave blank to use profile configuration]: ", "AWS region", true)
+	if err != nil {
+		return billingguide.CredentialSource{}, false, err
+	}
+	source.Region = region
+	if _, ok := safeAWSCredentialSource(source); !ok {
+		fmt.Fprintln(stdout, "AWS region is not safe to use.")
+		return billingguide.CredentialSource{}, false, nil
+	}
+	return source, true, nil
+}
+
+func verifyManualAWSProfile(reader *bufio.Scanner, stdout io.Writer, config Config, source billingguide.CredentialSource) (awsVerifiedSource, bool, error) {
+	fmt.Fprintln(stdout, "AWS profile verification may run normal AWS SDK credential resolution for this profile, including a configured credential process.")
+	ok, err := readConfirmation(reader, stdout, "Verify this AWS profile now? [y/N] ")
+	if err != nil {
+		return awsVerifiedSource{}, false, err
+	}
+	if !ok {
+		return awsVerifiedSource{}, false, nil
+	}
+
+	ctx, cancel := guidedContext(config)
+	defer cancel()
+
+	identity, err := config.AWSBilling.VerifyIdentity(ctx, source)
+	if err != nil {
+		writeManualAWSProfileVerificationError(stdout, source, verificationCode(err))
+		return awsVerifiedSource{}, false, nil
+	}
+	if _, err := awsBillingOptions(identity.Source); err != nil {
+		writeManualAWSProfileVerificationError(stdout, source, "aws_config_invalid_selector")
+		return awsVerifiedSource{}, false, nil
+	}
+	return confirmAWSIdentity(reader, stdout, awsVerifiedSource{Source: source, Identity: identity})
+}
+
+func readPromptLine(reader *bufio.Scanner, stdout io.Writer, prompt string, name string, allowEmpty bool) (string, error) {
+	fmt.Fprint(stdout, prompt)
+	if !reader.Scan() {
+		if err := reader.Err(); err != nil {
+			return "", fmt.Errorf("%w: guided setup cancelled while reading %s: %v", ErrInputCancelled, name, err)
+		}
+		return "", fmt.Errorf("%w: guided setup cancelled before %s", ErrInputCancelled, name)
+	}
+	value := strings.TrimSpace(reader.Text())
+	switch strings.ToLower(value) {
+	case "q", "quit", "cancel":
+		return "", fmt.Errorf("%w: guided setup cancelled by user", ErrInputCancelled)
+	}
+	if value == "" && !allowEmpty {
+		return "", fmt.Errorf("%w: %s cannot be empty", ErrInvalidSelection, name)
+	}
+	return value, nil
+}
+
+func writeManualAWSProfileVerificationError(stdout io.Writer, source billingguide.CredentialSource, code string) {
+	fmt.Fprintf(stdout, "%s blocked: %s\n", credentialSourceLabel(source), code)
+	switch code {
+	case "aws_config_missing_credentials":
+		fmt.Fprintf(stdout, "Run aws login --profile %s if this is an AWS login profile, or configure credentials for profile %s.\n", shellArg(source.Profile), shellArg(source.Profile))
+		fmt.Fprintln(stdout, "Then choose this profile again after login or configuration is complete.")
+	case "aws_config_missing_region":
+		fmt.Fprintf(stdout, "Enter an AWS Region when choosing this profile again, or configure a Region for profile %s outside this tool.\n", shellArg(source.Profile))
+	case "aws_config_profile_shadowed":
+		fmt.Fprintln(stdout, "AWS credential environment variables would take precedence over the selected profile.")
+		fmt.Fprintln(stdout, "Unset AWS credential environment variables and start a new shell before retrying this profile.")
+	}
+}
+
 func confirmAWSIdentity(reader *bufio.Scanner, stdout io.Writer, selected awsVerifiedSource) (awsVerifiedSource, bool, error) {
 	fmt.Fprintf(stdout, "AWS account verified: %s, caller %s, source %s\n", selected.Identity.AccountLabel, selected.Identity.CallerRef, credentialSourceLabel(selected.Identity.Source))
 	ok, err := readConfirmation(reader, stdout, "Continue with this AWS account? [y/N] ")
@@ -242,7 +439,6 @@ func confirmAWSIdentity(reader *bufio.Scanner, stdout io.Writer, selected awsVer
 		return awsVerifiedSource{}, false, err
 	}
 	if !ok {
-		fmt.Fprintln(stdout, "AWS billing preflight was not run.")
 		return awsVerifiedSource{}, false, nil
 	}
 	return selected, true, nil

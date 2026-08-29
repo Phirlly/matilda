@@ -37,7 +37,7 @@ func handleAWSBillingResult(ctx context.Context, reader *bufio.Scanner, stdout i
 		fmt.Fprintf(stdout, "Auto-selected CUR 2.0 export %s\n", candidate.Ref)
 		writeCUR2CandidateSelectionFacts(stdout, candidate, "  ", isRecommendedCUR2Candidate(candidate))
 		fmt.Fprintf(stdout, "Running readiness preflight for selected CUR 2.0 export %s\n", candidate.Ref)
-		selectedResult := runSelectedCUR2Preflight(ctx, config.Registry, selected.Identity.Source, candidate.Ref)
+		selectedResult := runSelectedCUR2PreflightWithConfig(config, selected.Identity.Source, candidate.Ref)
 		writeAWSBillingSummary(stdout, selected.Identity.Source, selectedResult)
 		return nil
 	default:
@@ -53,7 +53,7 @@ func handleAWSBillingResult(ctx context.Context, reader *bufio.Scanner, stdout i
 		}
 		selectedCandidate := ranked[index]
 		fmt.Fprintf(stdout, "Running readiness preflight for selected CUR 2.0 export %s\n", selectedCandidate.Ref)
-		selectedResult := runSelectedCUR2Preflight(ctx, config.Registry, selected.Identity.Source, selectedCandidate.Ref)
+		selectedResult := runSelectedCUR2PreflightWithConfig(config, selected.Identity.Source, selectedCandidate.Ref)
 		writeAWSBillingSummary(stdout, selected.Identity.Source, selectedResult)
 		return nil
 	}
@@ -313,6 +313,12 @@ func isRecommendedCUR2Candidate(candidate cur2Candidate) bool {
 func isAutoSelectableCUR2Candidate(candidate cur2Candidate) bool {
 	return hasSupportedCUR2SelectionMetadata(candidate) &&
 		cur2CandidateSelectionBlocker(candidate) == ""
+}
+
+func runSelectedCUR2PreflightWithConfig(config Config, source billingguide.CredentialSource, exportRef string) workflow.Result {
+	ctx, cancel := guidedContext(config)
+	defer cancel()
+	return runSelectedCUR2Preflight(ctx, config.Registry, source, exportRef)
 }
 
 func runSelectedCUR2Preflight(ctx context.Context, registry workflow.Registry, source billingguide.CredentialSource, exportRef string) workflow.Result {

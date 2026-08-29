@@ -117,6 +117,82 @@ func TestStartAWSBillingUsesInjectedGuidedRuntime(t *testing.T) {
 	}
 }
 
+func TestStartAWSBillingCanRescanAfterExternalSignIn(t *testing.T) {
+	request := workflow.Request{
+		Goal:           assessment.RapidAssessment,
+		CollectionPath: assessment.CollectionBilling,
+		Provider:       assessment.ProviderAWS,
+		Action:         assessment.ActionPreflight,
+	}
+	var gotOptions workflow.ExecutionOptions
+	registry, err := workflow.NewRegistry(workflow.Capability{
+		Request: request,
+		Runner: workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+			gotOptions = options
+			return cliCapabilityReport(got, workflow.StatusReady, workflow.SupportSupported, "aws_cur2_preflight_ready")
+		}),
+	})
+	if err != nil {
+		t.Fatalf("NewRegistry returned error: %v", err)
+	}
+	guide := &fakeCLISelectableAWSBillingGuide{
+		sourceSequences: [][]billingguide.CredentialSource{
+			{{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}},
+			{{Kind: billingguide.CredentialSourceProfile, Profile: "finance", Region: "us-west-2"}},
+		},
+		verified: map[string]billingguide.VerifiedIdentity{
+			"profile:default": {
+				Source:       billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"},
+				AccountLabel: "account-ending-1111",
+				CallerRef:    "sha256:111111111111",
+				Region:       "us-east-1",
+			},
+			"profile:finance": {
+				Source:       billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "finance", Region: "us-west-2"},
+				AccountLabel: "account-ending-2222",
+				CallerRef:    "sha256:222222222222",
+				Region:       "us-west-2",
+			},
+		},
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := runWithRuntime([]string{"start"}, strings.NewReader("1\n1\nn\n2\n\ny\n"), &stdout, &stderr, registry, guided.Config{Registry: registry, AWSBilling: guide})
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr: %s", code, stderr.String())
+	}
+	if stderr.String() != "" {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	if gotOptions.Selectors == nil || gotOptions.Selectors.AWS == nil ||
+		gotOptions.Selectors.AWS.Profile != "finance" ||
+		gotOptions.Selectors.AWS.Region != "us-west-2" {
+		t.Fatalf("runner AWS selectors = %#v, want re-scanned finance profile", gotOptions)
+	}
+	if guide.discoverCalls != 2 {
+		t.Fatalf("DiscoverCredentialSources calls = %d, want 2", guide.discoverCalls)
+	}
+	for _, want := range []string{
+		"Sign in or configure another AWS profile, then re-scan",
+		"Use an existing AWS profile name manually (advanced)",
+		"Press Enter after the AWS profile is ready to re-scan",
+		"Re-scanning safe local AWS credential sources.",
+		"account-ending-2222",
+		"matilda-prep rapid-assessment billing aws preflight --profile finance --region us-west-2",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, want to contain %q", stdout.String(), want)
+		}
+	}
+	for _, forbidden := range []string{"arn:aws", "123456789012", "access_key", "secret_key", "session_token", "/Users/"} {
+		if strings.Contains(stdout.String(), forbidden) {
+			t.Fatalf("stdout leaked forbidden value %q in %s", forbidden, stdout.String())
+		}
+	}
+}
+
 func TestStartInvalidSelectionReturnsUsageError(t *testing.T) {
 	code, stdout, stderr := runCLIWithInput("nope\n", "start")
 
@@ -1486,6 +1562,47 @@ func (fake fakeCLIAWSBillingGuide) DiscoverCredentialSources(context.Context) ([
 
 func (fake fakeCLIAWSBillingGuide) VerifyIdentity(context.Context, billingguide.CredentialSource) (billingguide.VerifiedIdentity, error) {
 	return fake.identity, nil
+}
+
+type fakeCLISelectableAWSBillingGuide struct {
+	sources         []billingguide.CredentialSource
+	sourceSequences [][]billingguide.CredentialSource
+	discoverCalls   int
+	verified        map[string]billingguide.VerifiedIdentity
+}
+
+func (fake *fakeCLISelectableAWSBillingGuide) DiscoverCredentialSources(ctx context.Context) ([]billingguide.CredentialSource, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	fake.discoverCalls++
+	if len(fake.sourceSequences) > 0 {
+		index := fake.discoverCalls - 1
+		if index >= len(fake.sourceSequences) {
+			index = len(fake.sourceSequences) - 1
+		}
+		return append([]billingguide.CredentialSource{}, fake.sourceSequences[index]...), nil
+	}
+	return append([]billingguide.CredentialSource{}, fake.sources...), nil
+}
+
+func (fake *fakeCLISelectableAWSBillingGuide) VerifyIdentity(_ context.Context, source billingguide.CredentialSource) (billingguide.VerifiedIdentity, error) {
+	identity, ok := fake.verified[cliAWSCredentialSourceKey(source)]
+	if !ok {
+		return billingguide.VerifiedIdentity{}, billingguide.VerificationError{Code: "aws_auth_failed", Message: "AWS caller identity could not be verified."}
+	}
+	return identity, nil
+}
+
+func cliAWSCredentialSourceKey(source billingguide.CredentialSource) string {
+	switch source.Kind {
+	case billingguide.CredentialSourceEnvironment:
+		return "environment"
+	case billingguide.CredentialSourceProfile:
+		return "profile:" + source.Profile
+	default:
+		return string(source.Kind)
+	}
 }
 
 func cliCapabilityReport(request workflow.Request, status workflow.RunStatus, support workflow.SupportStatus, code string) workflow.CapabilityReport {

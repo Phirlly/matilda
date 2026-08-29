@@ -69,6 +69,25 @@ unverified provider discovery, prerequisite creation, validation, and packaging
 remain fail-closed until those paths are implemented from verified Matilda and
 official provider references.
 
+For AWS Rapid Assessment - Billing Based, guided mode discovers safe local AWS
+credential sources, verifies the AWS caller with masked account evidence, and
+asks before continuing with the selected account. When multiple verified
+sources exist, the user can choose and confirm the intended account. If the
+shown account is not the right one, guided mode lets the user choose another
+discovered source or sign in/configure the intended AWS profile outside this
+tool, then re-scan safe local credential sources. Manual entry of an existing
+AWS profile name is kept as an advanced fallback and requires confirmation
+because normal AWS SDK credential resolution may run configured local
+credential providers such as `credential_process`.
+
+Guided mode does not run `aws login`, launch a browser, read AWS login caches,
+or capture credential output. If a selected profile needs login or
+configuration, the tool prints safe remediation and lets the user re-scan after
+the user completes that login or configuration outside the tool. If AWS
+credential environment variables would take precedence over a selected profile,
+the tool fails closed and tells the user to unset those variables and restart
+before retrying that profile.
+
 Future provider workflows should inspect the connected environment before
 recommending coverage and changes. Customers should not need to understand
 provider hierarchy terms, billing export internals, IAM/RBAC details, or

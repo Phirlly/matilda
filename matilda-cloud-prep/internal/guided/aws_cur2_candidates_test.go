@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/cloud/aws/billingguide"
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/workflow"
@@ -83,6 +84,86 @@ func TestRunAWSBillingPromptsBeforeSelectedExportPreflight(t *testing.T) {
 		"Readiness: not ready",
 		"aws_cur2_output_settings_blocked",
 		"--export-ref cur2-bdbdbdbdbdbdbdbd",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output = %q, want to contain %q", output, want)
+		}
+	}
+	assertGuidedOutputSafe(t, output)
+}
+
+func TestRunAWSBillingSelectedExportPreflightUsesFreshContextAfterUserWait(t *testing.T) {
+	calls := []workflow.ExecutionOptions{}
+	registry := testRegistry(t, workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+		calls = append(calls, options)
+		exportRef := ""
+		if options.Selectors != nil && options.Selectors.AWS != nil {
+			exportRef = options.Selectors.AWS.CUR2ExportRef
+		}
+		switch exportRef {
+		case "":
+			return guidedCapabilityReport(got, workflow.RunStatusBlocked, "aws_cur2_export_ambiguous", []workflow.PlanEvidence{
+				{Key: "candidate_1_export_ref", Value: "cur2-aaaaaaaaaaaaaaaa"},
+				{Key: "candidate_1_health", Value: "HEALTHY"},
+				{Key: "candidate_1_output_format", Value: "TEXT_OR_CSV"},
+				{Key: "candidate_1_compression", Value: "GZIP"},
+				{Key: "candidate_1_time_granularity", Value: "MONTHLY"},
+				{Key: "candidate_1_overwrite", Value: "CREATE_NEW_REPORT"},
+				{Key: "candidate_1_output_type", Value: "CUSTOM"},
+				{Key: "candidate_1_refresh_cadence", Value: "SYNCHRONOUS"},
+				{Key: "candidate_1_destination_region", Value: "us-east-1"},
+				{Key: "candidate_2_export_ref", Value: "cur2-bbbbbbbbbbbbbbbb"},
+				{Key: "candidate_2_health", Value: "HEALTHY"},
+				{Key: "candidate_2_output_format", Value: "PARQUET"},
+				{Key: "candidate_2_compression", Value: "PARQUET"},
+				{Key: "candidate_2_time_granularity", Value: "DAILY"},
+				{Key: "candidate_2_overwrite", Value: "OVERWRITE_REPORT"},
+				{Key: "candidate_2_output_type", Value: "CUSTOM"},
+				{Key: "candidate_2_refresh_cadence", Value: "SYNCHRONOUS"},
+				{Key: "candidate_2_destination_region", Value: "us-east-1"},
+			})
+		case "cur2-aaaaaaaaaaaaaaaa":
+			if err := ctx.Err(); err != nil {
+				t.Fatalf("selected-export preflight context error = %v, want fresh active context", err)
+			}
+			return guidedCapabilityReport(got, workflow.StatusReady, "aws_cur2_preflight_ready", []workflow.PlanEvidence{
+				{Key: "output_format", Value: "TEXT_OR_CSV"},
+				{Key: "compression", Value: "GZIP"},
+				{Key: "time_granularity", Value: "MONTHLY"},
+				{Key: "overwrite", Value: "CREATE_NEW_REPORT"},
+			})
+		default:
+			t.Fatalf("unexpected export ref %q", exportRef)
+			return workflow.CapabilityReport{}
+		}
+	}))
+	guide := &fakeAWSBillingGuide{
+		sources: []billingguide.CredentialSource{{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}},
+		verified: map[string]billingguide.VerifiedIdentity{
+			"profile:default": {Source: billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}, AccountLabel: "account-ending-9012", CallerRef: "sha256:abcdef123456", Region: "us-east-1"},
+		},
+	}
+
+	output, err := runGuidedWithConfigReader(&delayedInput{
+		chunks: []delayedInputChunk{
+			{text: "1\n1\ny\n"},
+			{text: "1\n", delay: 1100 * time.Millisecond},
+		},
+	}, Config{Registry: registry, AWSBilling: guide, TimeoutSeconds: 1})
+
+	if err != nil {
+		t.Fatalf("RunWithConfig returned error: %v", err)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("preflight calls = %d, want initial discovery plus selected export preflight", len(calls))
+	}
+	if calls[1].Selectors.AWS.CUR2ExportRef != "cur2-aaaaaaaaaaaaaaaa" {
+		t.Fatalf("selected preflight ref = %q, want chosen candidate ref", calls[1].Selectors.AWS.CUR2ExportRef)
+	}
+	for _, want := range []string{
+		"Select AWS CUR 2.0 export",
+		"Running readiness preflight for selected CUR 2.0 export cur2-aaaaaaaaaaaaaaaa",
+		"Support code: aws_cur2_preflight_ready",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("output = %q, want to contain %q", output, want)
