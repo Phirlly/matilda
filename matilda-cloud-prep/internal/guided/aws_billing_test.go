@@ -254,6 +254,269 @@ func TestWriteAWSBillingSummaryShowsCreateCUR2ExportCommandWhenNoCURExists(t *te
 	assertGuidedOutputSafe(t, got)
 }
 
+func TestWaitForAWSCredentialRescan(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		wantErr error
+	}{
+		{name: "enter continues", input: "\n"},
+		{name: "text continues", input: "ready\n"},
+		{name: "cancel stops", input: "cancel\n", wantErr: ErrInputCancelled},
+		{name: "quit stops", input: "q\n", wantErr: ErrInputCancelled},
+		{name: "eof stops", input: "", wantErr: ErrInputCancelled},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var output bytes.Buffer
+			err := waitForAWSCredentialRescan(bufio.NewScanner(strings.NewReader(tt.input)), &output)
+
+			if tt.wantErr == nil && err != nil {
+				t.Fatalf("waitForAWSCredentialRescan returned error: %v", err)
+			}
+			if tt.wantErr != nil && !errors.Is(err, tt.wantErr) {
+				t.Fatalf("waitForAWSCredentialRescan error = %v, want %v", err, tt.wantErr)
+			}
+			for _, want := range []string{
+				"Sign in or configure the AWS profile for the account you want outside this tool.",
+				"Press Enter after the AWS profile is ready to re-scan, or type cancel:",
+			} {
+				if !strings.Contains(output.String(), want) {
+					t.Fatalf("output = %q, want to contain %q", output.String(), want)
+				}
+			}
+			assertGuidedOutputSafe(t, output.String())
+		})
+	}
+}
+
+func TestReadPromptLineValidatesInput(t *testing.T) {
+	tests := []struct {
+		name       string
+		input      string
+		allowEmpty bool
+		want       string
+		wantErr    error
+	}{
+		{name: "trims value", input: "  finance-prod  \n", want: "finance-prod"},
+		{name: "allows empty when optional", input: "\n", allowEmpty: true},
+		{name: "rejects required empty", input: "\n", wantErr: ErrInvalidSelection},
+		{name: "cancel stops", input: "quit\n", wantErr: ErrInputCancelled},
+		{name: "eof stops", input: "", wantErr: ErrInputCancelled},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var output bytes.Buffer
+			got, err := readPromptLine(bufio.NewScanner(strings.NewReader(tt.input)), &output, "Prompt: ", "AWS profile name", tt.allowEmpty)
+
+			if tt.wantErr == nil && err != nil {
+				t.Fatalf("readPromptLine returned error: %v", err)
+			}
+			if tt.wantErr != nil && !errors.Is(err, tt.wantErr) {
+				t.Fatalf("readPromptLine error = %v, want %v", err, tt.wantErr)
+			}
+			if got != tt.want {
+				t.Fatalf("readPromptLine value = %q, want %q", got, tt.want)
+			}
+			if output.String() != "Prompt: " {
+				t.Fatalf("prompt output = %q, want Prompt: ", output.String())
+			}
+		})
+	}
+}
+
+func TestReadManualAWSProfileSourceValidatesProfileAndRegion(t *testing.T) {
+	tests := []struct {
+		name       string
+		input      string
+		want       billingguide.CredentialSource
+		wantOK     bool
+		wantErr    error
+		wantOutput string
+	}{
+		{
+			name:    "valid profile with configured region fallback",
+			input:   "finance-prod\n\n",
+			want:    billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "finance-prod"},
+			wantOK:  true,
+			wantErr: nil,
+		},
+		{
+			name:    "valid profile with explicit region",
+			input:   "finance-prod\nus-west-2\n",
+			want:    billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "finance-prod", Region: "us-west-2"},
+			wantOK:  true,
+			wantErr: nil,
+		},
+		{
+			name:    "empty profile is invalid selection",
+			input:   "\n",
+			wantErr: ErrInvalidSelection,
+		},
+		{
+			name:       "unsafe profile returns retryable selection",
+			input:      "../profile\n",
+			wantOK:     false,
+			wantOutput: "AWS profile name is not safe to use.",
+		},
+		{
+			name:       "unsafe region returns retryable selection",
+			input:      "finance-prod\n../region\n",
+			wantOK:     false,
+			wantOutput: "AWS region is not safe to use.",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var output bytes.Buffer
+			got, ok, err := readManualAWSProfileSource(bufio.NewScanner(strings.NewReader(tt.input)), &output)
+
+			if tt.wantErr == nil && err != nil {
+				t.Fatalf("readManualAWSProfileSource returned error: %v", err)
+			}
+			if tt.wantErr != nil && !errors.Is(err, tt.wantErr) {
+				t.Fatalf("readManualAWSProfileSource error = %v, want %v", err, tt.wantErr)
+			}
+			if ok != tt.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
+			}
+			if got != tt.want {
+				t.Fatalf("source = %#v, want %#v", got, tt.want)
+			}
+			if tt.wantOutput != "" && !strings.Contains(output.String(), tt.wantOutput) {
+				t.Fatalf("output = %q, want to contain %q", output.String(), tt.wantOutput)
+			}
+			assertGuidedOutputSafe(t, output.String())
+		})
+	}
+}
+
+func TestVerifyManualAWSProfile(t *testing.T) {
+	source := billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "finance-prod", Region: "us-west-2"}
+
+	tests := []struct {
+		name        string
+		input       string
+		guide       *fakeAWSBillingGuide
+		wantProceed bool
+		wantCalls   int
+		wantOutput  []string
+	}{
+		{
+			name:        "decline verification",
+			input:       "\n",
+			guide:       &fakeAWSBillingGuide{},
+			wantProceed: false,
+			wantCalls:   0,
+			wantOutput:  []string{"Verify this AWS profile now? [y/N]"},
+		},
+		{
+			name:  "verification failure prints safe code",
+			input: "y\n",
+			guide: &fakeAWSBillingGuide{
+				verifyErrs: map[string]error{
+					"profile:finance-prod": billingguide.VerificationError{Code: "aws_config_missing_credentials", Message: "raw arn:aws:iam::123456789012:user/example"},
+				},
+			},
+			wantProceed: false,
+			wantCalls:   1,
+			wantOutput: []string{
+				"profile finance-prod in us-west-2 blocked: aws_config_missing_credentials",
+				"Run aws login --profile finance-prod",
+			},
+		},
+		{
+			name:  "invalid verified selector returns safe error",
+			input: "y\n",
+			guide: &fakeAWSBillingGuide{
+				verified: map[string]billingguide.VerifiedIdentity{
+					"profile:finance-prod": {
+						Source:       billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "../bad", Region: "us-west-2"},
+						AccountLabel: "account-ending-9012",
+						CallerRef:    "sha256:abcdef123456",
+						Region:       "us-west-2",
+					},
+				},
+			},
+			wantProceed: false,
+			wantCalls:   1,
+			wantOutput:  []string{"profile finance-prod in us-west-2 blocked: aws_config_invalid_selector"},
+		},
+		{
+			name:  "successful verification confirms identity",
+			input: "y\ny\n",
+			guide: &fakeAWSBillingGuide{
+				verified: map[string]billingguide.VerifiedIdentity{
+					"profile:finance-prod": {
+						Source:       source,
+						AccountLabel: "account-ending-9012",
+						CallerRef:    "sha256:abcdef123456",
+						Region:       "us-west-2",
+					},
+				},
+			},
+			wantProceed: true,
+			wantCalls:   1,
+			wantOutput: []string{
+				"AWS account verified: account-ending-9012",
+				"Continue with this AWS account? [y/N]",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var output bytes.Buffer
+			_, proceed, err := verifyManualAWSProfile(bufio.NewScanner(strings.NewReader(tt.input)), &output, Config{AWSBilling: tt.guide}, source)
+
+			if err != nil {
+				t.Fatalf("verifyManualAWSProfile returned error: %v", err)
+			}
+			if proceed != tt.wantProceed {
+				t.Fatalf("proceed = %v, want %v", proceed, tt.wantProceed)
+			}
+			if len(tt.guide.verifyCalls) != tt.wantCalls {
+				t.Fatalf("verify calls = %#v, want %d calls", tt.guide.verifyCalls, tt.wantCalls)
+			}
+			for _, want := range tt.wantOutput {
+				if !strings.Contains(output.String(), want) {
+					t.Fatalf("output = %q, want to contain %q", output.String(), want)
+				}
+			}
+			for _, forbidden := range []string{"arn:aws", "123456789012", "example"} {
+				if strings.Contains(output.String(), forbidden) {
+					t.Fatalf("output leaked %q: %s", forbidden, output.String())
+				}
+			}
+			assertGuidedOutputSafe(t, output.String())
+		})
+	}
+}
+
+func TestRunAWSLoginForSourceWithoutRunnerReturnsToSelection(t *testing.T) {
+	var output bytes.Buffer
+	selection, err := runAWSLoginForSource(bufio.NewScanner(strings.NewReader("")), &output, Config{}, billingguide.CredentialSource{
+		Kind:            billingguide.CredentialSourceProfile,
+		Profile:         "default",
+		Region:          "us-east-1",
+		HasLoginSession: true,
+	})
+
+	if err != nil {
+		t.Fatalf("runAWSLoginForSource returned error: %v", err)
+	}
+	if selection.Action != awsSourceSelectionRetry {
+		t.Fatalf("selection action = %v, want retry", selection.Action)
+	}
+	if !strings.Contains(output.String(), "In-flow AWS login is unavailable. Choose the re-scan option after signing in outside this tool.") {
+		t.Fatalf("output = %q, want unavailable guidance", output.String())
+	}
+	assertGuidedOutputSafe(t, output.String())
+}
+
 func TestRunAWSBillingUsesEnvironmentCredentialSourceSafely(t *testing.T) {
 	var gotOptions workflow.ExecutionOptions
 	registry := testRegistry(t, workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {

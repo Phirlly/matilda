@@ -60,6 +60,7 @@ func TestAWSCLIVersionSupportsLogin(t *testing.T) {
 		version awsCLIVersion
 		want    bool
 	}{
+		{version: awsCLIVersion{Major: 1, Minor: 40, Patch: 0}, want: false},
 		{version: awsCLIVersion{Major: 2, Minor: 31, Patch: 99}, want: false},
 		{version: awsCLIVersion{Major: 2, Minor: 32, Patch: 0}, want: true},
 		{version: awsCLIVersion{Major: 2, Minor: 36, Patch: 34}, want: true},
@@ -235,6 +236,36 @@ func TestAWSCLILoginRunnerLoginReportsMissingCLI(t *testing.T) {
 	}
 	if called {
 		t.Fatal("login command should not run when AWS CLI lookup fails")
+	}
+}
+
+func TestAWSCLILoginRunnerLoginReportsCommandFailure(t *testing.T) {
+	runner := awsCLILoginRunner{
+		lookPath: func(name string) (string, error) {
+			if name != "aws" {
+				t.Fatalf("lookPath name = %q, want aws", name)
+			}
+			return "/usr/local/bin/aws", nil
+		},
+		runLogin: func(ctx context.Context, path string, source billingguide.CredentialSource) error {
+			if path != "/usr/local/bin/aws" {
+				t.Fatalf("login path = %q, want /usr/local/bin/aws", path)
+			}
+			if source.Profile != "default" {
+				t.Fatalf("login profile = %q, want default", source.Profile)
+			}
+			return errors.New("login failed")
+		},
+	}
+
+	err := runner.Login(context.Background(), billingguide.CredentialSource{
+		Kind:    billingguide.CredentialSourceProfile,
+		Profile: "default",
+		Region:  "us-east-1",
+	})
+
+	if err == nil {
+		t.Fatal("Login returned nil error for command failure")
 	}
 }
 
