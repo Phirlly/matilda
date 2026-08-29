@@ -536,19 +536,7 @@ func (plan setupPlan) identityVerified() bool {
 }
 
 func (runner Runner) blockedAfterIdentity(request workflow.Request, code string, message string, plan setupPlan) workflow.CapabilityReport {
-	step := workflow.PlanStep{
-		Intent:                    workflow.PlanStepBlocked,
-		Title:                     "Resolve AWS CUR 2.0 setup blocker",
-		Description:               "Stop before AWS CUR 2.0 setup because a required prerequisite could not be verified safely.",
-		Reason:                    "Cloud-side setup must fail closed when AWS setup evidence is unavailable.",
-		ApprovalKind:              "not_required",
-		CurrentState:              "AWS CUR 2.0 setup is blocked after caller identity verification.",
-		TargetState:               "Required AWS setup evidence is available before mutation.",
-		RequiredPermission:        "AWS setup permissions required by the selected operation.",
-		CredentialMaterialTouched: false,
-		Validation:                "Rerun apply-prereqs after resolving the blocker.",
-		Rollback:                  "No cloud change was made.",
-	}
+	step := blockedSetupStep(code, true)
 	check := workflow.PlanCheck{
 		ID:       code,
 		Status:   workflow.CheckFail,
@@ -580,20 +568,7 @@ func (runner Runner) blocked(request workflow.Request, code string, message stri
 			Summary:        "AWS billing coverage could not be classified because setup stopped before discovery completed.",
 		},
 		PackageSchemaStatus: workflow.PackageSchemaProviderSchemaRequired,
-		Steps: []workflow.PlanStep{{
-			Intent:                    workflow.PlanStepBlocked,
-			Title:                     "Resolve AWS CUR 2.0 setup blocker",
-			Description:               "Stop before AWS CUR 2.0 setup because a required prerequisite could not be verified safely.",
-			Reason:                    "Cloud-side setup must fail closed when AWS identity, configuration, or setup evidence is unavailable.",
-			ApprovalKind:              "not_required",
-			CurrentState:              "AWS CUR 2.0 setup is blocked.",
-			TargetState:               "Required AWS setup evidence is available before mutation.",
-			RequiredPermission:        "AWS setup permissions required by the selected operation.",
-			CredentialMaterialTouched: false,
-			Validation:                "Rerun apply-prereqs after resolving the blocker.",
-			Rollback:                  "No cloud change was made.",
-			SourceHandles:             handles,
-		}},
+		Steps:               []workflow.PlanStep{blockedSetupStep(code, false)},
 		Checks: []workflow.PlanCheck{{
 			ID:            code,
 			Status:        workflow.CheckFail,

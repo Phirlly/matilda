@@ -37,6 +37,7 @@ func DefaultGuidedConfig(registry workflow.Registry) guided.Config {
 		AWSBilling: billingguide.New(billingguide.Config{
 			ClientFactory: defaultAWSBillingClientFactory(),
 		}),
+		AWSLogin: guided.NewAWSCLILoginRunner(),
 	}
 }
 

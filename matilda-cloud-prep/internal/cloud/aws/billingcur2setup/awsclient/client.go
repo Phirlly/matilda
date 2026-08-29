@@ -143,6 +143,10 @@ func (client *Client) HeadBucket(ctx context.Context, request billingcur2setup.H
 			return cur2preflight.BucketAccess{}, billingcur2setup.NewProviderError("aws_s3_bucket_not_found", "AWS S3 bucket does not exist.")
 		}
 		if status := statusCode(err); status != 0 {
+			if status == 404 {
+				// S3 HeadBucket often returns only status for a missing bucket; the setup runner still gates creation behind plan-bound approval.
+				return cur2preflight.BucketAccess{}, billingcur2setup.NewProviderError("aws_s3_bucket_not_found", "AWS S3 bucket does not exist.")
+			}
 			return cur2preflight.BucketAccess{Accessible: false, StatusCode: status}, nil
 		}
 		return cur2preflight.BucketAccess{}, classifyS3Error(err, "aws_s3_bucket_inaccessible")

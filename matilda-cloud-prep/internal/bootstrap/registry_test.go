@@ -39,6 +39,14 @@ func TestRegistryCanKeepAWSBillingPreflightDependencyBlocked(t *testing.T) {
 	}
 }
 
+func TestDefaultGuidedConfigIncludesAWSLoginRunner(t *testing.T) {
+	config := DefaultGuidedConfig(Registry(RegistryConfig{}))
+
+	if config.AWSLogin == nil {
+		t.Fatal("DefaultGuidedConfig AWSLogin = nil, want default guided AWS login runner")
+	}
+}
+
 func TestRegistryFactoryReceivesAWSExecutionOptions(t *testing.T) {
 	request := workflow.Request{
 		Goal:           assessment.RapidAssessment,

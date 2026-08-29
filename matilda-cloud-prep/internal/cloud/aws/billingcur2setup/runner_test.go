@@ -1045,6 +1045,19 @@ func TestRunnerBlocksAmbiguousGeneratedBucketHeadBucketStatusBeforeMutation(t *t
 			if len(client.headBucketRequests) != 1 {
 				t.Fatalf("HeadBucket calls = %d, want fail-closed after first ambiguous response", len(client.headBucketRequests))
 			}
+			if result.Plan == nil || len(result.Plan.Steps) != 1 {
+				t.Fatalf("Plan = %#v, want one blocked guidance step", result.Plan)
+			}
+			step := result.Plan.Steps[0]
+			for _, want := range []string{
+				"generated same-account S3 bucket candidate",
+				"Matilda Cloud Prep can show an approval-required plan",
+				"Do not manually create or select arbitrary buckets",
+			} {
+				if !strings.Contains(step.CurrentState+step.TargetState+step.Validation, want) {
+					t.Fatalf("blocked step = %#v, want guidance containing %q", step, want)
+				}
+			}
 			if result.Mutated || client.createBucketCalls() != 0 || client.putBucketPolicyCalls() != 0 || client.createExportCalls() != 0 {
 				t.Fatalf("mutation state = result %t bucket %d policy %d export %d, want no mutation",
 					result.Mutated, client.createBucketCalls(), client.putBucketPolicyCalls(), client.createExportCalls())

@@ -31,11 +31,17 @@ func handleAWSBillingResult(ctx context.Context, reader *bufio.Scanner, stdout i
 	case 1:
 		candidate := ranked[0]
 		if !isAutoSelectableCUR2Candidate(candidate) {
-			writeSingleCUR2CandidateNeedsReview(stdout, selected.Identity.Source, candidate)
-			return nil
+			return selectSingleCUR2CandidateAction(reader, stdout, config, selected.Identity.Source, candidate)
 		}
-		fmt.Fprintf(stdout, "Auto-selected CUR 2.0 export %s\n", candidate.Ref)
+		fmt.Fprintf(stdout, "Detected one usable CUR 2.0 export %s\n", candidate.Ref)
 		writeCUR2CandidateSelectionFacts(stdout, candidate, "  ", isRecommendedCUR2Candidate(candidate))
+		useDetected, err := readConfirmationDefaultYes(reader, stdout, "Use this detected CUR 2.0 export? [Y/n] ")
+		if err != nil {
+			return err
+		}
+		if !useDetected {
+			return runCreateCUR2SetupPlanWithConfig(reader, stdout, config, selected.Identity.Source)
+		}
 		fmt.Fprintf(stdout, "Running readiness preflight for selected CUR 2.0 export %s\n", candidate.Ref)
 		selectedResult := runSelectedCUR2PreflightWithConfig(config, selected.Identity.Source, candidate.Ref)
 		writeAWSBillingSummary(stdout, selected.Identity.Source, selectedResult)
@@ -47,9 +53,16 @@ func handleAWSBillingResult(ctx context.Context, reader *bufio.Scanner, stdout i
 			fmt.Fprintf(stdout, "  %d. %s\n", index+1, candidateLabel(candidate, recommended))
 			writeCUR2CandidateSelectionFacts(stdout, candidate, "     ", recommended)
 		}
-		index, err := readChoice(reader, stdout, fmt.Sprintf("Select AWS CUR 2.0 export [1-%d]: ", len(ranked)), "AWS CUR 2.0 export", len(ranked))
+		createNewIndex := len(ranked)
+		choiceCount := len(ranked) + 1
+		fmt.Fprintf(stdout, "  %d. Prepare a new Matilda CUR 2.0 setup plan\n", createNewIndex+1)
+		fmt.Fprintln(stdout, "     Use this when none of the discovered exports is the one you want.")
+		index, err := readChoice(reader, stdout, fmt.Sprintf("Select AWS CUR 2.0 export [1-%d]: ", choiceCount), "AWS CUR 2.0 export", choiceCount)
 		if err != nil {
 			return err
+		}
+		if index == createNewIndex {
+			return runCreateCUR2SetupPlanWithConfig(reader, stdout, config, selected.Identity.Source)
 		}
 		selectedCandidate := ranked[index]
 		fmt.Fprintf(stdout, "Running readiness preflight for selected CUR 2.0 export %s\n", selectedCandidate.Ref)
@@ -57,6 +70,27 @@ func handleAWSBillingResult(ctx context.Context, reader *bufio.Scanner, stdout i
 		writeAWSBillingSummary(stdout, selected.Identity.Source, selectedResult)
 		return nil
 	}
+}
+
+func selectSingleCUR2CandidateAction(reader *bufio.Scanner, stdout io.Writer, config Config, source billingguide.CredentialSource, candidate cur2Candidate) error {
+	writeSingleCUR2CandidateNeedsReview(stdout, candidate)
+	fmt.Fprintln(stdout)
+	fmt.Fprintln(stdout, "Select AWS CUR 2.0 action")
+	fmt.Fprintln(stdout, "  1. Review this CUR 2.0 export with full readiness preflight")
+	fmt.Fprintln(stdout, "  2. Prepare a new Matilda CUR 2.0 setup plan")
+	fmt.Fprintln(stdout, "     Use this when the discovered export is not the one you want.")
+	index, err := readChoice(reader, stdout, "Select AWS CUR 2.0 action [1-2]: ", "AWS CUR 2.0 action", 2)
+	if err != nil {
+		return err
+	}
+	if index == 1 {
+		return runCreateCUR2SetupPlanWithConfig(reader, stdout, config, source)
+	}
+
+	fmt.Fprintf(stdout, "Running readiness preflight for selected CUR 2.0 export %s\n", candidate.Ref)
+	selectedResult := runSelectedCUR2PreflightWithConfig(config, source, candidate.Ref)
+	writeAWSBillingSummary(stdout, source, selectedResult)
+	return nil
 }
 
 func isCUR2CandidateSelectionResult(result workflow.Result) bool {
@@ -321,6 +355,32 @@ func runSelectedCUR2PreflightWithConfig(config Config, source billingguide.Crede
 	return runSelectedCUR2Preflight(ctx, config.Registry, source, exportRef)
 }
 
+func runCreateCUR2SetupPlanWithConfig(reader *bufio.Scanner, stdout io.Writer, config Config, source billingguide.CredentialSource) error {
+	fmt.Fprintln(stdout, "Preparing a new Matilda AWS CUR 2.0 setup plan.")
+	ctx, cancel := guidedContext(config)
+	result := runCreateCUR2SetupPlan(ctx, config.Registry, source)
+	cancel()
+	writeAWSBillingSummary(stdout, source, result)
+	if !shouldOfferCreateCUR2GuidedApply(result) {
+		return nil
+	}
+	apply, err := readConfirmation(reader, stdout, "Apply this AWS CUR 2.0 setup plan now? [y/N] ")
+	if err != nil {
+		return err
+	}
+	if !apply {
+		fmt.Fprintln(stdout, "Guided apply skipped. No cloud changes were made.")
+		return nil
+	}
+
+	fmt.Fprintln(stdout, "Applying approved Matilda AWS CUR 2.0 setup plan.")
+	applyCtx, applyCancel := guidedContext(config)
+	defer applyCancel()
+	applied := runApprovedCreateCUR2SetupPlan(applyCtx, config.Registry, source, result)
+	writeAWSBillingSummary(stdout, source, applied)
+	return nil
+}
+
 func runSelectedCUR2Preflight(ctx context.Context, registry workflow.Registry, source billingguide.CredentialSource, exportRef string) workflow.Result {
 	options, err := awsBillingOptions(source)
 	if err != nil {
@@ -346,6 +406,92 @@ func runSelectedCUR2Preflight(ctx context.Context, registry workflow.Registry, s
 		}
 	}
 	return registry.ExecuteContext(ctx, awsBillingRequest(), options)
+}
+
+func runCreateCUR2SetupPlan(ctx context.Context, registry workflow.Registry, source billingguide.CredentialSource) workflow.Result {
+	request := awsBillingApplyPrereqsRequest()
+	options, err := awsBillingOptions(source)
+	if err != nil {
+		return workflow.Result{
+			Status:  workflow.RunStatusBlocked,
+			Code:    "aws_config_invalid_selector",
+			Message: "Selected AWS credential source contains unsafe selector metadata.",
+		}
+	}
+	options.AWSBillingOperation = workflow.AWSBillingOperationCreateCUR2Export
+	options, err = workflow.NormalizeExecutionOptionsForRequest(request, options)
+	if err != nil {
+		return workflow.Result{
+			Status:  workflow.RunStatusBlocked,
+			Code:    "execution_options_invalid",
+			Message: "AWS CUR 2.0 setup options are invalid or unsafe.",
+		}
+	}
+	return registry.ExecuteContext(ctx, request, options)
+}
+
+func shouldOfferCreateCUR2GuidedApply(result workflow.Result) bool {
+	if !isCreateCUR2SetupResult(result) || result.Mutated || result.Plan == nil {
+		return false
+	}
+	approval := result.Plan.Approval
+	if !approval.Required || approval.Blocked || approval.Approved || approval.ApprovalPlanID == "" {
+		return false
+	}
+	for _, step := range result.Plan.Steps {
+		if step.RequiresApproval {
+			return true
+		}
+	}
+	return false
+}
+
+func runApprovedCreateCUR2SetupPlan(ctx context.Context, registry workflow.Registry, source billingguide.CredentialSource, preview workflow.Result) workflow.Result {
+	request := awsBillingApplyPrereqsRequest()
+	options, err := createCUR2SetupApprovalOptions(source, preview)
+	if err != nil {
+		return workflow.Result{
+			Status:  workflow.RunStatusBlocked,
+			Code:    "aws_cur2_create_export_approval_unavailable",
+			Message: "AWS CUR 2.0 setup approval could not be built from the current guided plan.",
+			Request: request,
+		}
+	}
+	return registry.ExecuteContext(ctx, request, options)
+}
+
+func createCUR2SetupApprovalOptions(source billingguide.CredentialSource, preview workflow.Result) (workflow.ExecutionOptions, error) {
+	request := awsBillingApplyPrereqsRequest()
+	options, err := awsBillingOptions(source)
+	if err != nil {
+		return workflow.ExecutionOptions{}, err
+	}
+	options.AWSBillingOperation = workflow.AWSBillingOperationCreateCUR2Export
+	if preview.Plan == nil {
+		return workflow.ExecutionOptions{}, fmt.Errorf("create CUR 2.0 setup plan is missing")
+	}
+	approval := preview.Plan.Approval
+	if !approval.Required || approval.Blocked || approval.Approved {
+		return workflow.ExecutionOptions{}, fmt.Errorf("create CUR 2.0 setup plan is not approvable")
+	}
+	planID := strings.TrimSpace(approval.ApprovalPlanID)
+	if planID == "" {
+		return workflow.ExecutionOptions{}, fmt.Errorf("create CUR 2.0 setup plan approval ID is missing")
+	}
+	for _, step := range preview.Plan.Steps {
+		if !step.RequiresApproval {
+			continue
+		}
+		options.Approvals = append(options.Approvals, workflow.ExecutionApproval{
+			OperationID: step.ID,
+			PlanID:      planID,
+			Confirmed:   true,
+		})
+	}
+	if len(options.Approvals) == 0 {
+		return workflow.ExecutionOptions{}, fmt.Errorf("create CUR 2.0 setup plan has no mutating steps to approve")
+	}
+	return workflow.NormalizeExecutionOptionsForRequest(request, options)
 }
 
 func safeCUR2ExportRef(value string) bool {
@@ -441,13 +587,10 @@ func writeNonReadyCUR2Candidate(stdout io.Writer, item classifiedCUR2Candidate) 
 	writeCUR2CandidateDetails(stdout, item, "not ready", nonReadyCUR2NextAction(item))
 }
 
-func writeSingleCUR2CandidateNeedsReview(stdout io.Writer, source billingguide.CredentialSource, candidate cur2Candidate) {
+func writeSingleCUR2CandidateNeedsReview(stdout io.Writer, candidate cur2Candidate) {
 	fmt.Fprintln(stdout, "One AWS CUR 2.0 export candidate needs review.")
 	fmt.Fprintf(stdout, "  %s\n", candidateLabel(candidate))
 	writeCUR2CandidateSelectionFacts(stdout, candidate, "    ", false)
-	fmt.Fprintln(stdout)
-	fmt.Fprintln(stdout, "Review with:")
-	fmt.Fprintf(stdout, "  %s\n", directAWSBillingCommand(source, candidate.Ref))
 }
 
 func writeCUR2CandidateSelectionFacts(stdout io.Writer, candidate cur2Candidate, indent string, recommended bool) {

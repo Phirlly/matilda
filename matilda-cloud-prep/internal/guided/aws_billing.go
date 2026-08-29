@@ -73,10 +73,11 @@ func discoverAndSelectAWSSource(reader *bufio.Scanner, stdout io.Writer, config 
 	}
 
 	verified, deferred, blocked := inspectAWSSources(ctx, config.AWSBilling, sources)
+	loginActions := awsLoginActions(ctx, config, blocked)
 	if len(verified) == 0 && len(deferred) == 0 {
-		writeNoVerifiedAWSSources(stdout, blocked)
+		writeNoVerifiedAWSSources(stdout, blocked, len(loginActions) == 0)
 	}
-	return selectAWSSource(reader, stdout, config, verified, deferred)
+	return selectAWSSource(reader, stdout, config, verified, deferred, loginActions)
 }
 
 func guidedContext(config Config) (context.Context, context.CancelFunc) {
@@ -97,6 +98,10 @@ type awsBlockedSource struct {
 	Code           string
 	UnsafeSource   bool
 	CanRunAWSLogin bool
+}
+
+type awsLoginAction struct {
+	Source billingguide.CredentialSource
 }
 
 type awsSourceSelectionAction int
@@ -156,6 +161,32 @@ func canRunAWSLogin(source billingguide.CredentialSource, code string) bool {
 		code == "aws_config_missing_credentials"
 }
 
+func awsLoginActions(ctx context.Context, config Config, blocked []awsBlockedSource) []awsLoginAction {
+	if config.AWSLogin == nil {
+		return nil
+	}
+
+	candidates := []awsLoginAction{}
+	for _, item := range blocked {
+		if !item.CanRunAWSLogin {
+			continue
+		}
+		source, ok := safeAWSCredentialSource(item.Source)
+		if !ok || source.Kind != billingguide.CredentialSourceProfile || source.Profile == "" {
+			continue
+		}
+		candidates = append(candidates, awsLoginAction{Source: source})
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	if support := config.AWSLogin.SupportsLogin(ctx); !support.Available {
+		return nil
+	}
+	return candidates
+}
+
 func verificationCode(err error) string {
 	var verificationErr billingguide.VerificationError
 	if errors.As(err, &verificationErr) && verificationErr.Code != "" {
@@ -173,7 +204,7 @@ func writeAWSDiscoveryError(stdout io.Writer, err error) {
 	fmt.Fprintln(stdout, "AWS credential discovery could not complete.")
 }
 
-func writeNoVerifiedAWSSources(stdout io.Writer, blocked []awsBlockedSource) {
+func writeNoVerifiedAWSSources(stdout io.Writer, blocked []awsBlockedSource, includeExternalLoginRemediation bool) {
 	fmt.Fprintln(stdout, "No verified AWS credential source is available.")
 	for _, source := range blocked {
 		if source.UnsafeSource {
@@ -181,7 +212,7 @@ func writeNoVerifiedAWSSources(stdout io.Writer, blocked []awsBlockedSource) {
 			continue
 		}
 		fmt.Fprintf(stdout, "  %s blocked: %s\n", credentialSourceLabel(source.Source), source.Code)
-		if source.CanRunAWSLogin {
+		if source.CanRunAWSLogin && includeExternalLoginRemediation {
 			fmt.Fprintf(stdout, "  Remediation: aws login --profile %s\n", shellArg(source.Source.Profile))
 		}
 	}
@@ -190,7 +221,7 @@ func writeNoVerifiedAWSSources(stdout io.Writer, blocked []awsBlockedSource) {
 	}
 }
 
-func selectAWSSource(reader *bufio.Scanner, stdout io.Writer, config Config, verified []awsVerifiedSource, deferred []billingguide.CredentialSource) (awsSourceSelection, error) {
+func selectAWSSource(reader *bufio.Scanner, stdout io.Writer, config Config, verified []awsVerifiedSource, deferred []billingguide.CredentialSource, loginActions []awsLoginAction) (awsSourceSelection, error) {
 	if len(verified) == 1 && len(deferred) == 0 {
 		selected, proceed, err := confirmAWSIdentity(reader, stdout, verified[0])
 		if err != nil {
@@ -213,7 +244,7 @@ func selectAWSSource(reader *bufio.Scanner, stdout io.Writer, config Config, ver
 	}
 
 	for {
-		selection, err := selectAWSIdentity(reader, stdout, config, verified, deferred)
+		selection, err := selectAWSIdentity(reader, stdout, config, verified, deferred, loginActions)
 		if err != nil {
 			return awsSourceSelection{}, err
 		}
@@ -225,11 +256,12 @@ func selectAWSSource(reader *bufio.Scanner, stdout io.Writer, config Config, ver
 	}
 }
 
-func selectAWSIdentity(reader *bufio.Scanner, stdout io.Writer, config Config, verified []awsVerifiedSource, deferred []billingguide.CredentialSource) (awsSourceSelection, error) {
+func selectAWSIdentity(reader *bufio.Scanner, stdout io.Writer, config Config, verified []awsVerifiedSource, deferred []billingguide.CredentialSource, loginActions []awsLoginAction) (awsSourceSelection, error) {
 	sourceCount := len(verified) + len(deferred)
-	rescanIndex := sourceCount
-	manualIndex := sourceCount + 1
-	choiceCount := sourceCount + 2
+	loginStartIndex := sourceCount
+	rescanIndex := sourceCount + len(loginActions)
+	manualIndex := rescanIndex + 1
+	choiceCount := manualIndex + 1
 	if sourceCount == 0 {
 		fmt.Fprintln(stdout, "Select AWS credential source")
 	} else {
@@ -242,6 +274,10 @@ func selectAWSIdentity(reader *bufio.Scanner, stdout io.Writer, config Config, v
 	for index, source := range deferred {
 		fmt.Fprintf(stdout, "  %d. %s\n", len(verified)+index+1, credentialSourceLabel(source))
 		fmt.Fprintln(stdout, "     Verification requires confirmation before this source is used.")
+	}
+	for index, action := range loginActions {
+		fmt.Fprintf(stdout, "  %d. Sign in to profile %s, then re-scan\n", loginStartIndex+index+1, action.Source.Profile)
+		fmt.Fprintln(stdout, "     Opens AWS CLI browser login after confirmation.")
 	}
 	fmt.Fprintf(stdout, "  %d. Sign in or configure another AWS profile, then re-scan\n", rescanIndex+1)
 	fmt.Fprintf(stdout, "  %d. Use an existing AWS profile name manually (advanced)\n", manualIndex+1)
@@ -274,6 +310,9 @@ func selectAWSIdentity(reader *bufio.Scanner, stdout io.Writer, config Config, v
 		}
 		return awsSourceSelection{Action: awsSourceSelectionRetry}, nil
 	}
+	if index < rescanIndex {
+		return runAWSLoginForSource(reader, stdout, config, loginActions[index-loginStartIndex].Source)
+	}
 	if index == rescanIndex {
 		if err := waitForAWSCredentialRescan(reader, stdout); err != nil {
 			return awsSourceSelection{}, err
@@ -301,7 +340,7 @@ func selectAWSIdentity(reader *bufio.Scanner, stdout io.Writer, config Config, v
 func waitForAWSCredentialRescan(reader *bufio.Scanner, stdout io.Writer) error {
 	fmt.Fprintln(stdout, "Sign in or configure the AWS profile for the account you want outside this tool.")
 	fmt.Fprintln(stdout, "For AWS login profiles, run: aws login --profile <profile-name>")
-	fmt.Fprintln(stdout, "This tool will not run login, launch a browser, read login caches, or capture credential output.")
+	fmt.Fprintln(stdout, "This option waits for a login or configuration change you complete outside this prompt.")
 	fmt.Fprint(stdout, "Press Enter after the AWS profile is ready to re-scan, or type cancel: ")
 	if !reader.Scan() {
 		if err := reader.Err(); err != nil {
@@ -315,6 +354,33 @@ func waitForAWSCredentialRescan(reader *bufio.Scanner, stdout io.Writer) error {
 	default:
 		return nil
 	}
+}
+
+func runAWSLoginForSource(reader *bufio.Scanner, stdout io.Writer, config Config, source billingguide.CredentialSource) (awsSourceSelection, error) {
+	if config.AWSLogin == nil {
+		fmt.Fprintln(stdout, "In-flow AWS login is unavailable. Choose the re-scan option after signing in outside this tool.")
+		return awsSourceSelection{Action: awsSourceSelectionRetry}, nil
+	}
+
+	fmt.Fprintf(stdout, "AWS CLI will open browser login for profile %s and return here when login completes.\n", source.Profile)
+	fmt.Fprintln(stdout, "Matilda Cloud Prep will re-scan and ask you to confirm the verified AWS account before inspecting billing exports.")
+	ok, err := readConfirmation(reader, stdout, fmt.Sprintf("Run AWS login for profile %s now? [y/N] ", source.Profile))
+	if err != nil {
+		return awsSourceSelection{}, err
+	}
+	if !ok {
+		return awsSourceSelection{Action: awsSourceSelectionRetry}, nil
+	}
+
+	ctx, cancel := guidedContext(config)
+	defer cancel()
+	if err := config.AWSLogin.Login(ctx, source); err != nil {
+		fmt.Fprintln(stdout, "AWS login did not complete. No AWS billing inspection was run.")
+		return awsSourceSelection{Action: awsSourceSelectionRetry}, nil
+	}
+
+	fmt.Fprintln(stdout, "AWS login completed. Re-scanning safe local AWS credential sources.")
+	return awsSourceSelection{Action: awsSourceSelectionRescan}, nil
 }
 
 func verifyDeferredAWSSource(reader *bufio.Scanner, stdout io.Writer, config Config, source billingguide.CredentialSource, prompt string) (awsVerifiedSource, bool, error) {
@@ -338,11 +404,11 @@ func verifyDeferredAWSSource(reader *bufio.Scanner, stdout io.Writer, config Con
 			Source:         source,
 			Code:           code,
 			CanRunAWSLogin: canRunAWSLogin(source, code),
-		}})
+		}}, true)
 		return awsVerifiedSource{}, false, nil
 	}
 	if _, err := awsBillingOptions(identity.Source); err != nil {
-		writeNoVerifiedAWSSources(stdout, []awsBlockedSource{{Source: source, Code: "aws_config_invalid_selector"}})
+		writeNoVerifiedAWSSources(stdout, []awsBlockedSource{{Source: source, Code: "aws_config_invalid_selector"}}, true)
 		return awsVerifiedSource{}, false, nil
 	}
 	return confirmAWSIdentity(reader, stdout, awsVerifiedSource{Source: source, Identity: identity})
@@ -464,6 +530,26 @@ func readConfirmation(reader *bufio.Scanner, stdout io.Writer, prompt string) (b
 	}
 }
 
+func readConfirmationDefaultYes(reader *bufio.Scanner, stdout io.Writer, prompt string) (bool, error) {
+	fmt.Fprint(stdout, prompt)
+	if !reader.Scan() {
+		if err := reader.Err(); err != nil {
+			return false, fmt.Errorf("%w: guided setup cancelled while reading confirmation: %v", ErrInputCancelled, err)
+		}
+		return false, fmt.Errorf("%w: guided setup cancelled before confirmation", ErrInputCancelled)
+	}
+	switch strings.ToLower(strings.TrimSpace(reader.Text())) {
+	case "", "y", "yes":
+		return true, nil
+	case "n", "no":
+		return false, nil
+	case "q", "quit", "cancel":
+		return false, fmt.Errorf("%w: guided setup cancelled by user", ErrInputCancelled)
+	default:
+		return false, fmt.Errorf("%w: expected y or n", ErrInvalidSelection)
+	}
+}
+
 func awsBillingOptions(source billingguide.CredentialSource) (workflow.ExecutionOptions, error) {
 	options := workflow.ExecutionOptions{
 		InterfaceMode: workflow.InterfaceModeGuided,
@@ -486,6 +572,15 @@ func awsBillingRequest() workflow.Request {
 	}
 }
 
+func awsBillingApplyPrereqsRequest() workflow.Request {
+	return workflow.Request{
+		Goal:           assessment.RapidAssessment,
+		CollectionPath: assessment.CollectionBilling,
+		Provider:       assessment.ProviderAWS,
+		Action:         assessment.ActionApplyPrereqs,
+	}
+}
+
 func safeAWSCredentialSource(source billingguide.CredentialSource) (billingguide.CredentialSource, bool) {
 	if _, err := awsBillingOptions(source); err != nil {
 		return billingguide.CredentialSource{}, false
@@ -503,7 +598,11 @@ func writeAWSBillingSummaryWithFacts(stdout io.Writer, source billingguide.Crede
 		fmt.Fprintf(stdout, "Support code: %s\n", code)
 	}
 	if includeFacts {
-		writeAWSBillingSummaryFacts(stdout, result)
+		if isCreateCUR2SetupResult(result) {
+			writeCreateCUR2SetupPlanSummary(stdout, source, result)
+		} else {
+			writeAWSBillingSummaryFacts(stdout, result)
+		}
 	}
 	if result.Message != "" {
 		fmt.Fprintln(stdout, result.Message)
@@ -541,6 +640,9 @@ func directAWSBillingCreateCUR2Command(source billingguide.CredentialSource) str
 }
 
 func awsBillingFollowupCommand(source billingguide.CredentialSource, result workflow.Result) (string, string) {
+	if isCreateCUR2SetupResult(result) {
+		return "Next command:", directAWSBillingCreateCUR2Command(source)
+	}
 	switch result.Code {
 	case "aws_backfill_manual_step_required":
 		return "Next command:", directAWSBillingBackfillCommand(source, selectedExportRef(result))
@@ -549,6 +651,78 @@ func awsBillingFollowupCommand(source billingguide.CredentialSource, result work
 	default:
 		return "Reproduce with:", directAWSBillingCommand(source, selectedExportRef(result))
 	}
+}
+
+func isCreateCUR2SetupResult(result workflow.Result) bool {
+	if result.ExecutionOptions.AWSBillingOperation == workflow.AWSBillingOperationCreateCUR2Export {
+		return true
+	}
+	return result.Request.Action == assessment.ActionApplyPrereqs &&
+		strings.HasPrefix(result.Code, "aws_cur2_create_export_")
+}
+
+func writeCreateCUR2SetupPlanSummary(stdout io.Writer, source billingguide.CredentialSource, result workflow.Result) {
+	if result.Plan == nil {
+		return
+	}
+	fmt.Fprintln(stdout, "Setup plan:")
+	for _, step := range result.Plan.Steps {
+		if step.RequiresApproval {
+			fmt.Fprintf(stdout, "  - Approval required: %s\n", step.Title)
+			writeCreateCUR2SetupPlanStepDetail(stdout, "Step ID", step.ID)
+		} else {
+			fmt.Fprintf(stdout, "  - No approval required: %s\n", step.Title)
+		}
+		writeCreateCUR2SetupPlanStepDetail(stdout, "Current state", step.CurrentState)
+		writeCreateCUR2SetupPlanStepDetail(stdout, "Target state", step.TargetState)
+		writeCreateCUR2SetupPlanStepDetail(stdout, "Required permission", step.RequiredPermission)
+		writeCreateCUR2SetupPlanStepDetail(stdout, "Validation", step.Validation)
+		writeCreateCUR2SetupPlanStepDetail(stdout, "Rollback", step.Rollback)
+	}
+	if result.Mutated {
+		fmt.Fprintln(stdout, "Cloud changes were made for the approved setup plan.")
+		return
+	}
+	fmt.Fprintln(stdout, "No cloud changes were made.")
+	if result.Plan.Approval.Blocked {
+		fmt.Fprintln(stdout, "This setup plan is blocked and cannot be approved until the blocker is resolved.")
+		return
+	}
+	if result.Plan.Approval.Required {
+		fmt.Fprintln(stdout, "Cloud changes require plan-bound approval before they are made.")
+		if result.Plan.Approval.ApprovalPlanID != "" {
+			fmt.Fprintf(stdout, "Approval plan: %s\n", result.Plan.Approval.ApprovalPlanID)
+			if command := directAWSBillingCreateCUR2ApprovalCommand(source, result); command != "" {
+				fmt.Fprintln(stdout, "Approve with:")
+				fmt.Fprintf(stdout, "  %s\n", command)
+			}
+		}
+		return
+	}
+	fmt.Fprintln(stdout, "No mutation approval is required for this result.")
+}
+
+func writeCreateCUR2SetupPlanStepDetail(stdout io.Writer, label string, value string) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return
+	}
+	fmt.Fprintf(stdout, "    %s: %s\n", label, value)
+}
+
+func directAWSBillingCreateCUR2ApprovalCommand(source billingguide.CredentialSource, result workflow.Result) string {
+	if result.Plan == nil || !result.Plan.Approval.Required || result.Plan.Approval.Blocked || result.Plan.Approval.ApprovalPlanID == "" {
+		return ""
+	}
+	parts := []string{"matilda-prep", "rapid-assessment", "billing", "aws", "apply-prereqs"}
+	parts = directAWSBillingSelectorParts(parts, source, "")
+	parts = append(parts, "--create-cur2-export", "--approve-plan", shellArg(result.Plan.Approval.ApprovalPlanID))
+	for _, step := range result.Plan.Steps {
+		if step.RequiresApproval {
+			parts = append(parts, "--approve-step", shellArg(step.ID))
+		}
+	}
+	return strings.Join(parts, " ")
 }
 
 func directAWSBillingCommandWithParts(parts []string, source billingguide.CredentialSource, exportRef string) string {

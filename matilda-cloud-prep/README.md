@@ -74,19 +74,40 @@ credential sources, verifies the AWS caller with masked account evidence, and
 asks before continuing with the selected account. When multiple verified
 sources exist, the user can choose and confirm the intended account. If the
 shown account is not the right one, guided mode lets the user choose another
-discovered source or sign in/configure the intended AWS profile outside this
-tool, then re-scan safe local credential sources. Manual entry of an existing
-AWS profile name is kept as an advanced fallback and requires confirmation
-because normal AWS SDK credential resolution may run configured local
-credential providers such as `credential_process`.
+discovered source, run an explicit in-flow AWS CLI browser login for a safe
+discovered login-session profile with missing credentials, or wait while the
+user signs in/configures another AWS profile outside the current prompt and
+then re-scan safe local credential sources. Manual entry of an existing AWS
+profile name is kept as an advanced fallback and requires confirmation because
+normal AWS SDK credential resolution may run configured local credential
+providers such as `credential_process`.
 
-Guided mode does not run `aws login`, launch a browser, read AWS login caches,
-or capture credential output. If a selected profile needs login or
-configuration, the tool prints safe remediation and lets the user re-scan after
-the user completes that login or configuration outside the tool. If AWS
-credential environment variables would take precedence over a selected profile,
-the tool fails closed and tells the user to unset those variables and restart
-before retrying that profile.
+Guided mode never runs `aws login` automatically. When compatible AWS CLI login
+support is available, a safe discovered login-session profile with missing
+credentials can be selected for `aws login --profile <profile>` after an
+explicit default-no confirmation. The AWS CLI may open a browser or print its
+own login URL and prompts directly in the terminal, but Matilda Cloud Prep does
+not capture, replay, read, cache, or package AWS login output or login cache
+material. After the AWS CLI returns, guided mode re-scans credential sources
+and still requires masked account confirmation before billing export
+inspection. Direct commands never launch browser login. If AWS credential
+environment variables would take precedence over a selected profile, the tool
+fails closed and tells the user to unset those variables and restart before
+retrying that profile.
+
+After account confirmation, guided mode inspects AWS CUR 2.0 exports. If
+usable exports are discovered, the user can continue with the detected export
+or choose from the discovered safe refs. If none of the discovered exports is
+the one the user wants, guided mode can prepare a new Matilda-managed CUR 2.0
+setup plan for the connected AWS account. The normal create-new path uses a
+generated same-account S3 bucket and prefix; users are not asked to invent or
+select arbitrary bucket names before discovery. If the generated destination
+can be verified safely, guided mode shows the planned bucket, bucket-policy,
+and CUR 2.0 export changes before asking for approval. The plan remains
+non-mutating until the user explicitly approves the current setup plan in
+guided mode or reruns the create-new command with the returned plan ID and
+approved mutating step IDs. Blocked setup plans stop safely and explain what
+must be resolved before approval.
 
 Future provider workflows should inspect the connected environment before
 recommending coverage and changes. Customers should not need to understand
