@@ -113,19 +113,7 @@ func setPlanEvidenceValue(input *workflow.ExecutionPlanInput, key string, value 
 
 func planSteps(plan setupPlan) []workflow.PlanStep {
 	if blockedCode := blockedPlanCode(plan); blockedCode != "" {
-		return []workflow.PlanStep{{
-			Intent:                    workflow.PlanStepBlocked,
-			Title:                     "Resolve AWS CUR 2.0 setup blocker",
-			Description:               "Stop before AWS CUR 2.0 setup because the current setup plan is blocked.",
-			Reason:                    "Cloud-side setup must fail closed when AWS cannot safely create or reuse the required CUR 2.0 export.",
-			ApprovalKind:              "not_required",
-			CurrentState:              "AWS CUR 2.0 setup is blocked.",
-			TargetState:               "The blocker is resolved before any cloud mutation is approved.",
-			RequiredPermission:        "AWS billing and S3 permissions required by the selected setup operation.",
-			CredentialMaterialTouched: false,
-			Validation:                "Resolve the reported blocker and rerun apply-prereqs before approving setup.",
-			Rollback:                  "No cloud change was made.",
-		}}
+		return []workflow.PlanStep{blockedSetupStep(blockedCode, plan.identityVerified())}
 	}
 	if plan.ManagedExport != nil && !plan.PolicyNeedsMerge {
 		return []workflow.PlanStep{{
@@ -207,4 +195,40 @@ func planSteps(plan setupPlan) []workflow.PlanStep {
 		Rollback:                  "The tool does not delete Data Exports resources automatically.",
 	})
 	return steps
+}
+
+func blockedSetupStep(code string, identityVerified bool) workflow.PlanStep {
+	if code == "aws_s3_bucket_inaccessible" {
+		return workflow.PlanStep{
+			Intent:                    workflow.PlanStepBlocked,
+			Title:                     "Resolve AWS S3 bucket candidate access",
+			Description:               "Stop before AWS CUR 2.0 setup because AWS did not return enough S3 evidence for the generated destination bucket candidate.",
+			Reason:                    "Matilda Cloud Prep creates or reuses only a generated same-account S3 bucket for this setup path, and must prove the bucket candidate is safe before creating a CUR 2.0 export.",
+			ApprovalKind:              "not_required",
+			CurrentState:              "The generated same-account S3 bucket candidate could not be verified as available to create or safely owned by this account.",
+			TargetState:               "Matilda Cloud Prep can show an approval-required plan to create or reuse the generated bucket, update its Data Exports delivery policy, and create the CUR 2.0 export.",
+			RequiredPermission:        "s3:ListBucket for existing bucket checks, plus s3:CreateBucket, s3:GetBucketPolicy, s3:PutBucketPolicy, bcm-data-exports:CreateExport, and cur:PutReportDefinition for approved setup.",
+			CredentialMaterialTouched: false,
+			Validation:                "Do not manually create or select arbitrary buckets for the normal guided path. Resolve S3 access ambiguity, then rerun apply-prereqs to get a new approval-required setup plan.",
+			Rollback:                  "No cloud change was made.",
+		}
+	}
+
+	currentState := "AWS CUR 2.0 setup is blocked."
+	if identityVerified {
+		currentState = "AWS CUR 2.0 setup is blocked after caller identity verification."
+	}
+	return workflow.PlanStep{
+		Intent:                    workflow.PlanStepBlocked,
+		Title:                     "Resolve AWS CUR 2.0 setup blocker",
+		Description:               "Stop before AWS CUR 2.0 setup because a required prerequisite could not be verified safely.",
+		Reason:                    "Cloud-side setup must fail closed when AWS identity, configuration, or setup evidence is unavailable.",
+		ApprovalKind:              "not_required",
+		CurrentState:              currentState,
+		TargetState:               "Required AWS setup evidence is available before mutation.",
+		RequiredPermission:        "AWS setup permissions required by the selected operation.",
+		CredentialMaterialTouched: false,
+		Validation:                "Rerun apply-prereqs after resolving the blocker.",
+		Rollback:                  "No cloud change was made.",
+	}
 }

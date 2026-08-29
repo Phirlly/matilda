@@ -513,19 +513,14 @@ func TestSetupClientPropagatesConfigLoadFailuresByOperation(t *testing.T) {
 }
 
 func TestSetupClientClassifiesBucketAccessAndPolicyResponses(t *testing.T) {
-	t.Run("head bucket not found returns inaccessible status", func(t *testing.T) {
+	t.Run("head bucket status-only not found returns safe create-plan signal", func(t *testing.T) {
 		client := New(Config{S3Client: &fakeS3{headBucketErr: responseStatusError(404)}})
-		access, err := client.HeadBucket(context.Background(), billingcur2setup.HeadBucketRequest{
+		_, err := client.HeadBucket(context.Background(), billingcur2setup.HeadBucketRequest{
 			Bucket:        "bucket",
 			Region:        "us-west-2",
 			ExpectedOwner: "123456789012",
 		})
-		if err != nil {
-			t.Fatalf("HeadBucket returned error: %v", err)
-		}
-		if access.Accessible || access.StatusCode != 404 {
-			t.Fatalf("BucketAccess = %#v, want inaccessible 404", access)
-		}
+		assertProviderCode(t, err, "aws_s3_bucket_not_found")
 	})
 	t.Run("head bucket no such bucket error returns safe not found signal", func(t *testing.T) {
 		client := New(Config{S3Client: &fakeS3{headBucketErr: &smithy.GenericAPIError{Code: "NoSuchBucket", Message: "missing"}}})
@@ -544,6 +539,20 @@ func TestSetupClientClassifiesBucketAccessAndPolicyResponses(t *testing.T) {
 			ExpectedOwner: "123456789012",
 		})
 		assertProviderCode(t, err, "aws_s3_bucket_inaccessible")
+	})
+	t.Run("head bucket bad request status remains inaccessible", func(t *testing.T) {
+		client := New(Config{S3Client: &fakeS3{headBucketErr: responseStatusError(400)}})
+		access, err := client.HeadBucket(context.Background(), billingcur2setup.HeadBucketRequest{
+			Bucket:        "bucket",
+			Region:        "us-west-2",
+			ExpectedOwner: "123456789012",
+		})
+		if err != nil {
+			t.Fatalf("HeadBucket returned error: %v", err)
+		}
+		if access.Accessible || access.StatusCode != 400 {
+			t.Fatalf("BucketAccess = %#v, want inaccessible 400", access)
+		}
 	})
 	t.Run("head bucket forbidden with expected owner is ambiguous", func(t *testing.T) {
 		client := New(Config{S3Client: &fakeS3{headBucketErr: responseStatusError(403)}})

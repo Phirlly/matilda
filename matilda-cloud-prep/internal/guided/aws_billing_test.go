@@ -1,11 +1,14 @@
 package guided
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/cloud/aws/billingguide"
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/workflow"
@@ -251,6 +254,269 @@ func TestWriteAWSBillingSummaryShowsCreateCUR2ExportCommandWhenNoCURExists(t *te
 	assertGuidedOutputSafe(t, got)
 }
 
+func TestWaitForAWSCredentialRescan(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		wantErr error
+	}{
+		{name: "enter continues", input: "\n"},
+		{name: "text continues", input: "ready\n"},
+		{name: "cancel stops", input: "cancel\n", wantErr: ErrInputCancelled},
+		{name: "quit stops", input: "q\n", wantErr: ErrInputCancelled},
+		{name: "eof stops", input: "", wantErr: ErrInputCancelled},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var output bytes.Buffer
+			err := waitForAWSCredentialRescan(bufio.NewScanner(strings.NewReader(tt.input)), &output)
+
+			if tt.wantErr == nil && err != nil {
+				t.Fatalf("waitForAWSCredentialRescan returned error: %v", err)
+			}
+			if tt.wantErr != nil && !errors.Is(err, tt.wantErr) {
+				t.Fatalf("waitForAWSCredentialRescan error = %v, want %v", err, tt.wantErr)
+			}
+			for _, want := range []string{
+				"Sign in or configure the AWS profile for the account you want outside this tool.",
+				"Press Enter after the AWS profile is ready to re-scan, or type cancel:",
+			} {
+				if !strings.Contains(output.String(), want) {
+					t.Fatalf("output = %q, want to contain %q", output.String(), want)
+				}
+			}
+			assertGuidedOutputSafe(t, output.String())
+		})
+	}
+}
+
+func TestReadPromptLineValidatesInput(t *testing.T) {
+	tests := []struct {
+		name       string
+		input      string
+		allowEmpty bool
+		want       string
+		wantErr    error
+	}{
+		{name: "trims value", input: "  finance-prod  \n", want: "finance-prod"},
+		{name: "allows empty when optional", input: "\n", allowEmpty: true},
+		{name: "rejects required empty", input: "\n", wantErr: ErrInvalidSelection},
+		{name: "cancel stops", input: "quit\n", wantErr: ErrInputCancelled},
+		{name: "eof stops", input: "", wantErr: ErrInputCancelled},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var output bytes.Buffer
+			got, err := readPromptLine(bufio.NewScanner(strings.NewReader(tt.input)), &output, "Prompt: ", "AWS profile name", tt.allowEmpty)
+
+			if tt.wantErr == nil && err != nil {
+				t.Fatalf("readPromptLine returned error: %v", err)
+			}
+			if tt.wantErr != nil && !errors.Is(err, tt.wantErr) {
+				t.Fatalf("readPromptLine error = %v, want %v", err, tt.wantErr)
+			}
+			if got != tt.want {
+				t.Fatalf("readPromptLine value = %q, want %q", got, tt.want)
+			}
+			if output.String() != "Prompt: " {
+				t.Fatalf("prompt output = %q, want Prompt: ", output.String())
+			}
+		})
+	}
+}
+
+func TestReadManualAWSProfileSourceValidatesProfileAndRegion(t *testing.T) {
+	tests := []struct {
+		name       string
+		input      string
+		want       billingguide.CredentialSource
+		wantOK     bool
+		wantErr    error
+		wantOutput string
+	}{
+		{
+			name:    "valid profile with configured region fallback",
+			input:   "finance-prod\n\n",
+			want:    billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "finance-prod"},
+			wantOK:  true,
+			wantErr: nil,
+		},
+		{
+			name:    "valid profile with explicit region",
+			input:   "finance-prod\nus-west-2\n",
+			want:    billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "finance-prod", Region: "us-west-2"},
+			wantOK:  true,
+			wantErr: nil,
+		},
+		{
+			name:    "empty profile is invalid selection",
+			input:   "\n",
+			wantErr: ErrInvalidSelection,
+		},
+		{
+			name:       "unsafe profile returns retryable selection",
+			input:      "../profile\n",
+			wantOK:     false,
+			wantOutput: "AWS profile name is not safe to use.",
+		},
+		{
+			name:       "unsafe region returns retryable selection",
+			input:      "finance-prod\n../region\n",
+			wantOK:     false,
+			wantOutput: "AWS region is not safe to use.",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var output bytes.Buffer
+			got, ok, err := readManualAWSProfileSource(bufio.NewScanner(strings.NewReader(tt.input)), &output)
+
+			if tt.wantErr == nil && err != nil {
+				t.Fatalf("readManualAWSProfileSource returned error: %v", err)
+			}
+			if tt.wantErr != nil && !errors.Is(err, tt.wantErr) {
+				t.Fatalf("readManualAWSProfileSource error = %v, want %v", err, tt.wantErr)
+			}
+			if ok != tt.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
+			}
+			if got != tt.want {
+				t.Fatalf("source = %#v, want %#v", got, tt.want)
+			}
+			if tt.wantOutput != "" && !strings.Contains(output.String(), tt.wantOutput) {
+				t.Fatalf("output = %q, want to contain %q", output.String(), tt.wantOutput)
+			}
+			assertGuidedOutputSafe(t, output.String())
+		})
+	}
+}
+
+func TestVerifyManualAWSProfile(t *testing.T) {
+	source := billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "finance-prod", Region: "us-west-2"}
+
+	tests := []struct {
+		name        string
+		input       string
+		guide       *fakeAWSBillingGuide
+		wantProceed bool
+		wantCalls   int
+		wantOutput  []string
+	}{
+		{
+			name:        "decline verification",
+			input:       "\n",
+			guide:       &fakeAWSBillingGuide{},
+			wantProceed: false,
+			wantCalls:   0,
+			wantOutput:  []string{"Verify this AWS profile now? [y/N]"},
+		},
+		{
+			name:  "verification failure prints safe code",
+			input: "y\n",
+			guide: &fakeAWSBillingGuide{
+				verifyErrs: map[string]error{
+					"profile:finance-prod": billingguide.VerificationError{Code: "aws_config_missing_credentials", Message: "raw arn:aws:iam::123456789012:user/example"},
+				},
+			},
+			wantProceed: false,
+			wantCalls:   1,
+			wantOutput: []string{
+				"profile finance-prod in us-west-2 blocked: aws_config_missing_credentials",
+				"Run aws login --profile finance-prod",
+			},
+		},
+		{
+			name:  "invalid verified selector returns safe error",
+			input: "y\n",
+			guide: &fakeAWSBillingGuide{
+				verified: map[string]billingguide.VerifiedIdentity{
+					"profile:finance-prod": {
+						Source:       billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "../bad", Region: "us-west-2"},
+						AccountLabel: "account-ending-9012",
+						CallerRef:    "sha256:abcdef123456",
+						Region:       "us-west-2",
+					},
+				},
+			},
+			wantProceed: false,
+			wantCalls:   1,
+			wantOutput:  []string{"profile finance-prod in us-west-2 blocked: aws_config_invalid_selector"},
+		},
+		{
+			name:  "successful verification confirms identity",
+			input: "y\ny\n",
+			guide: &fakeAWSBillingGuide{
+				verified: map[string]billingguide.VerifiedIdentity{
+					"profile:finance-prod": {
+						Source:       source,
+						AccountLabel: "account-ending-9012",
+						CallerRef:    "sha256:abcdef123456",
+						Region:       "us-west-2",
+					},
+				},
+			},
+			wantProceed: true,
+			wantCalls:   1,
+			wantOutput: []string{
+				"AWS account verified: account-ending-9012",
+				"Continue with this AWS account? [y/N]",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var output bytes.Buffer
+			_, proceed, err := verifyManualAWSProfile(bufio.NewScanner(strings.NewReader(tt.input)), &output, Config{AWSBilling: tt.guide}, source)
+
+			if err != nil {
+				t.Fatalf("verifyManualAWSProfile returned error: %v", err)
+			}
+			if proceed != tt.wantProceed {
+				t.Fatalf("proceed = %v, want %v", proceed, tt.wantProceed)
+			}
+			if len(tt.guide.verifyCalls) != tt.wantCalls {
+				t.Fatalf("verify calls = %#v, want %d calls", tt.guide.verifyCalls, tt.wantCalls)
+			}
+			for _, want := range tt.wantOutput {
+				if !strings.Contains(output.String(), want) {
+					t.Fatalf("output = %q, want to contain %q", output.String(), want)
+				}
+			}
+			for _, forbidden := range []string{"arn:aws", "123456789012", "example"} {
+				if strings.Contains(output.String(), forbidden) {
+					t.Fatalf("output leaked %q: %s", forbidden, output.String())
+				}
+			}
+			assertGuidedOutputSafe(t, output.String())
+		})
+	}
+}
+
+func TestRunAWSLoginForSourceWithoutRunnerReturnsToSelection(t *testing.T) {
+	var output bytes.Buffer
+	selection, err := runAWSLoginForSource(bufio.NewScanner(strings.NewReader("")), &output, Config{}, billingguide.CredentialSource{
+		Kind:            billingguide.CredentialSourceProfile,
+		Profile:         "default",
+		Region:          "us-east-1",
+		HasLoginSession: true,
+	})
+
+	if err != nil {
+		t.Fatalf("runAWSLoginForSource returned error: %v", err)
+	}
+	if selection.Action != awsSourceSelectionRetry {
+		t.Fatalf("selection action = %v, want retry", selection.Action)
+	}
+	if !strings.Contains(output.String(), "In-flow AWS login is unavailable. Choose the re-scan option after signing in outside this tool.") {
+		t.Fatalf("output = %q, want unavailable guidance", output.String())
+	}
+	assertGuidedOutputSafe(t, output.String())
+}
+
 func TestRunAWSBillingUsesEnvironmentCredentialSourceSafely(t *testing.T) {
 	var gotOptions workflow.ExecutionOptions
 	registry := testRegistry(t, workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
@@ -330,16 +596,17 @@ func TestRunAWSBillingPromptsForMultipleVerifiedSources(t *testing.T) {
 		},
 	}
 
-	output, err := runGuidedWithConfig("1\n1\n2\n", Config{Registry: registry, AWSBilling: guide})
+	output, err := runGuidedWithConfig("1\n1\n2\ny\n", Config{Registry: registry, AWSBilling: guide})
 
 	if err != nil {
 		t.Fatalf("RunWithConfig returned error: %v", err)
 	}
 	for _, want := range []string{
-		"Select AWS account [1-2]",
+		"Select AWS account [1-4]",
 		"profile default",
 		"profile finance",
 		"account-ending-2222",
+		"Continue with this AWS account? [y/N]",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("output = %q, want to contain %q", output, want)
@@ -347,6 +614,95 @@ func TestRunAWSBillingPromptsForMultipleVerifiedSources(t *testing.T) {
 	}
 	if gotOptions.Selectors == nil || gotOptions.Selectors.AWS == nil || gotOptions.Selectors.AWS.Profile != "finance" {
 		t.Fatalf("AWS selectors = %#v, want selected finance profile", gotOptions)
+	}
+	assertGuidedOutputSafe(t, output)
+}
+
+func TestRunAWSBillingDecliningSingleAccountCanRescanAfterExternalSignIn(t *testing.T) {
+	var gotOptions workflow.ExecutionOptions
+	registry := testRegistry(t, workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+		gotOptions = options
+		return guidedCapabilityReport(got, workflow.StatusReady, "aws_cur2_preflight_ready", nil)
+	}))
+	guide := &fakeAWSBillingGuide{
+		sourceSequences: [][]billingguide.CredentialSource{
+			{{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}},
+			{{Kind: billingguide.CredentialSourceProfile, Profile: "finance", Region: "us-west-2"}},
+		},
+		verified: map[string]billingguide.VerifiedIdentity{
+			"profile:default": {Source: billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}, AccountLabel: "account-ending-1111", CallerRef: "sha256:111111111111", Region: "us-east-1"},
+			"profile:finance": {Source: billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "finance", Region: "us-west-2"}, AccountLabel: "account-ending-2222", CallerRef: "sha256:222222222222", Region: "us-west-2"},
+		},
+	}
+
+	output, err := runGuidedWithConfig("1\n1\nn\n2\n\ny\n", Config{Registry: registry, AWSBilling: guide})
+
+	if err != nil {
+		t.Fatalf("RunWithConfig returned error: %v", err)
+	}
+	for _, want := range []string{
+		"Choose how to connect another AWS account.",
+		"Sign in or configure another AWS profile, then re-scan",
+		"Use an existing AWS profile name manually (advanced)",
+		"Sign in or configure the AWS profile for the account you want outside this tool.",
+		"Press Enter after the AWS profile is ready to re-scan",
+		"Re-scanning safe local AWS credential sources.",
+		"account-ending-2222",
+		"Inspect AWS CUR 2.0 billing exports",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output = %q, want to contain %q", output, want)
+		}
+	}
+	if gotOptions.Selectors == nil || gotOptions.Selectors.AWS == nil ||
+		gotOptions.Selectors.AWS.Profile != "finance" ||
+		gotOptions.Selectors.AWS.Region != "us-west-2" {
+		t.Fatalf("AWS selectors = %#v, want re-scanned finance/us-west-2", gotOptions)
+	}
+	if got := strings.Join(guide.verifyCalls, ","); got != "profile:default,profile:finance" {
+		t.Fatalf("VerifyIdentity calls = %q, want default then re-scanned finance", got)
+	}
+	if guide.discoverCalls != 2 {
+		t.Fatalf("DiscoverCredentialSources calls = %d, want 2", guide.discoverCalls)
+	}
+	assertGuidedOutputSafe(t, output)
+}
+
+func TestRunAWSBillingDecliningMultipleAccountLoopsToAnotherProfile(t *testing.T) {
+	var gotOptions workflow.ExecutionOptions
+	registry := testRegistry(t, workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+		gotOptions = options
+		return guidedCapabilityReport(got, workflow.StatusReady, "aws_cur2_preflight_ready", nil)
+	}))
+	guide := &fakeAWSBillingGuide{
+		sources: []billingguide.CredentialSource{
+			{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"},
+			{Kind: billingguide.CredentialSourceProfile, Profile: "finance", Region: "us-west-2"},
+		},
+		verified: map[string]billingguide.VerifiedIdentity{
+			"profile:default": {Source: billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}, AccountLabel: "account-ending-1111", CallerRef: "sha256:111111111111", Region: "us-east-1"},
+			"profile:finance": {Source: billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "finance", Region: "us-west-2"}, AccountLabel: "account-ending-2222", CallerRef: "sha256:222222222222", Region: "us-west-2"},
+		},
+	}
+
+	output, err := runGuidedWithConfig("1\n1\n1\nn\n2\ny\n", Config{Registry: registry, AWSBilling: guide})
+
+	if err != nil {
+		t.Fatalf("RunWithConfig returned error: %v", err)
+	}
+	for _, want := range []string{
+		"Select AWS account [1-4]",
+		"Continue with this AWS account? [y/N]",
+		"Choose how to connect another AWS account.",
+		"account-ending-2222",
+		"Inspect AWS CUR 2.0 billing exports",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output = %q, want to contain %q", output, want)
+		}
+	}
+	if gotOptions.Selectors == nil || gotOptions.Selectors.AWS == nil || gotOptions.Selectors.AWS.Profile != "finance" {
+		t.Fatalf("AWS selectors = %#v, want selected finance profile after loop", gotOptions)
 	}
 	assertGuidedOutputSafe(t, output)
 }
@@ -368,7 +724,7 @@ func TestRunAWSBillingDoesNotVerifyNonSelectedCredentialProcessProfile(t *testin
 		},
 	}
 
-	output, err := runGuidedWithConfig("1\n1\n1\n", Config{Registry: registry, AWSBilling: guide})
+	output, err := runGuidedWithConfig("1\n1\n1\ny\n", Config{Registry: registry, AWSBilling: guide})
 
 	if err != nil {
 		t.Fatalf("RunWithConfig returned error: %v", err)
@@ -402,10 +758,10 @@ func TestRunAWSBillingCredentialProcessProfileRequiresConfirmationBeforeVerifica
 		},
 	}
 
-	output, err := runGuidedWithConfig("1\n1\n2\nn\n", Config{Registry: registry, AWSBilling: guide})
+	output, err := runGuidedWithConfig("1\n1\n2\nn\ncancel\n", Config{Registry: registry, AWSBilling: guide})
 
-	if err != nil {
-		t.Fatalf("RunWithConfig returned error: %v", err)
+	if !errors.Is(err, ErrInputCancelled) {
+		t.Fatalf("RunWithConfig error = %v, want ErrInputCancelled", err)
 	}
 	if called {
 		t.Fatal("preflight registry should not run when user declines credential-process verification")
@@ -415,6 +771,9 @@ func TestRunAWSBillingCredentialProcessProfileRequiresConfirmationBeforeVerifica
 	}
 	if !strings.Contains(output, "Verify selected AWS credential source now? [y/N]") {
 		t.Fatalf("output = %q, want explicit verification confirmation", output)
+	}
+	if !strings.Contains(output, "Choose how to connect another AWS account.") {
+		t.Fatalf("output = %q, want source reselection guidance", output)
 	}
 	assertGuidedOutputSafe(t, output)
 }
@@ -432,10 +791,10 @@ func TestRunAWSBillingSelectedCredentialProcessVerifiesThenRequiresIdentityConfi
 		},
 	}
 
-	output, err := runGuidedWithConfig("1\n1\ny\nn\n", Config{Registry: registry, AWSBilling: guide})
+	output, err := runGuidedWithConfig("1\n1\ny\nn\ncancel\n", Config{Registry: registry, AWSBilling: guide})
 
-	if err != nil {
-		t.Fatalf("RunWithConfig returned error: %v", err)
+	if !errors.Is(err, ErrInputCancelled) {
+		t.Fatalf("RunWithConfig error = %v, want ErrInputCancelled", err)
 	}
 	if called {
 		t.Fatal("preflight registry should not run when user declines verified credential-process identity")
@@ -448,7 +807,7 @@ func TestRunAWSBillingSelectedCredentialProcessVerifiesThenRequiresIdentityConfi
 		"Verify this AWS credential source now? [y/N]",
 		"AWS account verified: account-ending-2222",
 		"Continue with this AWS account? [y/N]",
-		"AWS billing preflight was not run.",
+		"Choose how to connect another AWS account.",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("output = %q, want to contain %q", output, want)
@@ -500,10 +859,10 @@ func TestRunAWSBillingSelectedCredentialProcessFailureUsesCodeSpecificRemediatio
 		},
 	}
 
-	output, err := runGuidedWithConfig("1\n1\ny\n", Config{Registry: registry, AWSBilling: guide})
+	output, err := runGuidedWithConfig("1\n1\ny\ncancel\n", Config{Registry: registry, AWSBilling: guide})
 
-	if err != nil {
-		t.Fatalf("RunWithConfig returned error: %v", err)
+	if !errors.Is(err, ErrInputCancelled) {
+		t.Fatalf("RunWithConfig error = %v, want ErrInputCancelled", err)
 	}
 	if registryCalled {
 		t.Fatal("preflight registry should not run when selected credential-process verification fails")
@@ -512,6 +871,7 @@ func TestRunAWSBillingSelectedCredentialProcessFailureUsesCodeSpecificRemediatio
 		"No verified AWS credential source is available.",
 		"profile process in us-west-2 with login session with credential process blocked: aws_config_missing_credentials",
 		"aws login --profile process",
+		"Choose how to connect another AWS account.",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("output = %q, want to contain %q", output, want)
@@ -533,10 +893,10 @@ func TestRunAWSBillingBlocksUnsafeVerifiedSelectorBeforePreflight(t *testing.T) 
 		},
 	}
 
-	output, err := runGuidedWithConfig("1\n1\ny\n", Config{Registry: registry, AWSBilling: guide})
+	output, err := runGuidedWithConfig("1\n1\ncancel\n", Config{Registry: registry, AWSBilling: guide})
 
-	if err != nil {
-		t.Fatalf("RunWithConfig returned error: %v", err)
+	if !errors.Is(err, ErrInputCancelled) {
+		t.Fatalf("RunWithConfig error = %v, want ErrInputCancelled", err)
 	}
 	if called {
 		t.Fatal("preflight registry should not run when verified source metadata is unsafe")
@@ -544,6 +904,7 @@ func TestRunAWSBillingBlocksUnsafeVerifiedSelectorBeforePreflight(t *testing.T) 
 	for _, want := range []string{
 		"No verified AWS credential source is available.",
 		"profile safe in us-east-1 blocked: aws_config_invalid_selector",
+		"Use an existing AWS profile name manually (advanced)",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("output = %q, want to contain %q", output, want)
@@ -565,10 +926,10 @@ func TestRunAWSBillingBlocksUnsafeFailedSourceBeforeDisplay(t *testing.T) {
 		},
 	}
 
-	output, err := runGuidedWithConfig("1\n1\n", Config{Registry: registry, AWSBilling: guide})
+	output, err := runGuidedWithConfig("1\n1\ncancel\n", Config{Registry: registry, AWSBilling: guide})
 
-	if err != nil {
-		t.Fatalf("RunWithConfig returned error: %v", err)
+	if !errors.Is(err, ErrInputCancelled) {
+		t.Fatalf("RunWithConfig error = %v, want ErrInputCancelled", err)
 	}
 	if called {
 		t.Fatal("preflight registry should not run when credential source metadata is unsafe")
@@ -578,6 +939,9 @@ func TestRunAWSBillingBlocksUnsafeFailedSourceBeforeDisplay(t *testing.T) {
 	}
 	if strings.Contains(output, "aws login --profile") {
 		t.Fatalf("unsafe profile should not be shown in login remediation: %s", output)
+	}
+	if !strings.Contains(output, "Use an existing AWS profile name manually (advanced)") {
+		t.Fatalf("output = %q, want manual profile option", output)
 	}
 	assertGuidedOutputSafe(t, output)
 }
@@ -595,10 +959,10 @@ func TestRunAWSBillingStopsBeforePreflightWhenIdentityCannotBeVerified(t *testin
 		},
 	}
 
-	output, err := runGuidedWithConfig("1\n1\n", Config{Registry: registry, AWSBilling: guide})
+	output, err := runGuidedWithConfig("1\n1\ncancel\n", Config{Registry: registry, AWSBilling: guide})
 
-	if err != nil {
-		t.Fatalf("RunWithConfig returned error: %v", err)
+	if !errors.Is(err, ErrInputCancelled) {
+		t.Fatalf("RunWithConfig error = %v, want ErrInputCancelled", err)
 	}
 	if called {
 		t.Fatal("preflight registry should not run when identity is unavailable")
@@ -606,12 +970,269 @@ func TestRunAWSBillingStopsBeforePreflightWhenIdentityCannotBeVerified(t *testin
 	for _, want := range []string{
 		"No verified AWS credential source is available.",
 		"aws login --profile default",
+		"Use an existing AWS profile name manually (advanced)",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("output = %q, want to contain %q", output, want)
 		}
 	}
 	assertGuidedOutputSafe(t, output)
+}
+
+func TestRunAWSBillingCanRunAWSLoginForMissingLoginProfileAndRescan(t *testing.T) {
+	var gotOptions workflow.ExecutionOptions
+	registry := testRegistry(t, workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+		gotOptions = options
+		return guidedCapabilityReport(got, workflow.StatusReady, "aws_cur2_preflight_ready", nil)
+	}))
+	guide := &fakeAWSBillingGuide{
+		sourceSequences: [][]billingguide.CredentialSource{
+			{{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1", HasLoginSession: true}},
+			{{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1", HasLoginSession: true}},
+		},
+		verifyErrSequences: map[string][]error{
+			"profile:default": {
+				billingguide.VerificationError{Code: "aws_config_missing_credentials", Message: "AWS credentials are not available."},
+				nil,
+			},
+		},
+		verified: map[string]billingguide.VerifiedIdentity{
+			"profile:default": {Source: billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1", HasLoginSession: true}, AccountLabel: "account-ending-2222", CallerRef: "sha256:222222222222", Region: "us-east-1"},
+		},
+	}
+	login := &fakeAWSLoginRunner{support: AWSLoginSupport{Available: true, Version: "2.36.34"}}
+
+	output, err := runGuidedWithConfig("1\n1\n1\ny\ny\n", Config{Registry: registry, AWSBilling: guide, AWSLogin: login})
+
+	if err != nil {
+		t.Fatalf("RunWithConfig returned error: %v", err)
+	}
+	if len(login.loginCalls) != 1 {
+		t.Fatalf("login calls = %#v, want one AWS login call", login.loginCalls)
+	}
+	if login.loginCalls[0].Profile != "default" || login.loginCalls[0].Region != "us-east-1" {
+		t.Fatalf("login source = %#v, want default/us-east-1", login.loginCalls[0])
+	}
+	if guide.discoverCalls != 2 {
+		t.Fatalf("DiscoverCredentialSources calls = %d, want initial discovery plus re-scan", guide.discoverCalls)
+	}
+	if got := strings.Join(guide.verifyCalls, ","); got != "profile:default,profile:default" {
+		t.Fatalf("VerifyIdentity calls = %q, want failed verification then re-scan verification", got)
+	}
+	if gotOptions.Selectors == nil || gotOptions.Selectors.AWS == nil ||
+		gotOptions.Selectors.AWS.Profile != "default" ||
+		gotOptions.Selectors.AWS.Region != "us-east-1" {
+		t.Fatalf("AWS selectors = %#v, want re-scanned default/us-east-1", gotOptions)
+	}
+	for _, want := range []string{
+		"No verified AWS credential source is available.",
+		"Sign in to profile default, then re-scan",
+		"Run AWS login for profile default now? [y/N]",
+		"AWS login completed. Re-scanning safe local AWS credential sources.",
+		"Re-scanning safe local AWS credential sources.",
+		"AWS account verified: account-ending-2222",
+		"Inspect AWS CUR 2.0 billing exports",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output = %q, want to contain %q", output, want)
+		}
+	}
+	assertGuidedOutputSafe(t, output)
+}
+
+func TestRunAWSBillingDecliningInFlowAWSLoginDoesNotRunLoginOrPreflight(t *testing.T) {
+	called := false
+	registry := testRegistry(t, workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+		called = true
+		return guidedCapabilityReport(got, workflow.StatusReady, "aws_cur2_preflight_ready", nil)
+	}))
+	guide := &fakeAWSBillingGuide{
+		sources: []billingguide.CredentialSource{{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1", HasLoginSession: true}},
+		verifyErrs: map[string]error{
+			"profile:default": billingguide.VerificationError{Code: "aws_config_missing_credentials", Message: "AWS credentials are not available."},
+		},
+	}
+	login := &fakeAWSLoginRunner{support: AWSLoginSupport{Available: true, Version: "2.36.34"}}
+
+	output, err := runGuidedWithConfig("1\n1\n1\n\ncancel\n", Config{Registry: registry, AWSBilling: guide, AWSLogin: login})
+
+	if !errors.Is(err, ErrInputCancelled) {
+		t.Fatalf("RunWithConfig error = %v, want ErrInputCancelled", err)
+	}
+	if called {
+		t.Fatal("preflight registry should not run when AWS login is declined")
+	}
+	if len(login.loginCalls) != 0 {
+		t.Fatalf("login calls = %#v, want none after default-no confirmation", login.loginCalls)
+	}
+	if guide.discoverCalls != 1 {
+		t.Fatalf("DiscoverCredentialSources calls = %d, want no re-scan after declined login", guide.discoverCalls)
+	}
+	for _, want := range []string{
+		"Sign in to profile default, then re-scan",
+		"Run AWS login for profile default now? [y/N]",
+		"Choose how to connect another AWS account.",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output = %q, want to contain %q", output, want)
+		}
+	}
+	assertGuidedOutputSafe(t, output)
+}
+
+func TestRunAWSBillingInFlowAWSLoginFailureReturnsToSelectionWithoutPreflight(t *testing.T) {
+	called := false
+	registry := testRegistry(t, workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+		called = true
+		return guidedCapabilityReport(got, workflow.StatusReady, "aws_cur2_preflight_ready", nil)
+	}))
+	guide := &fakeAWSBillingGuide{
+		sources: []billingguide.CredentialSource{{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1", HasLoginSession: true}},
+		verifyErrs: map[string]error{
+			"profile:default": billingguide.VerificationError{Code: "aws_config_missing_credentials", Message: "AWS credentials are not available."},
+		},
+	}
+	login := &fakeAWSLoginRunner{
+		support:  AWSLoginSupport{Available: true, Version: "2.36.34"},
+		loginErr: errors.New("raw arn:aws:iam::123456789012:user/example login failed"),
+	}
+
+	output, err := runGuidedWithConfig("1\n1\n1\ny\ncancel\n", Config{Registry: registry, AWSBilling: guide, AWSLogin: login})
+
+	if !errors.Is(err, ErrInputCancelled) {
+		t.Fatalf("RunWithConfig error = %v, want ErrInputCancelled", err)
+	}
+	if called {
+		t.Fatal("preflight registry should not run when AWS login fails")
+	}
+	if len(login.loginCalls) != 1 {
+		t.Fatalf("login calls = %#v, want one failed login call", login.loginCalls)
+	}
+	if guide.discoverCalls != 1 {
+		t.Fatalf("DiscoverCredentialSources calls = %d, want no re-scan after failed login", guide.discoverCalls)
+	}
+	for _, want := range []string{
+		"Run AWS login for profile default now? [y/N]",
+		"AWS login did not complete. No AWS billing inspection was run.",
+		"Choose how to connect another AWS account.",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output = %q, want to contain %q", output, want)
+		}
+	}
+	for _, forbidden := range []string{"arn:aws", "123456789012", "example login failed"} {
+		if strings.Contains(output, forbidden) {
+			t.Fatalf("output leaked login error detail %q: %s", forbidden, output)
+		}
+	}
+	assertGuidedOutputSafe(t, output)
+}
+
+func TestRunAWSBillingDoesNotOfferInFlowLoginWhenAWSLoginUnsupported(t *testing.T) {
+	called := false
+	registry := testRegistry(t, workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+		called = true
+		return guidedCapabilityReport(got, workflow.StatusReady, "aws_cur2_preflight_ready", nil)
+	}))
+	guide := &fakeAWSBillingGuide{
+		sources: []billingguide.CredentialSource{{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1", HasLoginSession: true}},
+		verifyErrs: map[string]error{
+			"profile:default": billingguide.VerificationError{Code: "aws_config_missing_credentials", Message: "AWS credentials are not available."},
+		},
+	}
+	login := &fakeAWSLoginRunner{support: AWSLoginSupport{Available: false, Version: "2.31.0", Reason: "aws_cli_login_unsupported_version"}}
+
+	output, err := runGuidedWithConfig("1\n1\ncancel\n", Config{Registry: registry, AWSBilling: guide, AWSLogin: login})
+
+	if !errors.Is(err, ErrInputCancelled) {
+		t.Fatalf("RunWithConfig error = %v, want ErrInputCancelled", err)
+	}
+	if called {
+		t.Fatal("preflight registry should not run when identity is unavailable")
+	}
+	if login.supportCalls == 0 {
+		t.Fatal("AWS login support should be checked before offering in-flow login")
+	}
+	if strings.Contains(output, "Sign in to profile default, then re-scan") {
+		t.Fatalf("output offered in-flow login despite unsupported AWS login: %s", output)
+	}
+	if !strings.Contains(output, "Remediation: aws login --profile default") {
+		t.Fatalf("output = %q, want manual login remediation", output)
+	}
+	assertGuidedOutputSafe(t, output)
+}
+
+func TestRunAWSBillingInFlowLoginOptionOnlyForSafeMissingLoginProfiles(t *testing.T) {
+	tests := []struct {
+		name   string
+		source billingguide.CredentialSource
+		err    error
+	}{
+		{
+			name:   "environment credentials",
+			source: billingguide.CredentialSource{Kind: billingguide.CredentialSourceEnvironment},
+			err:    billingguide.VerificationError{Code: "aws_config_missing_credentials", Message: "AWS credentials are not available."},
+		},
+		{
+			name:   "profile without login session",
+			source: billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"},
+			err:    billingguide.VerificationError{Code: "aws_config_missing_credentials", Message: "AWS credentials are not available."},
+		},
+		{
+			name:   "missing region",
+			source: billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "default", HasLoginSession: true},
+			err:    billingguide.VerificationError{Code: "aws_config_missing_region", Message: "AWS Region is not configured."},
+		},
+		{
+			name:   "profile shadowed",
+			source: billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1", HasLoginSession: true},
+			err:    billingguide.VerificationError{Code: "aws_config_profile_shadowed", Message: "AWS profile selection is blocked."},
+		},
+		{
+			name:   "generic auth failure",
+			source: billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1", HasLoginSession: true},
+			err:    billingguide.VerificationError{Code: "aws_auth_failed", Message: "AWS caller identity could not be verified."},
+		},
+		{
+			name:   "unsafe profile",
+			source: billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "/private/tmp/profile", Region: "us-east-1", HasLoginSession: true},
+			err:    billingguide.VerificationError{Code: "aws_config_missing_credentials", Message: "AWS credentials are not available."},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			called := false
+			registry := testRegistry(t, workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+				called = true
+				return guidedCapabilityReport(got, workflow.StatusReady, "aws_cur2_preflight_ready", nil)
+			}))
+			guide := &fakeAWSBillingGuide{
+				sources: []billingguide.CredentialSource{tt.source},
+				verifyErrs: map[string]error{
+					sourceKey(tt.source): tt.err,
+				},
+			}
+			login := &fakeAWSLoginRunner{support: AWSLoginSupport{Available: true, Version: "2.36.34"}}
+
+			output, err := runGuidedWithConfig("1\n1\ncancel\n", Config{Registry: registry, AWSBilling: guide, AWSLogin: login})
+
+			if !errors.Is(err, ErrInputCancelled) {
+				t.Fatalf("RunWithConfig error = %v, want ErrInputCancelled", err)
+			}
+			if called {
+				t.Fatal("preflight registry should not run when identity is unavailable")
+			}
+			if len(login.loginCalls) != 0 {
+				t.Fatalf("login calls = %#v, want none for %s", login.loginCalls, tt.name)
+			}
+			if strings.Contains(output, "Sign in to profile default, then re-scan") ||
+				strings.Contains(output, "Run AWS login for profile default now? [y/N]") {
+				t.Fatalf("output offered in-flow login for %s: %s", tt.name, output)
+			}
+			assertGuidedOutputSafe(t, output)
+		})
+	}
 }
 
 func TestRunAWSBillingBlockedEnvironmentCredentialHasNoLoginRemediation(t *testing.T) {
@@ -627,10 +1248,10 @@ func TestRunAWSBillingBlockedEnvironmentCredentialHasNoLoginRemediation(t *testi
 		},
 	}
 
-	output, err := runGuidedWithConfig("1\n1\n", Config{Registry: registry, AWSBilling: guide})
+	output, err := runGuidedWithConfig("1\n1\ncancel\n", Config{Registry: registry, AWSBilling: guide})
 
-	if err != nil {
-		t.Fatalf("RunWithConfig returned error: %v", err)
+	if !errors.Is(err, ErrInputCancelled) {
+		t.Fatalf("RunWithConfig error = %v, want ErrInputCancelled", err)
 	}
 	if called {
 		t.Fatal("preflight registry should not run when environment credentials cannot be verified")
@@ -640,6 +1261,9 @@ func TestRunAWSBillingBlockedEnvironmentCredentialHasNoLoginRemediation(t *testi
 	}
 	if strings.Contains(output, "aws login --profile") {
 		t.Fatalf("environment credentials should not show profile login remediation: %s", output)
+	}
+	if !strings.Contains(output, "Use an existing AWS profile name manually (advanced)") {
+		t.Fatalf("output = %q, want manual profile option", output)
 	}
 	assertGuidedOutputSafe(t, output)
 }
@@ -673,10 +1297,10 @@ func TestRunAWSBillingLoginRemediationOnlyForMissingCredentials(t *testing.T) {
 				},
 			}
 
-			output, err := runGuidedWithConfig("1\n1\n", Config{Registry: registry, AWSBilling: guide})
+			output, err := runGuidedWithConfig("1\n1\ncancel\n", Config{Registry: registry, AWSBilling: guide})
 
-			if err != nil {
-				t.Fatalf("RunWithConfig returned error: %v", err)
+			if !errors.Is(err, ErrInputCancelled) {
+				t.Fatalf("RunWithConfig error = %v, want ErrInputCancelled", err)
 			}
 			if called {
 				t.Fatal("preflight registry should not run when identity is unavailable")
@@ -687,12 +1311,114 @@ func TestRunAWSBillingLoginRemediationOnlyForMissingCredentials(t *testing.T) {
 			if strings.Contains(output, "aws login --profile") {
 				t.Fatalf("output should not show login remediation for %s: %s", tt.code, output)
 			}
+			if !strings.Contains(output, "Use an existing AWS profile name manually (advanced)") {
+				t.Fatalf("output = %q, want manual profile option", output)
+			}
 			assertGuidedOutputSafe(t, output)
 		})
 	}
 }
 
-func TestRunAWSBillingStopsBeforePreflightWhenNoCredentialSourcesExist(t *testing.T) {
+func TestRunAWSBillingNoCredentialSourcesCanRescanAfterExternalSignIn(t *testing.T) {
+	var gotOptions workflow.ExecutionOptions
+	registry := testRegistry(t, workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+		gotOptions = options
+		return guidedCapabilityReport(got, workflow.StatusReady, "aws_cur2_preflight_ready", nil)
+	}))
+	guide := &fakeAWSBillingGuide{
+		sourceSequences: [][]billingguide.CredentialSource{
+			nil,
+			{{Kind: billingguide.CredentialSourceProfile, Profile: "finance", Region: "us-west-2"}},
+		},
+		verified: map[string]billingguide.VerifiedIdentity{
+			"profile:finance": {Source: billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "finance", Region: "us-west-2"}, AccountLabel: "account-ending-2222", CallerRef: "sha256:222222222222", Region: "us-west-2"},
+		},
+	}
+
+	output, err := runGuidedWithConfig("1\n1\n1\n\ny\n", Config{Registry: registry, AWSBilling: guide})
+
+	if err != nil {
+		t.Fatalf("RunWithConfig returned error: %v", err)
+	}
+	for _, want := range []string{
+		"No AWS credential sources were found.",
+		"Sign in or configure another AWS profile, then re-scan",
+		"Use an existing AWS profile name manually (advanced)",
+		"Press Enter after the AWS profile is ready to re-scan",
+		"Re-scanning safe local AWS credential sources.",
+		"account-ending-2222",
+		"Inspect AWS CUR 2.0 billing exports",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output = %q, want to contain %q", output, want)
+		}
+	}
+	if gotOptions.Selectors == nil || gotOptions.Selectors.AWS == nil ||
+		gotOptions.Selectors.AWS.Profile != "finance" ||
+		gotOptions.Selectors.AWS.Region != "us-west-2" {
+		t.Fatalf("AWS selectors = %#v, want re-scanned finance/us-west-2", gotOptions)
+	}
+	if got := strings.Join(guide.verifyCalls, ","); got != "profile:finance" {
+		t.Fatalf("VerifyIdentity calls = %q, want re-scanned finance", got)
+	}
+	if guide.discoverCalls != 2 {
+		t.Fatalf("DiscoverCredentialSources calls = %d, want 2", guide.discoverCalls)
+	}
+	assertGuidedOutputSafe(t, output)
+}
+
+func TestRunAWSBillingNoVerifiedSourcesCanRescanAfterExternalSignIn(t *testing.T) {
+	var gotOptions workflow.ExecutionOptions
+	registry := testRegistry(t, workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+		gotOptions = options
+		return guidedCapabilityReport(got, workflow.StatusReady, "aws_cur2_preflight_ready", nil)
+	}))
+	guide := &fakeAWSBillingGuide{
+		sourceSequences: [][]billingguide.CredentialSource{
+			{{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1", HasLoginSession: true}},
+			{{Kind: billingguide.CredentialSourceProfile, Profile: "finance", Region: "us-west-2"}},
+		},
+		verifyErrs: map[string]error{
+			"profile:default": billingguide.VerificationError{Code: "aws_config_missing_credentials", Message: "AWS credentials are not available."},
+		},
+		verified: map[string]billingguide.VerifiedIdentity{
+			"profile:finance": {Source: billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "finance", Region: "us-west-2"}, AccountLabel: "account-ending-2222", CallerRef: "sha256:222222222222", Region: "us-west-2"},
+		},
+	}
+
+	output, err := runGuidedWithConfig("1\n1\n1\n\ny\n", Config{Registry: registry, AWSBilling: guide})
+
+	if err != nil {
+		t.Fatalf("RunWithConfig returned error: %v", err)
+	}
+	for _, want := range []string{
+		"No verified AWS credential source is available.",
+		"aws login --profile default",
+		"Sign in or configure another AWS profile, then re-scan",
+		"Use an existing AWS profile name manually (advanced)",
+		"Re-scanning safe local AWS credential sources.",
+		"account-ending-2222",
+		"Inspect AWS CUR 2.0 billing exports",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output = %q, want to contain %q", output, want)
+		}
+	}
+	if gotOptions.Selectors == nil || gotOptions.Selectors.AWS == nil ||
+		gotOptions.Selectors.AWS.Profile != "finance" ||
+		gotOptions.Selectors.AWS.Region != "us-west-2" {
+		t.Fatalf("AWS selectors = %#v, want re-scanned finance/us-west-2", gotOptions)
+	}
+	if got := strings.Join(guide.verifyCalls, ","); got != "profile:default,profile:finance" {
+		t.Fatalf("VerifyIdentity calls = %q, want default then re-scanned finance", got)
+	}
+	if guide.discoverCalls != 2 {
+		t.Fatalf("DiscoverCredentialSources calls = %d, want 2", guide.discoverCalls)
+	}
+	assertGuidedOutputSafe(t, output)
+}
+
+func TestRunAWSBillingRescanWaitCanBeCancelledBeforeRediscovery(t *testing.T) {
 	called := false
 	registry := testRegistry(t, workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
 		called = true
@@ -700,21 +1426,240 @@ func TestRunAWSBillingStopsBeforePreflightWhenNoCredentialSourcesExist(t *testin
 	}))
 	guide := &fakeAWSBillingGuide{}
 
-	output, err := runGuidedWithConfig("1\n1\n", Config{Registry: registry, AWSBilling: guide})
+	output, err := runGuidedWithConfig("1\n1\n1\ncancel\n", Config{Registry: registry, AWSBilling: guide})
+
+	if !errors.Is(err, ErrInputCancelled) {
+		t.Fatalf("RunWithConfig error = %v, want ErrInputCancelled", err)
+	}
+	if called {
+		t.Fatal("preflight registry should not run when re-scan wait is cancelled")
+	}
+	if guide.discoverCalls != 1 {
+		t.Fatalf("DiscoverCredentialSources calls = %d, want only initial discovery", guide.discoverCalls)
+	}
+	for _, want := range []string{
+		"Press Enter after the AWS profile is ready to re-scan, or type cancel:",
+		"guided setup cancelled by user",
+	} {
+		if !strings.Contains(output+err.Error(), want) {
+			t.Fatalf("combined output/error = %q, want to contain %q", output+err.Error(), want)
+		}
+	}
+	assertGuidedOutputSafe(t, output)
+}
+
+func TestRunAWSBillingRescanUsesFreshOperationContextsAfterExternalWait(t *testing.T) {
+	var gotOptions workflow.ExecutionOptions
+	registry := testRegistry(t, workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+		if err := ctx.Err(); err != nil {
+			t.Fatalf("preflight context error = %v, want fresh active context", err)
+		}
+		gotOptions = options
+		return guidedCapabilityReport(got, workflow.StatusReady, "aws_cur2_preflight_ready", nil)
+	}))
+	guide := &fakeAWSBillingGuide{
+		sourceSequences: [][]billingguide.CredentialSource{
+			nil,
+			{{Kind: billingguide.CredentialSourceProfile, Profile: "finance", Region: "us-west-2"}},
+		},
+		verified: map[string]billingguide.VerifiedIdentity{
+			"profile:finance": {Source: billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "finance", Region: "us-west-2"}, AccountLabel: "account-ending-2222", CallerRef: "sha256:222222222222", Region: "us-west-2"},
+		},
+	}
+
+	output, err := runGuidedWithConfigReader(&delayedInput{
+		chunks: []delayedInputChunk{
+			{text: "1\n1\n1\n"},
+			{text: "\n", delay: 1100 * time.Millisecond},
+			{text: "y\n"},
+		},
+	}, Config{Registry: registry, AWSBilling: guide, TimeoutSeconds: 1})
 
 	if err != nil {
 		t.Fatalf("RunWithConfig returned error: %v", err)
 	}
+	if gotOptions.Selectors == nil || gotOptions.Selectors.AWS == nil ||
+		gotOptions.Selectors.AWS.Profile != "finance" ||
+		gotOptions.Selectors.AWS.Region != "us-west-2" {
+		t.Fatalf("AWS selectors = %#v, want re-scanned finance/us-west-2", gotOptions)
+	}
+	if guide.discoverCalls != 2 {
+		t.Fatalf("DiscoverCredentialSources calls = %d, want 2", guide.discoverCalls)
+	}
+	if !strings.Contains(output, "Re-scanning safe local AWS credential sources.") {
+		t.Fatalf("output = %q, want re-scan message", output)
+	}
+	assertGuidedOutputSafe(t, output)
+}
+
+func TestRunAWSBillingManualProfileRejectsUnsafeInputWithoutEcho(t *testing.T) {
+	called := false
+	registry := testRegistry(t, workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+		called = true
+		return guidedCapabilityReport(got, workflow.StatusReady, "aws_cur2_preflight_ready", nil)
+	}))
+	guide := &fakeAWSBillingGuide{}
+
+	output, err := runGuidedWithConfig("1\n1\n2\n/private/tmp/aws-profile\ncancel\n", Config{Registry: registry, AWSBilling: guide})
+
+	if !errors.Is(err, ErrInputCancelled) {
+		t.Fatalf("RunWithConfig error = %v, want ErrInputCancelled", err)
+	}
 	if called {
-		t.Fatal("preflight registry should not run when no AWS credential sources exist")
+		t.Fatal("preflight registry should not run for unsafe manual profile input")
+	}
+	if len(guide.verifyCalls) != 0 {
+		t.Fatalf("VerifyIdentity calls = %#v, want none for unsafe manual profile input", guide.verifyCalls)
+	}
+	if !strings.Contains(output, "AWS profile name is not safe to use.") {
+		t.Fatalf("output = %q, want generic unsafe profile message", output)
+	}
+	for _, forbidden := range []string{"/private/tmp/aws-profile", "/private/", "aws-profile"} {
+		if strings.Contains(output, forbidden) || (err != nil && strings.Contains(err.Error(), forbidden)) {
+			t.Fatalf("unsafe manual profile value leaked %q; output=%q err=%v", forbidden, output, err)
+		}
+	}
+	assertGuidedOutputSafe(t, output)
+}
+
+func TestRunAWSBillingManualProfileRequiresVerificationConfirmation(t *testing.T) {
+	called := false
+	registry := testRegistry(t, workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+		called = true
+		return guidedCapabilityReport(got, workflow.StatusReady, "aws_cur2_preflight_ready", nil)
+	}))
+	guide := &fakeAWSBillingGuide{
+		verified: map[string]billingguide.VerifiedIdentity{
+			"profile:finance": {Source: billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "finance", Region: "us-west-2"}, AccountLabel: "account-ending-2222", CallerRef: "sha256:222222222222", Region: "us-west-2"},
+		},
+	}
+
+	output, err := runGuidedWithConfig("1\n1\n2\nfinance\nus-west-2\nn\ncancel\n", Config{Registry: registry, AWSBilling: guide})
+
+	if !errors.Is(err, ErrInputCancelled) {
+		t.Fatalf("RunWithConfig error = %v, want ErrInputCancelled", err)
+	}
+	if called {
+		t.Fatal("preflight registry should not run when manual profile verification is declined")
+	}
+	if len(guide.verifyCalls) != 0 {
+		t.Fatalf("VerifyIdentity calls = %#v, want none before manual verification confirmation", guide.verifyCalls)
 	}
 	for _, want := range []string{
-		"No AWS credential sources were found.",
-		"Sign in or configure an AWS profile",
+		"AWS profile verification may run normal AWS SDK credential resolution",
+		"including a configured credential process",
+		"Verify this AWS profile now? [y/N]",
+		"Choose how to connect another AWS account.",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("output = %q, want to contain %q", output, want)
 		}
+	}
+	assertGuidedOutputSafe(t, output)
+}
+
+func TestRunAWSBillingManualProfileMissingCredentialsShowsSafeRemediation(t *testing.T) {
+	called := false
+	registry := testRegistry(t, workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+		called = true
+		return guidedCapabilityReport(got, workflow.StatusReady, "aws_cur2_preflight_ready", nil)
+	}))
+	guide := &fakeAWSBillingGuide{
+		verifyErrs: map[string]error{
+			"profile:finance": billingguide.VerificationError{Code: "aws_config_missing_credentials", Message: "AWS credentials are not available."},
+		},
+	}
+
+	output, err := runGuidedWithConfig("1\n1\n2\nfinance\nus-west-2\ny\ncancel\n", Config{Registry: registry, AWSBilling: guide})
+
+	if !errors.Is(err, ErrInputCancelled) {
+		t.Fatalf("RunWithConfig error = %v, want ErrInputCancelled", err)
+	}
+	if called {
+		t.Fatal("preflight registry should not run when manual profile credentials are missing")
+	}
+	if got := strings.Join(guide.verifyCalls, ","); got != "profile:finance" {
+		t.Fatalf("VerifyIdentity calls = %q, want manual finance verification once", got)
+	}
+	for _, want := range []string{
+		"profile finance in us-west-2 blocked: aws_config_missing_credentials",
+		"Run aws login --profile finance if this is an AWS login profile, or configure credentials for profile finance.",
+		"Then choose this profile again after login or configuration is complete.",
+		"Choose how to connect another AWS account.",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output = %q, want to contain %q", output, want)
+		}
+	}
+	assertGuidedOutputSafe(t, output)
+}
+
+func TestRunAWSBillingManualProfileMissingRegionShowsSafeRemediation(t *testing.T) {
+	called := false
+	registry := testRegistry(t, workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+		called = true
+		return guidedCapabilityReport(got, workflow.StatusReady, "aws_cur2_preflight_ready", nil)
+	}))
+	guide := &fakeAWSBillingGuide{
+		verifyErrs: map[string]error{
+			"profile:finance": billingguide.VerificationError{Code: "aws_config_missing_region", Message: "AWS Region is not configured."},
+		},
+	}
+
+	output, err := runGuidedWithConfig("1\n1\n2\nfinance\n\ny\ncancel\n", Config{Registry: registry, AWSBilling: guide})
+
+	if !errors.Is(err, ErrInputCancelled) {
+		t.Fatalf("RunWithConfig error = %v, want ErrInputCancelled", err)
+	}
+	if called {
+		t.Fatal("preflight registry should not run when manual profile Region is missing")
+	}
+	if got := strings.Join(guide.verifyCalls, ","); got != "profile:finance" {
+		t.Fatalf("VerifyIdentity calls = %q, want manual finance verification once", got)
+	}
+	for _, want := range []string{
+		"profile finance blocked: aws_config_missing_region",
+		"Enter an AWS Region when choosing this profile again, or configure a Region for profile finance outside this tool.",
+		"Choose how to connect another AWS account.",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output = %q, want to contain %q", output, want)
+		}
+	}
+	assertGuidedOutputSafe(t, output)
+}
+
+func TestRunAWSBillingManualProfileShadowedByEnvironmentExplainsRestartBoundary(t *testing.T) {
+	called := false
+	registry := testRegistry(t, workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+		called = true
+		return guidedCapabilityReport(got, workflow.StatusReady, "aws_cur2_preflight_ready", nil)
+	}))
+	guide := &fakeAWSBillingGuide{
+		verifyErrs: map[string]error{
+			"profile:finance": billingguide.VerificationError{Code: "aws_config_profile_shadowed", Message: "AWS profile selection is blocked because credential environment variables would take precedence."},
+		},
+	}
+
+	output, err := runGuidedWithConfig("1\n1\n2\nfinance\nus-west-2\ny\ncancel\n", Config{Registry: registry, AWSBilling: guide})
+
+	if !errors.Is(err, ErrInputCancelled) {
+		t.Fatalf("RunWithConfig error = %v, want ErrInputCancelled", err)
+	}
+	if called {
+		t.Fatal("preflight registry should not run when environment credentials shadow a manual profile")
+	}
+	for _, want := range []string{
+		"profile finance in us-west-2 blocked: aws_config_profile_shadowed",
+		"AWS credential environment variables would take precedence over the selected profile.",
+		"Unset AWS credential environment variables and start a new shell before retrying this profile.",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output = %q, want to contain %q", output, want)
+		}
+	}
+	if strings.Contains(output, "Then choose this profile again") {
+		t.Fatalf("profile-shadowed output implied same-process retry: %s", output)
 	}
 	assertGuidedOutputSafe(t, output)
 }
@@ -763,7 +1708,7 @@ func TestRunAWSBillingDiscoveryTimeoutShowsRetryableMessage(t *testing.T) {
 	assertGuidedOutputSafe(t, output)
 }
 
-func TestRunAWSBillingDeclineStopsBeforePreflight(t *testing.T) {
+func TestRunAWSBillingDeclineThenCancelStopsBeforePreflight(t *testing.T) {
 	called := false
 	registry := testRegistry(t, workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
 		called = true
@@ -776,16 +1721,16 @@ func TestRunAWSBillingDeclineStopsBeforePreflight(t *testing.T) {
 		},
 	}
 
-	output, err := runGuidedWithConfig("1\n1\nn\n", Config{Registry: registry, AWSBilling: guide})
+	output, err := runGuidedWithConfig("1\n1\nn\ncancel\n", Config{Registry: registry, AWSBilling: guide})
 
-	if err != nil {
-		t.Fatalf("RunWithConfig returned error: %v", err)
+	if !errors.Is(err, ErrInputCancelled) {
+		t.Fatalf("RunWithConfig error = %v, want ErrInputCancelled", err)
 	}
 	if called {
 		t.Fatal("preflight registry should not run when user declines the verified account")
 	}
-	if !strings.Contains(output, "AWS billing preflight was not run.") {
-		t.Fatalf("output = %q, want declined preflight message", output)
+	if !strings.Contains(output, "Choose how to connect another AWS account.") {
+		t.Fatalf("output = %q, want source reselection guidance", output)
 	}
 	assertGuidedOutputSafe(t, output)
 }
@@ -916,9 +1861,205 @@ func TestDirectAWSBillingCommandShellQuotesUnsafeSelectorCharacters(t *testing.T
 	}
 }
 
-func runGuidedWithConfig(input string, config Config) (string, error) {
+func TestReadConfirmationDefaultYesSemantics(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    bool
+		wantErr error
+	}{
+		{name: "blank defaults yes", input: "\n", want: true},
+		{name: "yes", input: "yes\n", want: true},
+		{name: "no", input: "no\n", want: false},
+		{name: "cancel", input: "cancel\n", wantErr: ErrInputCancelled},
+		{name: "invalid", input: "maybe\n", wantErr: ErrInvalidSelection},
+		{name: "eof", wantErr: ErrInputCancelled},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reader := bufio.NewScanner(strings.NewReader(tt.input))
+			var output bytes.Buffer
+
+			got, err := readConfirmationDefaultYes(reader, &output, "Continue? [Y/n] ")
+
+			if tt.wantErr != nil {
+				if !errors.Is(err, tt.wantErr) {
+					t.Fatalf("error = %v, want %v", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("readConfirmationDefaultYes returned error: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("confirmation = %v, want %v", got, tt.want)
+			}
+			if output.String() != "Continue? [Y/n] " {
+				t.Fatalf("prompt output = %q, want prompt", output.String())
+			}
+		})
+	}
+}
+
+func TestWriteCreateCUR2SetupPlanSummaryShowsNonMutatingReuse(t *testing.T) {
+	source := billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}
+	result := workflow.Result{
+		Plan: &workflow.ExecutionPlan{
+			Steps: []workflow.PlanStep{{
+				Title:            "Reuse existing Matilda AWS CUR 2.0 export",
+				RequiresApproval: false,
+			}},
+			Approval: workflow.ApprovalSummary{Required: false},
+		},
+	}
 	var output bytes.Buffer
-	err := RunWithConfig(strings.NewReader(input), &output, config)
+
+	writeCreateCUR2SetupPlanSummary(&output, source, result)
+
+	for _, want := range []string{
+		"Setup plan:",
+		"No approval required: Reuse existing Matilda AWS CUR 2.0 export",
+		"No cloud changes were made.",
+		"No mutation approval is required for this result.",
+	} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("output = %q, want to contain %q", output.String(), want)
+		}
+	}
+	for _, forbidden := range []string{
+		"Approve with:",
+		"--approve-step",
+	} {
+		if strings.Contains(output.String(), forbidden) {
+			t.Fatalf("output = %q, want no %q", output.String(), forbidden)
+		}
+	}
+}
+
+func TestWriteCreateCUR2SetupPlanSummaryShowsBlockedApproval(t *testing.T) {
+	source := billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}
+	result := workflow.Result{
+		Plan: &workflow.ExecutionPlan{
+			Steps: []workflow.PlanStep{{
+				Title:              "Resolve AWS S3 bucket candidate access",
+				RequiresApproval:   false,
+				CurrentState:       "The generated same-account S3 bucket candidate could not be verified as available to create or safely owned by this account.",
+				TargetState:        "Matilda Cloud Prep can show an approval-required plan to create or reuse the generated bucket, update its Data Exports delivery policy, and create the CUR 2.0 export.",
+				RequiredPermission: "s3:ListBucket for existing bucket checks, plus s3:CreateBucket, s3:GetBucketPolicy, s3:PutBucketPolicy, bcm-data-exports:CreateExport, and cur:PutReportDefinition for approved setup.",
+				Validation:         "Do not manually create or select arbitrary buckets for the normal guided path. Resolve S3 access ambiguity, then rerun apply-prereqs to get a new approval-required setup plan.",
+			}},
+			Approval: workflow.ApprovalSummary{
+				Required: true,
+				Blocked:  true,
+			},
+		},
+	}
+	var output bytes.Buffer
+
+	writeCreateCUR2SetupPlanSummary(&output, source, result)
+
+	for _, want := range []string{
+		"Setup plan:",
+		"No approval required: Resolve AWS S3 bucket candidate access",
+		"Current state: The generated same-account S3 bucket candidate could not be verified as available to create or safely owned by this account.",
+		"Target state: Matilda Cloud Prep can show an approval-required plan to create or reuse the generated bucket, update its Data Exports delivery policy, and create the CUR 2.0 export.",
+		"Required permission: s3:ListBucket for existing bucket checks",
+		"Validation: Do not manually create or select arbitrary buckets for the normal guided path.",
+		"No cloud changes were made.",
+		"This setup plan is blocked and cannot be approved until the blocker is resolved.",
+	} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("output = %q, want to contain %q", output.String(), want)
+		}
+	}
+	if strings.Contains(output.String(), "Approve with:") {
+		t.Fatalf("output = %q, want no approval command for blocked plan", output.String())
+	}
+}
+
+func TestWriteCreateCUR2SetupPlanSummaryShowsAppliedMutation(t *testing.T) {
+	source := billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}
+	result := workflow.Result{
+		Mutated: true,
+		Plan: &workflow.ExecutionPlan{
+			Steps: []workflow.PlanStep{{
+				Title:            "Create Matilda AWS CUR 2.0 export",
+				RequiresApproval: true,
+				ID:               workflow.AWSCUR2CreateExportOperationID,
+			}},
+			Approval: workflow.ApprovalSummary{
+				Required:       true,
+				Approved:       true,
+				ApprovalPlanID: "plan_abcdefghijklmnop",
+			},
+		},
+	}
+	var output bytes.Buffer
+
+	writeCreateCUR2SetupPlanSummary(&output, source, result)
+
+	for _, want := range []string{
+		"Setup plan:",
+		"Approval required: Create Matilda AWS CUR 2.0 export",
+		"Cloud changes were made for the approved setup plan.",
+	} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("output = %q, want to contain %q", output.String(), want)
+		}
+	}
+	for _, forbidden := range []string{
+		"No cloud changes were made.",
+		"Cloud changes require plan-bound approval",
+		"Approve with:",
+	} {
+		if strings.Contains(output.String(), forbidden) {
+			t.Fatalf("output = %q, want no %q", output.String(), forbidden)
+		}
+	}
+}
+
+func TestDirectAWSBillingCreateCUR2ApprovalCommandRequiresApprovablePlan(t *testing.T) {
+	source := billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}
+	tests := []struct {
+		name   string
+		result workflow.Result
+	}{
+		{name: "missing plan"},
+		{
+			name: "no approval required",
+			result: workflow.Result{Plan: &workflow.ExecutionPlan{
+				Approval: workflow.ApprovalSummary{Required: false},
+			}},
+		},
+		{
+			name: "blocked",
+			result: workflow.Result{Plan: &workflow.ExecutionPlan{
+				Approval: workflow.ApprovalSummary{Required: true, Blocked: true, ApprovalPlanID: "plan_abcdefghijklmnop"},
+			}},
+		},
+		{
+			name: "missing plan id",
+			result: workflow.Result{Plan: &workflow.ExecutionPlan{
+				Approval: workflow.ApprovalSummary{Required: true},
+			}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := directAWSBillingCreateCUR2ApprovalCommand(source, tt.result); got != "" {
+				t.Fatalf("approval command = %q, want empty", got)
+			}
+		})
+	}
+}
+
+func runGuidedWithConfig(input string, config Config) (string, error) {
+	return runGuidedWithConfigReader(strings.NewReader(input), config)
+}
+
+func runGuidedWithConfigReader(input io.Reader, config Config) (string, error) {
+	var output bytes.Buffer
+	err := RunWithConfig(input, &output, config)
 	return output.String(), err
 }
 
@@ -1002,20 +2143,44 @@ func guidedTestSourceHandles() []workflow.SourceHandle {
 }
 
 type fakeAWSBillingGuide struct {
-	sources     []billingguide.CredentialSource
-	discoverErr error
-	verified    map[string]billingguide.VerifiedIdentity
-	verifyErrs  map[string]error
-	verifyCalls []string
+	sources            []billingguide.CredentialSource
+	sourceSequences    [][]billingguide.CredentialSource
+	discoverErr        error
+	discoverCalls      int
+	verified           map[string]billingguide.VerifiedIdentity
+	verifyErrs         map[string]error
+	verifyErrSequences map[string][]error
+	verifyCalls        []string
 }
 
-func (f *fakeAWSBillingGuide) DiscoverCredentialSources(context.Context) ([]billingguide.CredentialSource, error) {
-	return f.sources, f.discoverErr
+func (f *fakeAWSBillingGuide) DiscoverCredentialSources(ctx context.Context) ([]billingguide.CredentialSource, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	f.discoverCalls++
+	if f.discoverErr != nil {
+		return nil, f.discoverErr
+	}
+	if len(f.sourceSequences) > 0 {
+		index := f.discoverCalls - 1
+		if index >= len(f.sourceSequences) {
+			index = len(f.sourceSequences) - 1
+		}
+		return append([]billingguide.CredentialSource{}, f.sourceSequences[index]...), nil
+	}
+	return append([]billingguide.CredentialSource{}, f.sources...), nil
 }
 
 func (f *fakeAWSBillingGuide) VerifyIdentity(_ context.Context, source billingguide.CredentialSource) (billingguide.VerifiedIdentity, error) {
 	key := sourceKey(source)
 	f.verifyCalls = append(f.verifyCalls, key)
+	if sequence, ok := f.verifyErrSequences[key]; ok && len(sequence) > 0 {
+		err := sequence[0]
+		f.verifyErrSequences[key] = sequence[1:]
+		if err != nil {
+			return billingguide.VerifiedIdentity{}, err
+		}
+	}
 	if err := f.verifyErrs[key]; err != nil {
 		return billingguide.VerifiedIdentity{}, err
 	}
@@ -1031,6 +2196,51 @@ func sourceKey(source billingguide.CredentialSource) string {
 		return "profile:" + source.Profile
 	}
 	return "environment"
+}
+
+type fakeAWSLoginRunner struct {
+	support      AWSLoginSupport
+	supportCalls int
+	loginCalls   []billingguide.CredentialSource
+	loginErr     error
+}
+
+func (f *fakeAWSLoginRunner) SupportsLogin(ctx context.Context) AWSLoginSupport {
+	f.supportCalls++
+	if err := ctx.Err(); err != nil {
+		return AWSLoginSupport{Available: false, Reason: "aws_cli_login_check_cancelled", Message: err.Error()}
+	}
+	return f.support
+}
+
+func (f *fakeAWSLoginRunner) Login(ctx context.Context, source billingguide.CredentialSource) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	f.loginCalls = append(f.loginCalls, source)
+	return f.loginErr
+}
+
+type delayedInputChunk struct {
+	text  string
+	delay time.Duration
+}
+
+type delayedInput struct {
+	chunks []delayedInputChunk
+	index  int
+}
+
+func (input *delayedInput) Read(p []byte) (int, error) {
+	if input.index >= len(input.chunks) {
+		return 0, io.EOF
+	}
+	chunk := input.chunks[input.index]
+	input.index++
+	if chunk.delay > 0 {
+		time.Sleep(chunk.delay)
+	}
+	return copy(p, chunk.text), nil
 }
 
 func assertGuidedOutputSafe(t *testing.T, output string) {

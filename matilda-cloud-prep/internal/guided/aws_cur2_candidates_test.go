@@ -2,10 +2,13 @@ package guided
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/assessment"
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/cloud/aws/billingguide"
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/workflow"
 )
@@ -83,6 +86,167 @@ func TestRunAWSBillingPromptsBeforeSelectedExportPreflight(t *testing.T) {
 		"Readiness: not ready",
 		"aws_cur2_output_settings_blocked",
 		"--export-ref cur2-bdbdbdbdbdbdbdbd",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output = %q, want to contain %q", output, want)
+		}
+	}
+	assertGuidedOutputSafe(t, output)
+}
+
+func TestRunAWSBillingCanPrepareNewCUR2PlanInsteadOfDiscoveredExports(t *testing.T) {
+	calls := []guidedAWSBillingCall{}
+	preflightRunner := workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+		calls = append(calls, guidedAWSBillingCall{Request: got, Options: options})
+		if options.Selectors != nil && options.Selectors.AWS != nil && options.Selectors.AWS.CUR2ExportRef != "" {
+			t.Fatalf("selected preflight should not run when user declines discovered exports: %#v", options.Selectors.AWS)
+		}
+		return guidedCapabilityReport(got, workflow.RunStatusBlocked, "aws_cur2_export_ambiguous", []workflow.PlanEvidence{
+			{Key: "candidate_1_export_ref", Value: "cur2-acacacacacacacac"},
+			{Key: "candidate_1_health", Value: "HEALTHY"},
+			{Key: "candidate_1_output_format", Value: "TEXT_OR_CSV"},
+			{Key: "candidate_1_compression", Value: "GZIP"},
+			{Key: "candidate_1_time_granularity", Value: "MONTHLY"},
+			{Key: "candidate_1_overwrite", Value: "CREATE_NEW_REPORT"},
+			{Key: "candidate_1_output_type", Value: "CUSTOM"},
+			{Key: "candidate_1_refresh_cadence", Value: "SYNCHRONOUS"},
+			{Key: "candidate_1_destination_region", Value: "us-east-1"},
+			{Key: "candidate_2_export_ref", Value: "cur2-bdbdbdbdbdbdbdbd"},
+			{Key: "candidate_2_health", Value: "HEALTHY"},
+			{Key: "candidate_2_output_format", Value: "PARQUET"},
+			{Key: "candidate_2_compression", Value: "PARQUET"},
+			{Key: "candidate_2_time_granularity", Value: "DAILY"},
+			{Key: "candidate_2_overwrite", Value: "OVERWRITE_REPORT"},
+			{Key: "candidate_2_output_type", Value: "CUSTOM"},
+			{Key: "candidate_2_refresh_cadence", Value: "SYNCHRONOUS"},
+			{Key: "candidate_2_destination_region", Value: "us-west-2"},
+		})
+	})
+	applyRunner := workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+		calls = append(calls, guidedAWSBillingCall{Request: got, Options: options})
+		return guidedCreateCUR2PlanReport(got)
+	})
+	registry := testAWSBillingRegistry(t, preflightRunner, applyRunner)
+	guide := &fakeAWSBillingGuide{
+		sources: []billingguide.CredentialSource{{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}},
+		verified: map[string]billingguide.VerifiedIdentity{
+			"profile:default": {Source: billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}, AccountLabel: "account-ending-9012", CallerRef: "sha256:abcdef123456", Region: "us-east-1"},
+		},
+	}
+
+	output, err := runGuidedWithConfig("1\n1\ny\n3\n\n", Config{Registry: registry, AWSBilling: guide})
+
+	if err != nil {
+		t.Fatalf("RunWithConfig returned error: %v", err)
+	}
+	assertGuidedCreateCUR2PlanCalls(t, calls)
+	for _, want := range []string{
+		"Select AWS CUR 2.0 export",
+		"Prepare a new Matilda CUR 2.0 setup plan",
+		"Preparing a new Matilda AWS CUR 2.0 setup plan.",
+		"Result: ready_with_manual_steps",
+		"Support code: aws_cur2_create_export_approval_required",
+		"Approval plan:",
+		"Step ID: aws.billing.cur2.bucket.create",
+		"Current state: No matching generated same-account S3 bucket is available.",
+		"Target state: A generated same-account S3 bucket exists in the selected region.",
+		"Required permission: s3:CreateBucket",
+		"Validation: The bucket is checked with the expected bucket owner before policy or export creation continues.",
+		"Rollback: The tool does not delete S3 buckets automatically.",
+		"Cloud changes require plan-bound approval before they are made.",
+		"Apply this AWS CUR 2.0 setup plan now? [y/N]",
+		"Next command:",
+		"matilda-prep rapid-assessment billing aws apply-prereqs --profile default --region us-east-1 --create-cur2-export",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output = %q, want to contain %q", output, want)
+		}
+	}
+	for _, forbidden := range []string{
+		"Running readiness preflight for selected CUR 2.0 export",
+		"Applying approved Matilda AWS CUR 2.0 setup plan.",
+		"Reproduce with:",
+		"--export-ref",
+	} {
+		if strings.Contains(output, forbidden) {
+			t.Fatalf("output = %q, want no %q", output, forbidden)
+		}
+	}
+	assertGuidedOutputSafe(t, output)
+}
+
+func TestRunAWSBillingSelectedExportPreflightUsesFreshContextAfterUserWait(t *testing.T) {
+	calls := []workflow.ExecutionOptions{}
+	registry := testRegistry(t, workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+		calls = append(calls, options)
+		exportRef := ""
+		if options.Selectors != nil && options.Selectors.AWS != nil {
+			exportRef = options.Selectors.AWS.CUR2ExportRef
+		}
+		switch exportRef {
+		case "":
+			return guidedCapabilityReport(got, workflow.RunStatusBlocked, "aws_cur2_export_ambiguous", []workflow.PlanEvidence{
+				{Key: "candidate_1_export_ref", Value: "cur2-aaaaaaaaaaaaaaaa"},
+				{Key: "candidate_1_health", Value: "HEALTHY"},
+				{Key: "candidate_1_output_format", Value: "TEXT_OR_CSV"},
+				{Key: "candidate_1_compression", Value: "GZIP"},
+				{Key: "candidate_1_time_granularity", Value: "MONTHLY"},
+				{Key: "candidate_1_overwrite", Value: "CREATE_NEW_REPORT"},
+				{Key: "candidate_1_output_type", Value: "CUSTOM"},
+				{Key: "candidate_1_refresh_cadence", Value: "SYNCHRONOUS"},
+				{Key: "candidate_1_destination_region", Value: "us-east-1"},
+				{Key: "candidate_2_export_ref", Value: "cur2-bbbbbbbbbbbbbbbb"},
+				{Key: "candidate_2_health", Value: "HEALTHY"},
+				{Key: "candidate_2_output_format", Value: "PARQUET"},
+				{Key: "candidate_2_compression", Value: "PARQUET"},
+				{Key: "candidate_2_time_granularity", Value: "DAILY"},
+				{Key: "candidate_2_overwrite", Value: "OVERWRITE_REPORT"},
+				{Key: "candidate_2_output_type", Value: "CUSTOM"},
+				{Key: "candidate_2_refresh_cadence", Value: "SYNCHRONOUS"},
+				{Key: "candidate_2_destination_region", Value: "us-east-1"},
+			})
+		case "cur2-aaaaaaaaaaaaaaaa":
+			if err := ctx.Err(); err != nil {
+				t.Fatalf("selected-export preflight context error = %v, want fresh active context", err)
+			}
+			return guidedCapabilityReport(got, workflow.StatusReady, "aws_cur2_preflight_ready", []workflow.PlanEvidence{
+				{Key: "output_format", Value: "TEXT_OR_CSV"},
+				{Key: "compression", Value: "GZIP"},
+				{Key: "time_granularity", Value: "MONTHLY"},
+				{Key: "overwrite", Value: "CREATE_NEW_REPORT"},
+			})
+		default:
+			t.Fatalf("unexpected export ref %q", exportRef)
+			return workflow.CapabilityReport{}
+		}
+	}))
+	guide := &fakeAWSBillingGuide{
+		sources: []billingguide.CredentialSource{{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}},
+		verified: map[string]billingguide.VerifiedIdentity{
+			"profile:default": {Source: billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}, AccountLabel: "account-ending-9012", CallerRef: "sha256:abcdef123456", Region: "us-east-1"},
+		},
+	}
+
+	output, err := runGuidedWithConfigReader(&delayedInput{
+		chunks: []delayedInputChunk{
+			{text: "1\n1\ny\n"},
+			{text: "1\n", delay: 1100 * time.Millisecond},
+		},
+	}, Config{Registry: registry, AWSBilling: guide, TimeoutSeconds: 1})
+
+	if err != nil {
+		t.Fatalf("RunWithConfig returned error: %v", err)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("preflight calls = %d, want initial discovery plus selected export preflight", len(calls))
+	}
+	if calls[1].Selectors.AWS.CUR2ExportRef != "cur2-aaaaaaaaaaaaaaaa" {
+		t.Fatalf("selected preflight ref = %q, want chosen candidate ref", calls[1].Selectors.AWS.CUR2ExportRef)
+	}
+	for _, want := range []string{
+		"Select AWS CUR 2.0 export",
+		"Running readiness preflight for selected CUR 2.0 export cur2-aaaaaaaaaaaaaaaa",
+		"Support code: aws_cur2_preflight_ready",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("output = %q, want to contain %q", output, want)
@@ -291,7 +455,7 @@ func TestRankedCUR2CandidatesRequiresDestinationForSupportedRecommendation(t *te
 	}
 }
 
-func TestRunAWSBillingAutoSelectsSingleCandidateAndRunsSelectedPreflight(t *testing.T) {
+func TestRunAWSBillingUsesSingleCandidateOnDefaultConfirmation(t *testing.T) {
 	calls := []workflow.ExecutionOptions{}
 	registry := testRegistry(t, workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
 		calls = append(calls, options)
@@ -336,7 +500,7 @@ func TestRunAWSBillingAutoSelectsSingleCandidateAndRunsSelectedPreflight(t *test
 		},
 	}
 
-	output, err := runGuidedWithConfig("1\n1\ny\n", Config{Registry: registry, AWSBilling: guide})
+	output, err := runGuidedWithConfig("1\n1\ny\n\n", Config{Registry: registry, AWSBilling: guide})
 
 	if err != nil {
 		t.Fatalf("RunWithConfig returned error: %v", err)
@@ -348,9 +512,10 @@ func TestRunAWSBillingAutoSelectsSingleCandidateAndRunsSelectedPreflight(t *test
 		t.Fatalf("selected preflight ref = %q, want auto-selected candidate ref", calls[1].Selectors.AWS.CUR2ExportRef)
 	}
 	for _, want := range []string{
-		"Auto-selected CUR 2.0 export cur2-cacacacacacacaca",
+		"Detected one usable CUR 2.0 export cur2-cacacacacacacaca",
 		"Recommendation: preferred Rapid Assessment billing export shape.",
 		"Full readiness checks run after selection.",
+		"Use this detected CUR 2.0 export? [Y/n]",
 		"Running readiness preflight for selected CUR 2.0 export cur2-cacacacacacacaca",
 		"Result: ready",
 		"Support code: aws_cur2_preflight_ready",
@@ -363,6 +528,1036 @@ func TestRunAWSBillingAutoSelectsSingleCandidateAndRunsSelectedPreflight(t *test
 		t.Fatalf("output prompted for a single candidate: %s", output)
 	}
 	assertGuidedOutputSafe(t, output)
+}
+
+func TestRunAWSBillingSingleCandidateDeclinePreparesNewCUR2Plan(t *testing.T) {
+	calls := []guidedAWSBillingCall{}
+	preflightRunner := workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+		calls = append(calls, guidedAWSBillingCall{Request: got, Options: options})
+		if options.Selectors != nil && options.Selectors.AWS != nil && options.Selectors.AWS.CUR2ExportRef != "" {
+			t.Fatalf("selected preflight should not run when user declines the detected export: %#v", options.Selectors.AWS)
+		}
+		return guidedCapabilityReport(got, workflow.RunStatusBlocked, "aws_cur2_export_selection_required", []workflow.PlanEvidence{
+			{Key: "candidate_1_export_ref", Value: "cur2-cacacacacacacaca"},
+			{Key: "candidate_1_health", Value: "HEALTHY"},
+			{Key: "candidate_1_output_format", Value: "TEXT_OR_CSV"},
+			{Key: "candidate_1_compression", Value: "GZIP"},
+			{Key: "candidate_1_time_granularity", Value: "MONTHLY"},
+			{Key: "candidate_1_overwrite", Value: "CREATE_NEW_REPORT"},
+			{Key: "candidate_1_destination_region", Value: "us-east-1"},
+			{Key: "candidate_1_output_type", Value: "CUSTOM"},
+			{Key: "candidate_1_refresh_cadence", Value: "SYNCHRONOUS"},
+			{Key: "candidate_1_include_resources", Value: "FALSE"},
+			{Key: "candidate_1_pre_selection_metadata_status", Value: "preferred"},
+			{Key: "candidate_1_matilda_support", Value: "preferred"},
+			{Key: "candidate_1_primary_issue", Value: "none"},
+			{Key: "candidate_1_required_next_action", Value: "run full readiness preflight after selection."},
+		})
+	})
+	applyRunner := workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+		calls = append(calls, guidedAWSBillingCall{Request: got, Options: options})
+		return guidedCreateCUR2PlanReport(got)
+	})
+	registry := testAWSBillingRegistry(t, preflightRunner, applyRunner)
+	guide := &fakeAWSBillingGuide{
+		sources: []billingguide.CredentialSource{{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}},
+		verified: map[string]billingguide.VerifiedIdentity{
+			"profile:default": {Source: billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}, AccountLabel: "account-ending-9012", CallerRef: "sha256:abcdef123456", Region: "us-east-1"},
+		},
+	}
+
+	output, err := runGuidedWithConfig("1\n1\ny\nn\n\n", Config{Registry: registry, AWSBilling: guide})
+
+	if err != nil {
+		t.Fatalf("RunWithConfig returned error: %v", err)
+	}
+	assertGuidedCreateCUR2PlanCalls(t, calls)
+	for _, want := range []string{
+		"Detected one usable CUR 2.0 export cur2-cacacacacacacaca",
+		"Use this detected CUR 2.0 export? [Y/n]",
+		"Preparing a new Matilda AWS CUR 2.0 setup plan.",
+		"Result: ready_with_manual_steps",
+		"Support code: aws_cur2_create_export_approval_required",
+		"Apply this AWS CUR 2.0 setup plan now? [y/N]",
+		"matilda-prep rapid-assessment billing aws apply-prereqs --profile default --region us-east-1 --create-cur2-export",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output = %q, want to contain %q", output, want)
+		}
+	}
+	for _, forbidden := range []string{
+		"Running readiness preflight for selected CUR 2.0 export",
+		"Reproduce with:",
+		"--export-ref",
+	} {
+		if strings.Contains(output, forbidden) {
+			t.Fatalf("output = %q, want no %q", output, forbidden)
+		}
+	}
+	assertGuidedOutputSafe(t, output)
+}
+
+func TestRunAWSBillingSingleNonSelectableCandidateCanPrepareNewCUR2Plan(t *testing.T) {
+	calls := []guidedAWSBillingCall{}
+	preflightRunner := workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+		calls = append(calls, guidedAWSBillingCall{Request: got, Options: options})
+		if options.Selectors != nil && options.Selectors.AWS != nil && options.Selectors.AWS.CUR2ExportRef != "" {
+			t.Fatalf("selected preflight should not run when user chooses create-new setup: %#v", options.Selectors.AWS)
+		}
+		return guidedCapabilityReport(got, workflow.RunStatusBlocked, "aws_cur2_export_selection_required", []workflow.PlanEvidence{
+			{Key: "candidate_1_export_ref", Value: "cur2-eccececcececcece"},
+			{Key: "candidate_1_health", Value: "WARNING"},
+			{Key: "candidate_1_output_format", Value: "TEXT_OR_CSV"},
+			{Key: "candidate_1_compression", Value: "GZIP"},
+			{Key: "candidate_1_time_granularity", Value: "MONTHLY"},
+			{Key: "candidate_1_overwrite", Value: "CREATE_NEW_REPORT"},
+			{Key: "candidate_1_output_type", Value: "CUSTOM"},
+			{Key: "candidate_1_refresh_cadence", Value: "SYNCHRONOUS"},
+			{Key: "candidate_1_destination_region", Value: "us-east-1"},
+		})
+	})
+	applyRunner := workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+		calls = append(calls, guidedAWSBillingCall{Request: got, Options: options})
+		return guidedCreateCUR2PlanReport(got)
+	})
+	registry := testAWSBillingRegistry(t, preflightRunner, applyRunner)
+	guide := &fakeAWSBillingGuide{
+		sources: []billingguide.CredentialSource{{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}},
+		verified: map[string]billingguide.VerifiedIdentity{
+			"profile:default": {Source: billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}, AccountLabel: "account-ending-9012", CallerRef: "sha256:abcdef123456", Region: "us-east-1"},
+		},
+	}
+
+	output, err := runGuidedWithConfig("1\n1\ny\n2\n\n", Config{Registry: registry, AWSBilling: guide})
+
+	if err != nil {
+		t.Fatalf("RunWithConfig returned error: %v", err)
+	}
+	assertGuidedCreateCUR2PlanCalls(t, calls)
+	for _, want := range []string{
+		"One AWS CUR 2.0 export candidate needs review.",
+		"Blocker: pre-selection metadata has unsupported settings: health status WARNING.",
+		"Select AWS CUR 2.0 action",
+		"Review this CUR 2.0 export with full readiness preflight",
+		"Prepare a new Matilda CUR 2.0 setup plan",
+		"Preparing a new Matilda AWS CUR 2.0 setup plan.",
+		"Apply this AWS CUR 2.0 setup plan now? [y/N]",
+		"matilda-prep rapid-assessment billing aws apply-prereqs --profile default --region us-east-1 --create-cur2-export",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output = %q, want to contain %q", output, want)
+		}
+	}
+	for _, forbidden := range []string{
+		"Review with:",
+		"Running readiness preflight for selected CUR 2.0 export",
+		"--export-ref",
+	} {
+		if strings.Contains(output, forbidden) {
+			t.Fatalf("output = %q, want no %q", output, forbidden)
+		}
+	}
+	assertGuidedOutputSafe(t, output)
+}
+
+func TestRunAWSBillingSingleNonSelectableCandidateCanRunSelectedPreflight(t *testing.T) {
+	calls := []workflow.ExecutionOptions{}
+	registry := testRegistry(t, workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+		calls = append(calls, options)
+		exportRef := ""
+		if options.Selectors != nil && options.Selectors.AWS != nil {
+			exportRef = options.Selectors.AWS.CUR2ExportRef
+		}
+		switch exportRef {
+		case "":
+			return guidedCapabilityReport(got, workflow.RunStatusBlocked, "aws_cur2_export_selection_required", []workflow.PlanEvidence{
+				{Key: "candidate_1_export_ref", Value: "cur2-eccececcececcece"},
+				{Key: "candidate_1_health", Value: "WARNING"},
+				{Key: "candidate_1_output_format", Value: "TEXT_OR_CSV"},
+				{Key: "candidate_1_compression", Value: "GZIP"},
+				{Key: "candidate_1_time_granularity", Value: "MONTHLY"},
+				{Key: "candidate_1_overwrite", Value: "CREATE_NEW_REPORT"},
+				{Key: "candidate_1_output_type", Value: "CUSTOM"},
+				{Key: "candidate_1_refresh_cadence", Value: "SYNCHRONOUS"},
+				{Key: "candidate_1_destination_region", Value: "us-east-1"},
+			})
+		case "cur2-eccececcececcece":
+			return guidedCapabilityReport(got, workflow.RunStatusBlocked, "aws_cur2_output_settings_blocked", []workflow.PlanEvidence{
+				{Key: "output_format", Value: "TEXT_OR_CSV"},
+				{Key: "compression", Value: "GZIP"},
+				{Key: "time_granularity", Value: "MONTHLY"},
+				{Key: "overwrite", Value: "CREATE_NEW_REPORT"},
+				{Key: "blocker", Value: "AWS CUR 2.0 export needs full readiness review."},
+			})
+		default:
+			t.Fatalf("unexpected export ref %q", exportRef)
+			return workflow.CapabilityReport{}
+		}
+	}))
+	guide := &fakeAWSBillingGuide{
+		sources: []billingguide.CredentialSource{{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}},
+		verified: map[string]billingguide.VerifiedIdentity{
+			"profile:default": {Source: billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}, AccountLabel: "account-ending-9012", CallerRef: "sha256:abcdef123456", Region: "us-east-1"},
+		},
+	}
+
+	output, err := runGuidedWithConfig("1\n1\ny\n1\n", Config{Registry: registry, AWSBilling: guide})
+
+	if err != nil {
+		t.Fatalf("RunWithConfig returned error: %v", err)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("preflight calls = %d, want initial discovery plus selected export preflight", len(calls))
+	}
+	if calls[1].Selectors.AWS.CUR2ExportRef != "cur2-eccececcececcece" {
+		t.Fatalf("selected preflight ref = %q, want single candidate ref", calls[1].Selectors.AWS.CUR2ExportRef)
+	}
+	for _, want := range []string{
+		"One AWS CUR 2.0 export candidate needs review.",
+		"Select AWS CUR 2.0 action",
+		"Running readiness preflight for selected CUR 2.0 export cur2-eccececcececcece",
+		"Support code: aws_cur2_output_settings_blocked",
+		"--export-ref cur2-eccececcececcece",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output = %q, want to contain %q", output, want)
+		}
+	}
+	if strings.Contains(output, "Preparing a new Matilda AWS CUR 2.0 setup plan.") {
+		t.Fatalf("output = %q, want no create-new setup when selected export is reviewed", output)
+	}
+	assertGuidedOutputSafe(t, output)
+}
+
+func TestRunAWSBillingCreateCUR2PlanApprovedInGuidedModeUsesPlanBoundApprovals(t *testing.T) {
+	calls := []guidedAWSBillingCall{}
+	preflightRunner := workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+		calls = append(calls, guidedAWSBillingCall{Request: got, Options: options})
+		if options.Selectors != nil && options.Selectors.AWS != nil && options.Selectors.AWS.CUR2ExportRef != "" {
+			t.Fatalf("selected preflight should not run when user chooses create-new setup: %#v", options.Selectors.AWS)
+		}
+		return guidedAmbiguousCUR2SelectionReport(got)
+	})
+	applyRunner := workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+		calls = append(calls, guidedAWSBillingCall{Request: got, Options: options})
+		if len(options.Approvals) == 0 {
+			return guidedCreateCUR2PlanReport(got)
+		}
+		return guidedCreateCUR2AppliedReport(got)
+	})
+	registry := testAWSBillingRegistry(t, preflightRunner, applyRunner)
+	guide := &fakeAWSBillingGuide{
+		sources: []billingguide.CredentialSource{{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}},
+		verified: map[string]billingguide.VerifiedIdentity{
+			"profile:default": {Source: billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}, AccountLabel: "account-ending-9012", CallerRef: "sha256:abcdef123456", Region: "us-east-1"},
+		},
+	}
+
+	output, err := runGuidedWithConfig("1\n1\ny\n3\ny\n", Config{Registry: registry, AWSBilling: guide})
+
+	if err != nil {
+		t.Fatalf("RunWithConfig returned error: %v", err)
+	}
+	if len(calls) != 3 {
+		t.Fatalf("registry calls = %d, want preflight, plan preview, approved apply", len(calls))
+	}
+	assertGuidedCreateCUR2PlanCallAt(t, calls[1])
+	previewReport := guidedCreateCUR2PlanReport(calls[1].Request)
+	previewPlanID := testPlanIDForReport(t, calls[1].Request, calls[1].Options, previewReport)
+	apply := calls[2]
+	if apply.Request != testAWSBillingApplyPrereqsRequest() {
+		t.Fatalf("apply request = %#v, want AWS billing apply-prereqs", apply.Request)
+	}
+	if apply.Options.AWSBillingOperation != workflow.AWSBillingOperationCreateCUR2Export {
+		t.Fatalf("apply operation = %q, want create_cur2_export", apply.Options.AWSBillingOperation)
+	}
+	if apply.Options.Selectors == nil || apply.Options.Selectors.AWS == nil {
+		t.Fatalf("apply selectors missing: %#v", apply.Options.Selectors)
+	}
+	if apply.Options.Selectors.AWS.Profile != "default" || apply.Options.Selectors.AWS.Region != "us-east-1" {
+		t.Fatalf("apply selectors = %#v, want selected profile and region", apply.Options.Selectors.AWS)
+	}
+	if apply.Options.Selectors.AWS.CUR2ExportRef != "" {
+		t.Fatalf("apply export ref = %q, want empty create-new selector", apply.Options.Selectors.AWS.CUR2ExportRef)
+	}
+	if len(apply.Options.Approvals) != 2 {
+		t.Fatalf("apply approvals = %#v, want two mutating step approvals", apply.Options.Approvals)
+	}
+	for _, stepID := range []string{
+		workflow.AWSCUR2CreateBucketOperationID,
+		workflow.AWSCUR2CreateExportOperationID,
+	} {
+		if !workflow.HasApprovedPlanStep(apply.Options, previewPlanID, stepID) {
+			t.Fatalf("apply approvals = %#v, want approved step %s bound to %s", apply.Options.Approvals, stepID, previewPlanID)
+		}
+	}
+	for _, want := range []string{
+		"Apply this AWS CUR 2.0 setup plan now? [y/N]",
+		"Applying approved Matilda AWS CUR 2.0 setup plan.",
+		"Support code: aws_cur2_create_export_created",
+		"Cloud changes were made for the approved setup plan.",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output = %q, want to contain %q", output, want)
+		}
+	}
+	for _, forbidden := range []string{
+		"Running readiness preflight for selected CUR 2.0 export",
+		"--export-ref",
+	} {
+		if strings.Contains(output, forbidden) {
+			t.Fatalf("output = %q, want no %q", output, forbidden)
+		}
+	}
+	assertGuidedOutputSafe(t, output)
+}
+
+func TestRunAWSBillingCreateCUR2PlanReuseDoesNotPromptForApply(t *testing.T) {
+	calls := []guidedAWSBillingCall{}
+	registry := testAWSBillingRegistry(t,
+		workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+			calls = append(calls, guidedAWSBillingCall{Request: got, Options: options})
+			return guidedAmbiguousCUR2SelectionReport(got)
+		}),
+		workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+			calls = append(calls, guidedAWSBillingCall{Request: got, Options: options})
+			return guidedCreateCUR2ReuseReport(got)
+		}),
+	)
+	guide := &fakeAWSBillingGuide{
+		sources: []billingguide.CredentialSource{{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}},
+		verified: map[string]billingguide.VerifiedIdentity{
+			"profile:default": {Source: billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}, AccountLabel: "account-ending-9012", CallerRef: "sha256:abcdef123456", Region: "us-east-1"},
+		},
+	}
+
+	output, err := runGuidedWithConfig("1\n1\ny\n3\n", Config{Registry: registry, AWSBilling: guide})
+
+	if err != nil {
+		t.Fatalf("RunWithConfig returned error: %v", err)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("registry calls = %d, want preflight plus non-mutating reuse result", len(calls))
+	}
+	assertGuidedCreateCUR2PlanCallAt(t, calls[1])
+	for _, want := range []string{
+		"Result: ready",
+		"Support code: aws_cur2_create_export_reused",
+		"No approval required: Reuse existing Matilda AWS CUR 2.0 export",
+		"No cloud changes were made.",
+		"No mutation approval is required for this result.",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output = %q, want to contain %q", output, want)
+		}
+	}
+	for _, forbidden := range []string{
+		"Apply this AWS CUR 2.0 setup plan now? [y/N]",
+		"Applying approved Matilda AWS CUR 2.0 setup plan.",
+		"--approve-step",
+	} {
+		if strings.Contains(output, forbidden) {
+			t.Fatalf("output = %q, want no %q", output, forbidden)
+		}
+	}
+	assertGuidedOutputSafe(t, output)
+}
+
+func TestRunAWSBillingCreateCUR2PlanBlockedDoesNotPromptForApply(t *testing.T) {
+	calls := []guidedAWSBillingCall{}
+	registry := testAWSBillingRegistry(t,
+		workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+			calls = append(calls, guidedAWSBillingCall{Request: got, Options: options})
+			return guidedAmbiguousCUR2SelectionReport(got)
+		}),
+		workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+			calls = append(calls, guidedAWSBillingCall{Request: got, Options: options})
+			return guidedCreateCUR2BlockedReport(got)
+		}),
+	)
+	guide := &fakeAWSBillingGuide{
+		sources: []billingguide.CredentialSource{{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}},
+		verified: map[string]billingguide.VerifiedIdentity{
+			"profile:default": {Source: billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}, AccountLabel: "account-ending-9012", CallerRef: "sha256:abcdef123456", Region: "us-east-1"},
+		},
+	}
+
+	output, err := runGuidedWithConfig("1\n1\ny\n3\n", Config{Registry: registry, AWSBilling: guide})
+
+	if err != nil {
+		t.Fatalf("RunWithConfig returned error: %v", err)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("registry calls = %d, want preflight plus blocked setup plan", len(calls))
+	}
+	assertGuidedCreateCUR2PlanCallAt(t, calls[1])
+	for _, want := range []string{
+		"Result: blocked",
+		"Support code: aws_s3_bucket_inaccessible",
+		"Setup plan:",
+		"No approval required: Resolve AWS S3 bucket candidate access",
+		"Current state: The generated same-account S3 bucket candidate could not be verified as available to create or safely owned by this account.",
+		"Target state: Matilda Cloud Prep can show an approval-required plan to create or reuse the generated bucket, update its Data Exports delivery policy, and create the CUR 2.0 export.",
+		"Required permission: s3:ListBucket for existing bucket checks",
+		"Validation: Do not manually create or select arbitrary buckets for the normal guided path.",
+		"No cloud changes were made.",
+		"This setup plan is blocked and cannot be approved until the blocker is resolved.",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output = %q, want to contain %q", output, want)
+		}
+	}
+	for _, forbidden := range []string{
+		"Apply this AWS CUR 2.0 setup plan now? [y/N]",
+		"Applying approved Matilda AWS CUR 2.0 setup plan.",
+		"--approve-step",
+	} {
+		if strings.Contains(output, forbidden) {
+			t.Fatalf("output = %q, want no %q", output, forbidden)
+		}
+	}
+	assertGuidedOutputSafe(t, output)
+}
+
+type guidedAWSBillingCall struct {
+	Request workflow.Request
+	Options workflow.ExecutionOptions
+}
+
+func testAWSBillingRegistry(t *testing.T, preflightRunner workflow.CapabilityRunner, applyPrereqsRunner workflow.CapabilityRunner) workflow.Registry {
+	t.Helper()
+	registry, err := workflow.NewRegistry(
+		workflow.Capability{
+			Request: awsBillingRequest(),
+			Runner:  preflightRunner,
+		},
+		workflow.Capability{
+			Request: testAWSBillingApplyPrereqsRequest(),
+			Runner:  applyPrereqsRunner,
+		},
+	)
+	if err != nil {
+		t.Fatalf("NewRegistry returned error: %v", err)
+	}
+	return registry
+}
+
+func testAWSBillingApplyPrereqsRequest() workflow.Request {
+	return workflow.Request{
+		Goal:           assessment.RapidAssessment,
+		CollectionPath: assessment.CollectionBilling,
+		Provider:       assessment.ProviderAWS,
+		Action:         assessment.ActionApplyPrereqs,
+	}
+}
+
+func assertGuidedCreateCUR2PlanCalls(t *testing.T, calls []guidedAWSBillingCall) {
+	t.Helper()
+	if len(calls) != 2 {
+		t.Fatalf("registry calls = %d, want initial preflight plus create-new plan", len(calls))
+	}
+	if calls[0].Request != awsBillingRequest() {
+		t.Fatalf("first request = %#v, want AWS billing preflight", calls[0].Request)
+	}
+	if calls[0].Options.AWSBillingOperation != "" {
+		t.Fatalf("first operation = %q, want empty preflight operation", calls[0].Options.AWSBillingOperation)
+	}
+	if calls[0].Options.Selectors == nil || calls[0].Options.Selectors.AWS == nil {
+		t.Fatalf("first call selectors missing: %#v", calls[0].Options.Selectors)
+	}
+	if calls[0].Options.Selectors.AWS.CUR2ExportRef != "" {
+		t.Fatalf("first export ref = %q, want empty discovery selector", calls[0].Options.Selectors.AWS.CUR2ExportRef)
+	}
+
+	assertGuidedCreateCUR2PlanCallAt(t, calls[1])
+}
+
+func assertGuidedCreateCUR2PlanCallAt(t *testing.T, call guidedAWSBillingCall) {
+	t.Helper()
+	if call.Request != testAWSBillingApplyPrereqsRequest() {
+		t.Fatalf("request = %#v, want AWS billing apply-prereqs", call.Request)
+	}
+	if call.Options.InterfaceMode != workflow.InterfaceModeGuided {
+		t.Fatalf("interface mode = %q, want guided", call.Options.InterfaceMode)
+	}
+	if call.Options.AWSBillingOperation != workflow.AWSBillingOperationCreateCUR2Export {
+		t.Fatalf("operation = %q, want create_cur2_export", call.Options.AWSBillingOperation)
+	}
+	if call.Options.Selectors == nil || call.Options.Selectors.AWS == nil {
+		t.Fatalf("call selectors missing: %#v", call.Options.Selectors)
+	}
+	if call.Options.Selectors.AWS.Profile != "default" || call.Options.Selectors.AWS.Region != "us-east-1" {
+		t.Fatalf("AWS selectors = %#v, want selected profile and region", call.Options.Selectors.AWS)
+	}
+	if call.Options.Selectors.AWS.CUR2ExportRef != "" {
+		t.Fatalf("export ref = %q, want empty create-new selector", call.Options.Selectors.AWS.CUR2ExportRef)
+	}
+	if len(call.Options.Approvals) != 0 {
+		t.Fatalf("approvals = %#v, want none for plan-only create-new", call.Options.Approvals)
+	}
+}
+
+func testPlanIDForReport(t *testing.T, request workflow.Request, options workflow.ExecutionOptions, report workflow.CapabilityReport) string {
+	t.Helper()
+	if report.PlanInput == nil {
+		t.Fatal("report PlanInput missing")
+	}
+	input := *report.PlanInput
+	input.Request = request
+	input.ExecutionOptions = options
+	plan, err := workflow.BuildExecutionPlan(input)
+	if err != nil {
+		t.Fatalf("BuildExecutionPlan returned error: %v", err)
+	}
+	return plan.PlanID
+}
+
+func guidedCreateCUR2PlanResult(t *testing.T) workflow.Result {
+	t.Helper()
+	request := testAWSBillingApplyPrereqsRequest()
+	source := billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}
+	options, err := awsBillingOptions(source)
+	if err != nil {
+		t.Fatalf("awsBillingOptions returned error: %v", err)
+	}
+	options.AWSBillingOperation = workflow.AWSBillingOperationCreateCUR2Export
+	options, err = workflow.NormalizeExecutionOptionsForRequest(request, options)
+	if err != nil {
+		t.Fatalf("NormalizeExecutionOptionsForRequest returned error: %v", err)
+	}
+	registry, err := workflow.NewRegistry(workflow.Capability{
+		Request: request,
+		Runner: workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+			return guidedCreateCUR2PlanReport(got)
+		}),
+	})
+	if err != nil {
+		t.Fatalf("NewRegistry returned error: %v", err)
+	}
+	result := registry.ExecuteContext(context.Background(), request, options)
+	if result.Plan == nil {
+		t.Fatalf("result plan missing: %#v", result)
+	}
+	return result
+}
+
+func guidedCreateCUR2PlanReport(request workflow.Request) workflow.CapabilityReport {
+	handles := []workflow.SourceHandle{{
+		Label: "AWS CUR 2.0 Create-New Export",
+		URI:   "docs/references/aws/aws-cur2-create-new-export.md",
+	}}
+	return workflow.CapabilityReport{
+		Status:        workflow.RunStatusManualSteps,
+		SupportStatus: workflow.SupportGuided,
+		Code:          "aws_cur2_create_export_approval_required",
+		Message:       "Review the AWS CUR 2.0 setup plan and approve each mutating step before cloud changes are made.",
+		Mutated:       false,
+		SourceHandles: handles,
+		PlanInput: &workflow.ExecutionPlanInput{
+			Request: request,
+			OperatorIdentitySummary: workflow.OperatorIdentitySummary{
+				IdentityStatus: "verified",
+				Summary:        "AWS caller identity was verified for account-ending-9012 before CUR 2.0 setup.",
+				SourceHandles:  handles,
+			},
+			CoverageRecommendation: workflow.CoverageRecommendation{
+				CoverageStatus: workflow.CoverageSingleAccount,
+				Summary:        "AWS billing coverage is single-account for this guided setup test.",
+			},
+			PackageSchemaStatus: workflow.PackageSchemaProviderSchemaRequired,
+			Steps: []workflow.PlanStep{
+				{
+					ID:                        workflow.AWSCUR2CreateBucketOperationID,
+					Intent:                    workflow.PlanStepCreate,
+					Title:                     "Create Matilda AWS billing export bucket",
+					Description:               "Create a generated same-account S3 bucket for AWS CUR 2.0 delivery.",
+					Reason:                    "AWS Data Exports requires an S3 destination before a CUR 2.0 export can be created.",
+					ApprovalKind:              "cloud_mutation",
+					CurrentState:              "No matching generated same-account S3 bucket is available.",
+					TargetState:               "A generated same-account S3 bucket exists in the selected region.",
+					RequiredPermission:        "s3:CreateBucket",
+					CredentialMaterialTouched: false,
+					Validation:                "The bucket is checked with the expected bucket owner before policy or export creation continues.",
+					Rollback:                  "The tool does not delete S3 buckets automatically.",
+					SourceHandles:             handles,
+				},
+				{
+					ID:                        workflow.AWSCUR2CreateExportOperationID,
+					Intent:                    workflow.PlanStepCreate,
+					Title:                     "Create Matilda AWS CUR 2.0 export",
+					Description:               "Create a Matilda-specific AWS CUR 2.0 export using the verified Rapid Assessment - Billing Based setup defaults.",
+					Reason:                    "Matilda Rapid Assessment - Billing Based needs a CUR 2.0 billing export when no reusable export is selected.",
+					ApprovalKind:              "cloud_mutation",
+					CurrentState:              "No matching Matilda-generated CUR 2.0 export exists for the selected account and region.",
+					TargetState:               "A Matilda-generated CUR 2.0 export writes monthly billing data to the generated S3 destination.",
+					RequiredPermission:        "bcm-data-exports:CreateExport",
+					CredentialMaterialTouched: false,
+					Validation:                "The created export request uses Matilda-supported CUR 2.0 settings.",
+					Rollback:                  "The tool does not delete Data Exports resources automatically.",
+					SourceHandles:             handles,
+				},
+			},
+			Checks: []workflow.PlanCheck{{
+				ID:      "aws_cur2_create_export_plan_facts",
+				Status:  workflow.CheckWarn,
+				Title:   "AWS CUR 2.0 setup plan",
+				Message: "A Matilda-specific AWS CUR 2.0 setup plan was generated.",
+				Evidence: []workflow.PlanEvidence{
+					{Key: "data_exports_region", Value: "us-east-1"},
+					{Key: "s3_region", Value: "us-east-1"},
+					{Key: "coverage_status", Value: string(workflow.CoverageSingleAccount)},
+				},
+				SourceHandles: handles,
+			}},
+			SourceHandles: handles,
+		},
+	}
+}
+
+func guidedAmbiguousCUR2SelectionReport(request workflow.Request) workflow.CapabilityReport {
+	return guidedCapabilityReport(request, workflow.RunStatusBlocked, "aws_cur2_export_ambiguous", []workflow.PlanEvidence{
+		{Key: "candidate_1_export_ref", Value: "cur2-acacacacacacacac"},
+		{Key: "candidate_1_health", Value: "HEALTHY"},
+		{Key: "candidate_1_output_format", Value: "TEXT_OR_CSV"},
+		{Key: "candidate_1_compression", Value: "GZIP"},
+		{Key: "candidate_1_time_granularity", Value: "MONTHLY"},
+		{Key: "candidate_1_overwrite", Value: "CREATE_NEW_REPORT"},
+		{Key: "candidate_1_output_type", Value: "CUSTOM"},
+		{Key: "candidate_1_refresh_cadence", Value: "SYNCHRONOUS"},
+		{Key: "candidate_1_destination_region", Value: "us-east-1"},
+		{Key: "candidate_2_export_ref", Value: "cur2-bdbdbdbdbdbdbdbd"},
+		{Key: "candidate_2_health", Value: "HEALTHY"},
+		{Key: "candidate_2_output_format", Value: "PARQUET"},
+		{Key: "candidate_2_compression", Value: "PARQUET"},
+		{Key: "candidate_2_time_granularity", Value: "DAILY"},
+		{Key: "candidate_2_overwrite", Value: "OVERWRITE_REPORT"},
+		{Key: "candidate_2_output_type", Value: "CUSTOM"},
+		{Key: "candidate_2_refresh_cadence", Value: "SYNCHRONOUS"},
+		{Key: "candidate_2_destination_region", Value: "us-west-2"},
+	})
+}
+
+func guidedCreateCUR2AppliedReport(request workflow.Request) workflow.CapabilityReport {
+	report := guidedCreateCUR2PlanReport(request)
+	report.Status = workflow.RunStatusManualSteps
+	report.SupportStatus = workflow.SupportSupported
+	report.Code = "aws_cur2_create_export_created"
+	report.Message = "AWS CUR 2.0 export was created. Initial delivery and previous-month data availability can still require follow-up validation."
+	report.Mutated = true
+	return report
+}
+
+func guidedCreateCUR2ReuseReport(request workflow.Request) workflow.CapabilityReport {
+	handles := []workflow.SourceHandle{{
+		Label: "AWS CUR 2.0 Create-New Export",
+		URI:   "docs/references/aws/aws-cur2-create-new-export.md",
+	}}
+	return workflow.CapabilityReport{
+		Status:        workflow.StatusReady,
+		SupportStatus: workflow.SupportSupported,
+		Code:          "aws_cur2_create_export_reused",
+		Message:       "An existing Matilda-generated AWS CUR 2.0 export matches the setup contract.",
+		Mutated:       false,
+		SourceHandles: handles,
+		PlanInput: &workflow.ExecutionPlanInput{
+			Request: request,
+			OperatorIdentitySummary: workflow.OperatorIdentitySummary{
+				IdentityStatus: "verified",
+				Summary:        "AWS caller identity was verified for account-ending-9012 before CUR 2.0 setup.",
+				SourceHandles:  handles,
+			},
+			CoverageRecommendation: workflow.CoverageRecommendation{
+				CoverageStatus: workflow.CoverageSingleAccount,
+				Summary:        "AWS billing coverage is single-account for this guided setup test.",
+			},
+			PackageSchemaStatus: workflow.PackageSchemaProviderSchemaRequired,
+			Steps: []workflow.PlanStep{{
+				Intent:                    workflow.PlanStepReuse,
+				Title:                     "Reuse existing Matilda AWS CUR 2.0 export",
+				Description:               "Reuse the existing Matilda-generated AWS CUR 2.0 export that matches the setup contract.",
+				Reason:                    "No new CUR 2.0 cloud resource is needed when a matching Matilda-generated export already exists.",
+				ApprovalKind:              "not_required",
+				CurrentState:              "A matching Matilda-generated CUR 2.0 export already exists.",
+				TargetState:               "The matching CUR 2.0 export remains selected for Matilda Rapid Assessment billing.",
+				RequiredPermission:        "Read-only AWS billing and S3 discovery permissions.",
+				CredentialMaterialTouched: false,
+				Validation:                "The existing export was matched to the Matilda CUR 2.0 setup contract.",
+				Rollback:                  "No cloud change was made.",
+				SourceHandles:             handles,
+			}},
+			Checks: []workflow.PlanCheck{{
+				ID:      "aws_cur2_create_export_plan_facts",
+				Status:  workflow.CheckPass,
+				Title:   "AWS CUR 2.0 setup plan",
+				Message: "A Matilda-generated CUR 2.0 export can be reused.",
+				Evidence: []workflow.PlanEvidence{
+					{Key: "mutated", Value: "false"},
+					{Key: "coverage_status", Value: string(workflow.CoverageSingleAccount)},
+				},
+				SourceHandles: handles,
+			}},
+			SourceHandles: handles,
+		},
+	}
+}
+
+func guidedCreateCUR2BlockedReport(request workflow.Request) workflow.CapabilityReport {
+	handles := []workflow.SourceHandle{{
+		Label: "AWS CUR 2.0 Create-New Export",
+		URI:   "docs/references/aws/aws-cur2-create-new-export.md",
+	}}
+	return workflow.CapabilityReport{
+		Status:        workflow.RunStatusBlocked,
+		SupportStatus: workflow.SupportBlocked,
+		Code:          "aws_s3_bucket_inaccessible",
+		Message:       "AWS CUR 2.0 create-export setup plan could not be built safely.",
+		Mutated:       false,
+		SourceHandles: handles,
+		PlanInput: &workflow.ExecutionPlanInput{
+			Request: request,
+			OperatorIdentitySummary: workflow.OperatorIdentitySummary{
+				IdentityStatus: "verified",
+				Summary:        "AWS caller identity was verified for account-ending-9012 before CUR 2.0 setup.",
+				SourceHandles:  handles,
+			},
+			CoverageRecommendation: workflow.CoverageRecommendation{
+				CoverageStatus: workflow.CoverageSingleAccount,
+				Summary:        "AWS billing coverage is single-account for this guided setup test.",
+			},
+			PackageSchemaStatus: workflow.PackageSchemaProviderSchemaRequired,
+			Steps: []workflow.PlanStep{{
+				Intent:                    workflow.PlanStepBlocked,
+				Title:                     "Resolve AWS S3 bucket candidate access",
+				Description:               "Stop before AWS CUR 2.0 setup because AWS did not return enough S3 evidence for the generated destination bucket candidate.",
+				Reason:                    "Matilda Cloud Prep creates or reuses only a generated same-account S3 bucket for this setup path, and must prove the bucket candidate is safe before creating a CUR 2.0 export.",
+				ApprovalKind:              "not_required",
+				CurrentState:              "The generated same-account S3 bucket candidate could not be verified as available to create or safely owned by this account.",
+				TargetState:               "Matilda Cloud Prep can show an approval-required plan to create or reuse the generated bucket, update its Data Exports delivery policy, and create the CUR 2.0 export.",
+				RequiredPermission:        "s3:ListBucket for existing bucket checks, plus s3:CreateBucket, s3:GetBucketPolicy, s3:PutBucketPolicy, bcm-data-exports:CreateExport, and cur:PutReportDefinition for approved setup.",
+				CredentialMaterialTouched: false,
+				Validation:                "Do not manually create or select arbitrary buckets for the normal guided path. Resolve S3 access ambiguity, then rerun apply-prereqs to get a new approval-required setup plan.",
+				Rollback:                  "No cloud change was made.",
+				SourceHandles:             handles,
+			}},
+			Checks: []workflow.PlanCheck{{
+				ID:      "aws_s3_bucket_inaccessible",
+				Status:  workflow.CheckFail,
+				Title:   "AWS CUR 2.0 setup blocker",
+				Message: "A required AWS S3 prerequisite could not be verified safely.",
+				Evidence: []workflow.PlanEvidence{
+					{Key: "code", Value: "aws_s3_bucket_inaccessible"},
+					{Key: "mutated", Value: "false"},
+				},
+				SourceHandles: handles,
+			}},
+			SourceHandles: handles,
+		},
+	}
+}
+
+func TestAWSBillingFollowupCommandUsesCreateCUR2Operation(t *testing.T) {
+	source := billingguide.CredentialSource{
+		Kind:    billingguide.CredentialSourceProfile,
+		Profile: "default",
+		Region:  "us-east-1",
+	}
+	result := workflow.Result{
+		Code: "aws_cur2_create_export_approval_required",
+		ExecutionOptions: workflow.ExecutionOptions{
+			AWSBillingOperation: workflow.AWSBillingOperationCreateCUR2Export,
+		},
+	}
+
+	label, command := awsBillingFollowupCommand(source, result)
+
+	if label != "Next command:" {
+		t.Fatalf("label = %q, want Next command", label)
+	}
+	if !strings.Contains(command, "apply-prereqs") || !strings.Contains(command, "--create-cur2-export") {
+		t.Fatalf("command = %q, want create-new apply-prereqs command", command)
+	}
+	if strings.Contains(command, "preflight") || strings.Contains(command, "--export-ref") {
+		t.Fatalf("command = %q, want no preflight or export selector", command)
+	}
+	assertGuidedOutputSafe(t, command)
+}
+
+func TestRunCreateCUR2SetupPlanBlocksUnsafeCredentialSource(t *testing.T) {
+	called := false
+	registry := testAWSBillingRegistry(t,
+		workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+			called = true
+			return guidedCapabilityReport(got, workflow.StatusReady, "aws_cur2_preflight_ready", nil)
+		}),
+		workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+			called = true
+			return guidedCreateCUR2PlanReport(got)
+		}),
+	)
+
+	result := runCreateCUR2SetupPlan(context.Background(), registry, billingguide.CredentialSource{
+		Kind:    billingguide.CredentialSourceProfile,
+		Profile: "/private/tmp/profile",
+		Region:  "us-east-1",
+	})
+
+	if called {
+		t.Fatal("registry should not run for unsafe AWS credential source")
+	}
+	if result.Status != workflow.RunStatusBlocked || result.Code != "aws_config_invalid_selector" {
+		t.Fatalf("result = %#v, want unsafe selector block", result)
+	}
+	assertGuidedOutputSafe(t, result.Message)
+}
+
+func TestShouldOfferCreateCUR2GuidedApplyRequiresCurrentApprovablePlan(t *testing.T) {
+	base := guidedCreateCUR2PlanResult(t)
+	if !shouldOfferCreateCUR2GuidedApply(base) {
+		t.Fatalf("shouldOfferCreateCUR2GuidedApply returned false for approvable create-new plan: %#v", base.Plan.Approval)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(workflow.Result) workflow.Result
+	}{
+		{
+			name: "not create-new result",
+			mutate: func(result workflow.Result) workflow.Result {
+				result.Request = awsBillingRequest()
+				result.ExecutionOptions.AWSBillingOperation = ""
+				result.Code = "aws_cur2_preflight_ready"
+				return result
+			},
+		},
+		{
+			name: "already mutated",
+			mutate: func(result workflow.Result) workflow.Result {
+				result.Mutated = true
+				return result
+			},
+		},
+		{
+			name: "missing plan",
+			mutate: func(result workflow.Result) workflow.Result {
+				result.Plan = nil
+				return result
+			},
+		},
+		{
+			name: "approval not required",
+			mutate: func(result workflow.Result) workflow.Result {
+				plan := *result.Plan
+				plan.Approval.Required = false
+				result.Plan = &plan
+				return result
+			},
+		},
+		{
+			name: "approval blocked",
+			mutate: func(result workflow.Result) workflow.Result {
+				plan := *result.Plan
+				plan.Approval.Blocked = true
+				result.Plan = &plan
+				return result
+			},
+		},
+		{
+			name: "already approved",
+			mutate: func(result workflow.Result) workflow.Result {
+				plan := *result.Plan
+				plan.Approval.Approved = true
+				result.Plan = &plan
+				return result
+			},
+		},
+		{
+			name: "missing approval plan ID",
+			mutate: func(result workflow.Result) workflow.Result {
+				plan := *result.Plan
+				plan.Approval.ApprovalPlanID = ""
+				result.Plan = &plan
+				return result
+			},
+		},
+		{
+			name: "no mutating step",
+			mutate: func(result workflow.Result) workflow.Result {
+				plan := *result.Plan
+				plan.Steps = append([]workflow.PlanStep(nil), result.Plan.Steps...)
+				for index := range plan.Steps {
+					plan.Steps[index].RequiresApproval = false
+				}
+				result.Plan = &plan
+				return result
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if shouldOfferCreateCUR2GuidedApply(tt.mutate(base)) {
+				t.Fatal("shouldOfferCreateCUR2GuidedApply returned true for non-applicable plan")
+			}
+		})
+	}
+}
+
+func TestCreateCUR2SetupApprovalOptionsBuildsPlanBoundApprovals(t *testing.T) {
+	source := billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}
+	preview := guidedCreateCUR2PlanResult(t)
+
+	options, err := createCUR2SetupApprovalOptions(source, preview)
+	if err != nil {
+		t.Fatalf("createCUR2SetupApprovalOptions returned error: %v", err)
+	}
+	if options.AWSBillingOperation != workflow.AWSBillingOperationCreateCUR2Export {
+		t.Fatalf("operation = %q, want create_cur2_export", options.AWSBillingOperation)
+	}
+	if options.Selectors == nil || options.Selectors.AWS == nil {
+		t.Fatalf("AWS selectors missing: %#v", options.Selectors)
+	}
+	if options.Selectors.AWS.Profile != "default" || options.Selectors.AWS.Region != "us-east-1" {
+		t.Fatalf("AWS selectors = %#v, want selected profile and region", options.Selectors.AWS)
+	}
+	if options.Selectors.AWS.CUR2ExportRef != "" {
+		t.Fatalf("CUR2ExportRef = %q, want empty create-new selector", options.Selectors.AWS.CUR2ExportRef)
+	}
+	for _, stepID := range []string{
+		workflow.AWSCUR2CreateBucketOperationID,
+		workflow.AWSCUR2CreateExportOperationID,
+	} {
+		if !workflow.HasApprovedPlanStep(options, preview.Plan.Approval.ApprovalPlanID, stepID) {
+			t.Fatalf("approvals = %#v, want approved step %s", options.Approvals, stepID)
+		}
+	}
+}
+
+func TestCreateCUR2SetupApprovalOptionsRejectsUnsafeOrIncompletePreview(t *testing.T) {
+	source := billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}
+	base := guidedCreateCUR2PlanResult(t)
+
+	tests := []struct {
+		name    string
+		source  billingguide.CredentialSource
+		preview workflow.Result
+	}{
+		{
+			name:    "unsafe source",
+			source:  billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "/private/tmp/default", Region: "us-east-1"},
+			preview: base,
+		},
+		{
+			name:    "missing plan",
+			source:  source,
+			preview: workflow.Result{},
+		},
+		{
+			name:   "missing approval plan ID",
+			source: source,
+			preview: func() workflow.Result {
+				result := base
+				plan := *base.Plan
+				plan.Approval.ApprovalPlanID = ""
+				result.Plan = &plan
+				return result
+			}(),
+		},
+		{
+			name:   "approval not required",
+			source: source,
+			preview: func() workflow.Result {
+				result := base
+				plan := *base.Plan
+				plan.Approval.Required = false
+				result.Plan = &plan
+				return result
+			}(),
+		},
+		{
+			name:   "approval blocked",
+			source: source,
+			preview: func() workflow.Result {
+				result := base
+				plan := *base.Plan
+				plan.Approval.Blocked = true
+				result.Plan = &plan
+				return result
+			}(),
+		},
+		{
+			name:   "already approved",
+			source: source,
+			preview: func() workflow.Result {
+				result := base
+				plan := *base.Plan
+				plan.Approval.Approved = true
+				result.Plan = &plan
+				return result
+			}(),
+		},
+		{
+			name:   "no mutating steps",
+			source: source,
+			preview: func() workflow.Result {
+				result := base
+				plan := *base.Plan
+				plan.Steps = append([]workflow.PlanStep(nil), base.Plan.Steps...)
+				for index := range plan.Steps {
+					plan.Steps[index].RequiresApproval = false
+				}
+				result.Plan = &plan
+				return result
+			}(),
+		},
+		{
+			name:   "unsupported operation ID",
+			source: source,
+			preview: func() workflow.Result {
+				result := base
+				plan := *base.Plan
+				plan.Steps = append([]workflow.PlanStep(nil), base.Plan.Steps...)
+				plan.Steps[0].ID = "aws.billing.cur2.unknown.create"
+				result.Plan = &plan
+				return result
+			}(),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := createCUR2SetupApprovalOptions(tt.source, tt.preview); err == nil {
+				t.Fatal("createCUR2SetupApprovalOptions returned nil error")
+			}
+		})
+	}
+}
+
+func TestRunApprovedCreateCUR2SetupPlanBlocksWhenApprovalCannotBeBuilt(t *testing.T) {
+	called := false
+	registry := testAWSBillingRegistry(t,
+		workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+			called = true
+			return guidedAmbiguousCUR2SelectionReport(got)
+		}),
+		workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+			called = true
+			return guidedCreateCUR2AppliedReport(got)
+		}),
+	)
+
+	result := runApprovedCreateCUR2SetupPlan(context.Background(), registry, billingguide.CredentialSource{
+		Kind:    billingguide.CredentialSourceProfile,
+		Profile: "default",
+		Region:  "us-east-1",
+	}, workflow.Result{})
+
+	if called {
+		t.Fatal("registry should not run when approval options cannot be built")
+	}
+	if result.Status != workflow.RunStatusBlocked || result.Code != "aws_cur2_create_export_approval_unavailable" {
+		t.Fatalf("result = %#v, want approval-unavailable block", result)
+	}
+	assertGuidedOutputSafe(t, result.Message)
 }
 
 func TestRunAWSBillingDoesNotAutoSelectUnsafeSingleCandidate(t *testing.T) {
@@ -520,10 +1715,10 @@ func TestRunAWSBillingDoesNotAutoSelectUnsafeSingleCandidate(t *testing.T) {
 				},
 			}
 
-			output, err := runGuidedWithConfig("1\n1\ny\n", Config{Registry: registry, AWSBilling: guide})
+			output, err := runGuidedWithConfig("1\n1\ny\ncancel\n", Config{Registry: registry, AWSBilling: guide})
 
-			if err != nil {
-				t.Fatalf("RunWithConfig returned error: %v", err)
+			if !errors.Is(err, ErrInputCancelled) {
+				t.Fatalf("RunWithConfig error = %v, want ErrInputCancelled", err)
 			}
 			if len(calls) != 1 {
 				t.Fatalf("preflight calls = %d, want initial discovery only", len(calls))
@@ -532,8 +1727,9 @@ func TestRunAWSBillingDoesNotAutoSelectUnsafeSingleCandidate(t *testing.T) {
 				"One AWS CUR 2.0 export candidate needs review.",
 				tt.want,
 				"Full readiness checks run after selection.",
-				"Review with:",
-				"matilda-prep rapid-assessment billing aws preflight --profile default --region us-east-1 --export-ref",
+				"Select AWS CUR 2.0 action",
+				"Review this CUR 2.0 export with full readiness preflight",
+				"Prepare a new Matilda CUR 2.0 setup plan",
 			} {
 				if !strings.Contains(output, want) {
 					t.Fatalf("output = %q, want to contain %q", output, want)
@@ -542,6 +1738,8 @@ func TestRunAWSBillingDoesNotAutoSelectUnsafeSingleCandidate(t *testing.T) {
 			for _, forbidden := range []string{
 				"Auto-selected CUR 2.0 export",
 				"Running readiness preflight for selected CUR 2.0 export",
+				"Review with:",
+				"matilda-prep rapid-assessment billing aws preflight --profile default --region us-east-1 --export-ref",
 			} {
 				if strings.Contains(output, forbidden) {
 					t.Fatalf("output = %q, want no %q", output, forbidden)
@@ -592,7 +1790,7 @@ func TestRunAWSBillingSelectedExportThrottlingIsRetryable(t *testing.T) {
 		},
 	}
 
-	output, err := runGuidedWithConfig("1\n1\ny\n", Config{Registry: registry, AWSBilling: guide})
+	output, err := runGuidedWithConfig("1\n1\ny\n\n", Config{Registry: registry, AWSBilling: guide})
 
 	if err != nil {
 		t.Fatalf("RunWithConfig returned error: %v", err)
