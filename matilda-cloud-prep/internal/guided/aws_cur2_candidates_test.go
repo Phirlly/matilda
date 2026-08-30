@@ -695,6 +695,20 @@ func TestHasSupportedCUR2SettingsRequiresMatildaSupportedShape(t *testing.T) {
 	}
 }
 
+func TestHasSupportedCUR2GranularityAndOverwriteRejectUnsupportedValues(t *testing.T) {
+	for _, granularity := range []string{"", "WEEKLY"} {
+		if hasSupportedCUR2Granularity(cur2Candidate{Granularity: granularity}) {
+			t.Fatalf("hasSupportedCUR2Granularity(%q) = true, want false", granularity)
+		}
+	}
+
+	for _, overwrite := range []string{"", "APPEND_REPORT"} {
+		if hasSupportedCUR2Overwrite(cur2Candidate{Overwrite: overwrite}) {
+			t.Fatalf("hasSupportedCUR2Overwrite(%q) = true, want false", overwrite)
+		}
+	}
+}
+
 func TestRankedCUR2CandidatesPutsIncompleteMetadataBeforeUnsupportedSettings(t *testing.T) {
 	ranked := rankedCUR2Candidates([]cur2Candidate{
 		{
