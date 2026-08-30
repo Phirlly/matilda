@@ -4,8 +4,14 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"sort"
 	"strings"
+
+	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/workflow"
 )
+
+var unsafeBucketDisplayPattern = regexp.MustCompile(`(^|[^0-9])\d{12}([^0-9]|$)`)
 
 func generatedNameCandidates(identity identityContext, region string) []setupFacts {
 	hash := namingHash(identity, region)
@@ -13,13 +19,120 @@ func generatedNameCandidates(identity identityContext, region string) []setupFac
 	for index := 0; index < maxBucketNameCandidates; index++ {
 		suffix := fmt.Sprintf("%02d", index)
 		candidates = append(candidates, setupFacts{
-			BucketName:     fmt.Sprintf("matilda-ra-billing-aws-%s-%s-%s", sanitizedRegion(region), hash, suffix),
-			ExportName:     fmt.Sprintf("matilda-cur2-ra-billing-%s-%s", hash, suffix),
-			Prefix:         matildaBillingPrefix,
-			CandidateIndex: suffix,
+			BucketName:      fmt.Sprintf("matilda-ra-billing-aws-%s-%s-%s", sanitizedRegion(region), hash, suffix),
+			BucketOwner:     identity.AccountID,
+			DestinationMode: workflow.AWSCUR2DestinationGenerated,
+			ExportName:      fmt.Sprintf("matilda-cur2-ra-billing-%s-%s", hash, suffix),
+			Prefix:          matildaBillingPrefix,
+			CandidateIndex:  suffix,
 		})
 	}
 	return candidates
+}
+
+func existingBucketCandidates(identity identityContext, region string, buckets []BucketSummary) []setupFacts {
+	filtered := make([]BucketSummary, 0, len(buckets))
+	for _, bucket := range buckets {
+		bucket.Name = strings.TrimSpace(bucket.Name)
+		bucket.Region = strings.TrimSpace(bucket.Region)
+		if bucket.Name == "" || bucket.Region != region {
+			continue
+		}
+		filtered = append(filtered, bucket)
+	}
+	sort.SliceStable(filtered, func(i, j int) bool {
+		if filtered[i].Name == filtered[j].Name {
+			return filtered[i].Region < filtered[j].Region
+		}
+		return filtered[i].Name < filtered[j].Name
+	})
+
+	for _, length := range []int{16, 24, 32} {
+		refs := map[string]int{}
+		for _, bucket := range filtered {
+			refs[s3BucketRefWithLength(identity.AccountID, bucket.Name, bucket.Region, length)]++
+		}
+		unique := true
+		for _, count := range refs {
+			if count > 1 {
+				unique = false
+				break
+			}
+		}
+		if !unique {
+			continue
+		}
+		candidates := make([]setupFacts, 0, len(filtered))
+		for index, bucket := range filtered {
+			ref := s3BucketRefWithLength(identity.AccountID, bucket.Name, bucket.Region, length)
+			candidates = append(candidates, setupFacts{
+				BucketName:      bucket.Name,
+				BucketOwner:     identity.AccountID,
+				BucketRef:       ref,
+				DestinationMode: workflow.AWSCUR2DestinationExistingSameAccount,
+				ExportName:      existingBucketExportName(identity, bucket.Region, ref),
+				Prefix:          matildaBillingPrefix,
+				CandidateIndex:  fmt.Sprintf("existing_%02d", index),
+			})
+		}
+		return candidates
+	}
+	return nil
+}
+
+func safeS3BucketRef(accountID string, bucketName string, region string) string {
+	return s3BucketRefWithLength(accountID, bucketName, region, 16)
+}
+
+func s3BucketRefWithLength(accountID string, bucketName string, region string, length int) string {
+	material := map[string]string{
+		"account_id":  strings.TrimSpace(accountID),
+		"bucket_name": strings.TrimSpace(bucketName),
+		"namespace":   "matilda",
+		"provider":    "aws",
+		"purpose":     "matilda-cloud-prep:aws:rapid-assessment:billing:cur2:existing-s3-bucket",
+		"region":      strings.TrimSpace(region),
+		"version":     "v1",
+	}
+	encoded, err := json.Marshal(material)
+	if err != nil {
+		panic(err)
+	}
+	sum := sha256.Sum256(encoded)
+	return "s3b-" + letterEncodeHash(sum[:], length)
+}
+
+func existingBucketExportName(identity identityContext, region string, bucketRef string) string {
+	material := map[string]string{
+		"account_id": identity.AccountID,
+		"bucket_ref": strings.TrimSpace(bucketRef),
+		"namespace":  "matilda",
+		"partition":  identity.Partition,
+		"provider":   "aws",
+		"purpose":    "matilda-cloud-prep:aws:rapid-assessment:billing:cur2:existing-s3-bucket-export",
+		"region":     strings.TrimSpace(region),
+		"version":    "v1",
+	}
+	encoded, err := json.Marshal(material)
+	if err != nil {
+		panic(err)
+	}
+	sum := sha256.Sum256(encoded)
+	return fmt.Sprintf("matilda-cur2-ra-billing-%s-00", letterEncodeHash(sum[:], 12))
+}
+
+func safeBucketDisplayLabel(bucketName string, bucketRef string) string {
+	name := strings.TrimSpace(bucketName)
+	if name == "" || len(name) > 63 || unsafeBucketDisplayPattern.MatchString(name) {
+		return "bucket-" + strings.TrimSpace(bucketRef)
+	}
+	lower := strings.ToLower(name)
+	for _, forbidden := range []string{"access_key", "apikey", "api_key", "arn:", "client-secret", "client_secret", "password", "plain-secret", "plain-token", "private-key", "private_key", "refresh_token", "secret_key", "session_token", "token="} {
+		if strings.Contains(lower, forbidden) {
+			return "bucket-" + strings.TrimSpace(bucketRef)
+		}
+	}
+	return name
 }
 
 func namingHash(identity identityContext, region string) string {
@@ -72,10 +185,11 @@ type setupBindingMaterial struct {
 }
 
 type setupBindingDestination struct {
-	Bucket string             `json:"bucket"`
-	Prefix string             `json:"prefix"`
-	Region string             `json:"region"`
-	Output setupBindingOutput `json:"output"`
+	Bucket      string             `json:"bucket"`
+	BucketOwner string             `json:"bucket_owner"`
+	Prefix      string             `json:"prefix"`
+	Region      string             `json:"region"`
+	Output      setupBindingOutput `json:"output"`
 }
 
 type setupBindingOutput struct {
@@ -96,9 +210,10 @@ func setupBindingRef(plan setupPlan) string {
 		QueryStatement:      request.QueryStatement,
 		TableConfigurations: request.TableConfigurations,
 		Destination: setupBindingDestination{
-			Bucket: request.Destination.Bucket,
-			Prefix: request.Destination.Prefix,
-			Region: request.Destination.Region,
+			Bucket:      request.Destination.Bucket,
+			BucketOwner: request.Destination.BucketOwner,
+			Prefix:      request.Destination.Prefix,
+			Region:      request.Destination.Region,
 			Output: setupBindingOutput{
 				Format:      request.Destination.Output.Format,
 				Compression: request.Destination.Output.Compression,

@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/cloud/aws/cur2preflight"
+	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/workflow"
 )
 
 const (
@@ -20,6 +21,7 @@ type Client interface {
 	DescribeOrganization(context.Context) (Organization, error)
 	ListExports(context.Context, string) (cur2preflight.ExportPage, error)
 	GetExport(context.Context, string) (cur2preflight.Export, error)
+	ListBuckets(context.Context, ListBucketsRequest) (BucketPage, error)
 	HeadBucket(context.Context, HeadBucketRequest) (cur2preflight.BucketAccess, error)
 	CreateBucket(context.Context, CreateBucketRequest) error
 	GetBucketPolicy(context.Context, BucketPolicyRequest) (string, error)
@@ -36,6 +38,23 @@ type HeadBucketRequest struct {
 	Bucket        string
 	Region        string
 	ExpectedOwner string
+}
+
+type ListBucketsRequest struct {
+	Region string
+	Prefix string
+	Token  string
+	Limit  int32
+}
+
+type BucketSummary struct {
+	Name   string
+	Region string
+}
+
+type BucketPage struct {
+	Buckets   []BucketSummary
+	NextToken string
 }
 
 type CreateBucketRequest struct {
@@ -81,10 +100,13 @@ func (err ProviderError) Error() string {
 }
 
 type setupFacts struct {
-	BucketName     string
-	ExportName     string
-	Prefix         string
-	CandidateIndex string
+	BucketName      string
+	BucketOwner     string
+	BucketRef       string
+	DestinationMode workflow.AWSCUR2DestinationMode
+	ExportName      string
+	Prefix          string
+	CandidateIndex  string
 }
 
 type identityContext struct {
@@ -101,6 +123,7 @@ type setupPlan struct {
 	PolicyNeedsMerge bool
 	Policy           string
 	ManagedExport    *cur2preflight.Export
+	BucketCandidates []setupFacts
 	Steps            []plannedStep
 }
 

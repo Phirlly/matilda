@@ -139,6 +139,106 @@ func TestExecutionOptionsNormalizeGeneratedCUR2ExportRef(t *testing.T) {
 	}
 }
 
+func TestExecutionOptionsNormalizeCUR2DestinationSelectors(t *testing.T) {
+	options, err := NormalizeExecutionOptionsForRequest(Request{
+		Goal:           assessment.RapidAssessment,
+		CollectionPath: assessment.CollectionBilling,
+		Provider:       assessment.ProviderAWS,
+		Action:         assessment.ActionApplyPrereqs,
+	}, ExecutionOptions{
+		AWSBillingOperation: AWSBillingOperationCreateCUR2Export,
+		Selectors: &ExecutionSelectors{
+			AWS: &AWSExecutionSelectors{
+				Profile:             "default",
+				Region:              "us-west-2",
+				CUR2DestinationMode: AWSCUR2DestinationExistingSameAccount,
+				CUR2S3BucketRef:     "s3b-abcdefghijklmnop",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NormalizeExecutionOptionsForRequest returned error: %v", err)
+	}
+	if options.Selectors == nil || options.Selectors.AWS == nil {
+		t.Fatalf("AWS selectors missing after normalization: %#v", options.Selectors)
+	}
+	aws := options.Selectors.AWS
+	if aws.CUR2DestinationMode != AWSCUR2DestinationExistingSameAccount || aws.CUR2S3BucketRef != "s3b-abcdefghijklmnop" {
+		t.Fatalf("AWS CUR2 destination selectors = %#v, want existing bucket selection", aws)
+	}
+}
+
+func TestExecutionOptionsRejectsUnsafeOrMisScopedCUR2DestinationSelectors(t *testing.T) {
+	applyRequest := Request{
+		Goal:           assessment.RapidAssessment,
+		CollectionPath: assessment.CollectionBilling,
+		Provider:       assessment.ProviderAWS,
+		Action:         assessment.ActionApplyPrereqs,
+	}
+	preflightRequest := applyRequest
+	preflightRequest.Action = assessment.ActionPreflight
+
+	tests := []struct {
+		name    string
+		request Request
+		input   ExecutionOptions
+		want    string
+	}{
+		{
+			name:    "destination selector rejected outside apply prereqs create operation",
+			request: preflightRequest,
+			input: ExecutionOptions{
+				Selectors: &ExecutionSelectors{AWS: &AWSExecutionSelectors{CUR2DestinationMode: AWSCUR2DestinationGenerated}},
+			},
+			want: "AWS CUR 2.0 destination selector flags are supported only for matilda-prep rapid-assessment billing aws apply-prereqs --create-cur2-export",
+		},
+		{
+			name:    "destination selector requires create operation",
+			request: applyRequest,
+			input: ExecutionOptions{
+				Selectors: &ExecutionSelectors{AWS: &AWSExecutionSelectors{CUR2DestinationMode: AWSCUR2DestinationGenerated}},
+			},
+			want: "AWS CUR 2.0 destination selector flags require create_cur2_export",
+		},
+		{
+			name:    "bucket ref must be generated safe ref",
+			request: applyRequest,
+			input: ExecutionOptions{
+				AWSBillingOperation: AWSBillingOperationCreateCUR2Export,
+				Selectors: &ExecutionSelectors{AWS: &AWSExecutionSelectors{
+					CUR2DestinationMode: AWSCUR2DestinationExistingSameAccount,
+					CUR2S3BucketRef:     "customer-cur-bucket",
+				}},
+			},
+			want: "cur2_s3_bucket_ref must use format s3b- plus 16, 24, or 32 lowercase generated reference characters",
+		},
+		{
+			name:    "generated destination cannot include existing bucket ref",
+			request: applyRequest,
+			input: ExecutionOptions{
+				AWSBillingOperation: AWSBillingOperationCreateCUR2Export,
+				Selectors: &ExecutionSelectors{AWS: &AWSExecutionSelectors{
+					CUR2DestinationMode: AWSCUR2DestinationGenerated,
+					CUR2S3BucketRef:     "s3b-abcdefghijklmnop",
+				}},
+			},
+			want: "cur2_s3_bucket_ref requires existing_same_account destination mode",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := NormalizeExecutionOptionsForRequest(tt.request, tt.input)
+			if err == nil {
+				t.Fatal("NormalizeExecutionOptionsForRequest returned nil error")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %q, want to contain %q", err.Error(), tt.want)
+			}
+		})
+	}
+}
+
 func TestDefaultExecutionOptionsAreSafeForDirectReadOnlyExecution(t *testing.T) {
 	options := DefaultExecutionOptions()
 

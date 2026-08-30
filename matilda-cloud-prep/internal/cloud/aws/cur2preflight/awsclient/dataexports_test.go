@@ -60,9 +60,10 @@ func TestIdentityAndDataExportsMapping(t *testing.T) {
 				},
 				DestinationConfigurations: &bcmtypes.DestinationConfigurations{
 					S3Destination: &bcmtypes.S3Destination{
-						S3Bucket: aws.String("matilda-cur2-billing"),
-						S3Prefix: aws.String("matilda/cur2"),
-						S3Region: aws.String("us-east-1"),
+						S3Bucket:      aws.String("matilda-cur2-billing"),
+						S3BucketOwner: aws.String("123456789012"),
+						S3Prefix:      aws.String("matilda/cur2"),
+						S3Region:      aws.String("us-east-1"),
 						S3OutputConfigurations: &bcmtypes.S3OutputConfigurations{
 							Format:      bcmtypes.FormatOptionTextOrCsv,
 							Compression: bcmtypes.CompressionOptionGzip,
@@ -153,7 +154,7 @@ func TestIdentityAndDataExportsMapping(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetExport returned error: %v", err)
 	}
-	if export.Name != "matilda-cur2" || export.Destination.Bucket != "matilda-cur2-billing" {
+	if export.Name != "matilda-cur2" || export.Destination.Bucket != "matilda-cur2-billing" || export.Destination.BucketOwner != "123456789012" {
 		t.Fatalf("export = %#v, want mapped export detail", export)
 	}
 	if export.Destination.Output.Format != "TEXT_OR_CSV" || export.RefreshCadence != "SYNCHRONOUS" || export.HealthStatus != "HEALTHY" {

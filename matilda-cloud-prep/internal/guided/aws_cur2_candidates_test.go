@@ -1,6 +1,7 @@
 package guided
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"reflect"
@@ -134,7 +135,7 @@ func TestRunAWSBillingCanPrepareNewCUR2PlanInsteadOfDiscoveredExports(t *testing
 		},
 	}
 
-	output, err := runGuidedWithConfig("1\n1\ny\n3\n\n", Config{Registry: registry, AWSBilling: guide})
+	output, err := runGuidedWithConfig("1\n1\ny\n3\n1\n\n", Config{Registry: registry, AWSBilling: guide})
 
 	if err != nil {
 		t.Fatalf("RunWithConfig returned error: %v", err)
@@ -143,6 +144,8 @@ func TestRunAWSBillingCanPrepareNewCUR2PlanInsteadOfDiscoveredExports(t *testing
 	for _, want := range []string{
 		"Select AWS CUR 2.0 export",
 		"Prepare a new Matilda CUR 2.0 setup plan",
+		"Select AWS CUR 2.0 destination",
+		"Use a generated same-account Matilda S3 bucket",
 		"Preparing a new Matilda AWS CUR 2.0 setup plan.",
 		"Result: ready_with_manual_steps",
 		"Support code: aws_cur2_create_export_approval_required",
@@ -173,6 +176,271 @@ func TestRunAWSBillingCanPrepareNewCUR2PlanInsteadOfDiscoveredExports(t *testing
 		}
 	}
 	assertGuidedOutputSafe(t, output)
+}
+
+func TestRunAWSBillingCanSelectExistingBucketForNewCUR2Plan(t *testing.T) {
+	calls := []guidedAWSBillingCall{}
+	preflightRunner := workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+		calls = append(calls, guidedAWSBillingCall{Request: got, Options: options})
+		if options.Selectors != nil && options.Selectors.AWS != nil && options.Selectors.AWS.CUR2ExportRef != "" {
+			t.Fatalf("selected preflight should not run when user prepares a new setup plan: %#v", options.Selectors.AWS)
+		}
+		return guidedAmbiguousCUR2SelectionReport(got)
+	})
+	applyRunner := workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+		calls = append(calls, guidedAWSBillingCall{Request: got, Options: options})
+		if options.Selectors == nil || options.Selectors.AWS == nil {
+			t.Fatalf("apply-prereqs selectors missing: %#v", options.Selectors)
+		}
+		if options.Selectors.AWS.CUR2DestinationMode != workflow.AWSCUR2DestinationExistingSameAccount {
+			t.Fatalf("destination mode = %q, want existing_same_account", options.Selectors.AWS.CUR2DestinationMode)
+		}
+		switch options.Selectors.AWS.CUR2S3BucketRef {
+		case "":
+			return guidedExistingBucketSelectionReport(got)
+		case "s3b-abcdefghijklmnop":
+			return guidedCreateCUR2ExistingBucketPlanReport(got)
+		default:
+			t.Fatalf("unexpected bucket ref %q", options.Selectors.AWS.CUR2S3BucketRef)
+			return workflow.CapabilityReport{}
+		}
+	})
+	registry := testAWSBillingRegistry(t, preflightRunner, applyRunner)
+	guide := &fakeAWSBillingGuide{
+		sources: []billingguide.CredentialSource{{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}},
+		verified: map[string]billingguide.VerifiedIdentity{
+			"profile:default": {Source: billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}, AccountLabel: "account-ending-9012", CallerRef: "sha256:abcdef123456", Region: "us-east-1"},
+		},
+	}
+
+	output, err := runGuidedWithConfig("1\n1\ny\n3\n2\n1\n\n", Config{Registry: registry, AWSBilling: guide})
+
+	if err != nil {
+		t.Fatalf("RunWithConfig returned error: %v", err)
+	}
+	if len(calls) != 3 {
+		t.Fatalf("registry calls = %d, want preflight, bucket selection, selected bucket plan", len(calls))
+	}
+	if calls[1].Options.Selectors.AWS.CUR2DestinationMode != workflow.AWSCUR2DestinationExistingSameAccount ||
+		calls[1].Options.Selectors.AWS.CUR2S3BucketRef != "" {
+		t.Fatalf("bucket discovery selectors = %#v, want existing destination without selected ref", calls[1].Options.Selectors.AWS)
+	}
+	if calls[2].Options.Selectors.AWS.CUR2DestinationMode != workflow.AWSCUR2DestinationExistingSameAccount ||
+		calls[2].Options.Selectors.AWS.CUR2S3BucketRef != "s3b-abcdefghijklmnop" {
+		t.Fatalf("selected bucket plan selectors = %#v, want selected existing bucket ref", calls[2].Options.Selectors.AWS)
+	}
+	for _, want := range []string{
+		"Select AWS CUR 2.0 destination",
+		"Use an existing S3 bucket owned by this AWS account",
+		"Discovering existing S3 buckets in the selected AWS account.",
+		"Select S3 bucket for new Matilda CUR 2.0 export",
+		"matilda-existing-cur2",
+		"s3b-abcdefghijklmnop",
+		"Support code: aws_cur2_create_export_approval_required",
+		"Step ID: aws.billing.cur2.bucket_policy.merge_data_exports_delivery",
+		"Step ID: aws.billing.cur2.export.create",
+		"--cur2-destination existing-same-account --cur2-s3-bucket-ref s3b-abcdefghijklmnop",
+		"Apply this AWS CUR 2.0 setup plan now? [y/N]",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output = %q, want to contain %q", output, want)
+		}
+	}
+	for _, forbidden := range []string{
+		"Step ID: aws.billing.cur2.bucket.create",
+		"--export-ref",
+		"Running readiness preflight for selected CUR 2.0 export",
+	} {
+		if strings.Contains(output, forbidden) {
+			t.Fatalf("output = %q, want no %q", output, forbidden)
+		}
+	}
+	assertGuidedOutputSafe(t, output)
+}
+
+func TestRunAWSBillingStopsExistingBucketSetupWhenNoBucketsDiscovered(t *testing.T) {
+	calls := []guidedAWSBillingCall{}
+	preflightRunner := workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+		calls = append(calls, guidedAWSBillingCall{Request: got, Options: options})
+		return guidedAmbiguousCUR2SelectionReport(got)
+	})
+	applyRunner := workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+		calls = append(calls, guidedAWSBillingCall{Request: got, Options: options})
+		if options.Selectors == nil || options.Selectors.AWS == nil {
+			t.Fatalf("apply-prereqs selectors missing: %#v", options.Selectors)
+		}
+		if options.Selectors.AWS.CUR2DestinationMode != workflow.AWSCUR2DestinationExistingSameAccount ||
+			options.Selectors.AWS.CUR2S3BucketRef != "" {
+			t.Fatalf("bucket discovery selectors = %#v, want existing destination without selected ref", options.Selectors.AWS)
+		}
+		return guidedExistingBucketSelectionNoCandidatesReport(got)
+	})
+	registry := testAWSBillingRegistry(t, preflightRunner, applyRunner)
+	guide := &fakeAWSBillingGuide{
+		sources: []billingguide.CredentialSource{{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}},
+		verified: map[string]billingguide.VerifiedIdentity{
+			"profile:default": {Source: billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}, AccountLabel: "account-ending-9012", CallerRef: "sha256:abcdef123456", Region: "us-east-1"},
+		},
+	}
+
+	output, err := runGuidedWithConfig("1\n1\ny\n3\n2\n", Config{Registry: registry, AWSBilling: guide})
+
+	if err != nil {
+		t.Fatalf("RunWithConfig returned error: %v", err)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("registry calls = %d, want preflight and bucket discovery only", len(calls))
+	}
+	for _, want := range []string{
+		"Select AWS CUR 2.0 destination",
+		"Use an existing S3 bucket owned by this AWS account",
+		"Discovering existing S3 buckets in the selected AWS account.",
+		"Support code: aws_cur2_existing_bucket_selection_required",
+		"No existing same-account S3 buckets were discovered.",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output = %q, want to contain %q", output, want)
+		}
+	}
+	for _, forbidden := range []string{
+		"Select S3 bucket for new Matilda CUR 2.0 export",
+		"Preparing a new Matilda AWS CUR 2.0 setup plan.",
+		"Apply this AWS CUR 2.0 setup plan now? [y/N]",
+		"--cur2-s3-bucket-ref",
+	} {
+		if strings.Contains(output, forbidden) {
+			t.Fatalf("output = %q, want no %q", output, forbidden)
+		}
+	}
+	assertGuidedOutputSafe(t, output)
+}
+
+func TestSelectCreateCUR2DestinationRejectsInvalidChoice(t *testing.T) {
+	reader := bufio.NewScanner(strings.NewReader("3\n"))
+	var output strings.Builder
+
+	mode, err := selectCreateCUR2Destination(reader, &output)
+
+	if mode != "" {
+		t.Fatalf("destination mode = %q, want empty after invalid selection", mode)
+	}
+	if !errors.Is(err, ErrInvalidSelection) {
+		t.Fatalf("error = %v, want ErrInvalidSelection", err)
+	}
+	for _, want := range []string{
+		"Select AWS CUR 2.0 destination",
+		"Select AWS CUR 2.0 destination [1-2]:",
+	} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("output = %q, want to contain %q", output.String(), want)
+		}
+	}
+}
+
+func TestSelectExistingS3BucketRejectsInvalidChoice(t *testing.T) {
+	reader := bufio.NewScanner(strings.NewReader("2\n"))
+	var output strings.Builder
+
+	ref, err := selectExistingS3Bucket(reader, &output, []existingS3BucketCandidate{{
+		Ref:    "s3b-abcdefghijklmnop",
+		Label:  "matilda-existing-cur2",
+		Region: "us-east-1",
+	}})
+
+	if ref != "" {
+		t.Fatalf("bucket ref = %q, want empty after invalid selection", ref)
+	}
+	if !errors.Is(err, ErrInvalidSelection) {
+		t.Fatalf("error = %v, want ErrInvalidSelection", err)
+	}
+	for _, want := range []string{
+		"Select S3 bucket for new Matilda CUR 2.0 export",
+		"matilda-existing-cur2 in us-east-1 (s3b-abcdefghijklmnop)",
+		"Select S3 bucket [1-1]:",
+	} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("output = %q, want to contain %q", output.String(), want)
+		}
+	}
+}
+
+func TestExistingS3BucketCandidatesSkipsUnsafeRefsAndUsesSafeRefFallbackLabel(t *testing.T) {
+	if got := existingS3BucketCandidates(workflow.Result{}); got != nil {
+		t.Fatalf("candidates without plan = %#v, want nil", got)
+	}
+
+	result := workflow.Result{Plan: &workflow.ExecutionPlan{Checks: []workflow.PlanCheck{{
+		Evidence: []workflow.PlanEvidence{
+			{Key: "ignored_bucket_ref", Value: "s3b-aaaaaaaaaaaaaaaa"},
+			{Key: "candidate_1_bucket_ref", Value: "raw-bucket-name"},
+			{Key: "candidate_1_bucket_label", Value: "raw-bucket-name"},
+			{Key: "candidate_2_bucket_ref", Value: "s3b-abcdefghijklmnop"},
+			{Key: "candidate_2_bucket_label", Value: "arn:aws:s3:::customer-123456789012-bucket"},
+			{Key: "candidate_2_bucket_region", Value: "us-east-1"},
+		},
+	}}}}
+
+	candidates := existingS3BucketCandidates(result)
+
+	if len(candidates) != 1 {
+		t.Fatalf("candidates = %#v, want one safe candidate", candidates)
+	}
+	candidate := candidates[0]
+	if candidate.Index != 2 || candidate.Ref != "s3b-abcdefghijklmnop" ||
+		candidate.Label != "s3b-abcdefghijklmnop" || candidate.Region != "us-east-1" {
+		t.Fatalf("candidate = %#v, want unsafe label replaced with safe ref fallback", candidate)
+	}
+}
+
+func TestRunCreateCUR2SetupPlanWithDestinationRejectsUnsafeBucketRefBeforeRegistryCall(t *testing.T) {
+	registryCalls := 0
+	registry := testRegistry(t, workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+		registryCalls++
+		return guidedCreateCUR2PlanReport(got)
+	}))
+	source := billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}
+
+	result := runCreateCUR2SetupPlanWithDestination(context.Background(), registry, source, workflow.AWSCUR2DestinationExistingSameAccount, "arn:aws:s3:::unsafe")
+
+	if result.Code != "execution_options_invalid" {
+		t.Fatalf("Code = %q, want execution_options_invalid", result.Code)
+	}
+	if result.Status != workflow.RunStatusBlocked {
+		t.Fatalf("Status = %q, want blocked", result.Status)
+	}
+	if registryCalls != 0 {
+		t.Fatalf("registry calls = %d, want none before invalid bucket ref is rejected", registryCalls)
+	}
+}
+
+func TestPreserveCreateCUR2DestinationSelectorsCreatesMissingSelectorContainers(t *testing.T) {
+	options := workflow.ExecutionOptions{}
+	preview := workflow.Result{
+		ExecutionOptions: workflow.ExecutionOptions{
+			Selectors: &workflow.ExecutionSelectors{
+				AWS: &workflow.AWSExecutionSelectors{
+					CUR2DestinationMode: workflow.AWSCUR2DestinationExistingSameAccount,
+					CUR2S3BucketRef:     "s3b-abcdefghijklmnop",
+				},
+			},
+		},
+	}
+
+	preserveCreateCUR2DestinationSelectors(&options, preview)
+
+	if options.Selectors == nil || options.Selectors.AWS == nil {
+		t.Fatalf("selectors = %#v, want AWS selector container created", options.Selectors)
+	}
+	if options.Selectors.AWS.CUR2DestinationMode != workflow.AWSCUR2DestinationExistingSameAccount ||
+		options.Selectors.AWS.CUR2S3BucketRef != "s3b-abcdefghijklmnop" {
+		t.Fatalf("AWS selectors = %#v, want preserved existing bucket destination", options.Selectors.AWS)
+	}
+
+	preserveCreateCUR2DestinationSelectors(nil, preview)
+	preserveCreateCUR2DestinationSelectors(&options, workflow.Result{})
+	if options.Selectors.AWS.CUR2S3BucketRef != "s3b-abcdefghijklmnop" {
+		t.Fatalf("AWS selectors changed after missing-input preservation: %#v", options.Selectors.AWS)
+	}
 }
 
 func TestRunAWSBillingSelectedExportPreflightUsesFreshContextAfterUserWait(t *testing.T) {
@@ -396,6 +664,51 @@ func TestRankedCUR2CandidatesPutsCompleteValidShapeBeforeIncompleteMetadata(t *t
 	}
 }
 
+func TestHasSupportedCUR2SettingsRequiresMatildaSupportedShape(t *testing.T) {
+	supportedCSV := cur2Candidate{
+		Output:          "TEXT_OR_CSV",
+		Compression:     "GZIP",
+		Granularity:     "MONTHLY",
+		Overwrite:       "CREATE_NEW_REPORT",
+		OutputType:      "CUSTOM",
+		RefreshCadence:  "SYNCHRONOUS",
+		IncludeResource: "TRUE",
+	}
+	if !hasSupportedCUR2Settings(supportedCSV) {
+		t.Fatalf("hasSupportedCUR2Settings(%#v) = false, want true", supportedCSV)
+	}
+
+	supportedParquet := supportedCSV
+	supportedParquet.Output = "PARQUET"
+	supportedParquet.Compression = "PARQUET"
+	supportedParquet.Granularity = "HOURLY"
+	supportedParquet.Overwrite = "OVERWRITE_REPORT"
+	supportedParquet.IncludeResource = ""
+	if !hasSupportedCUR2Settings(supportedParquet) {
+		t.Fatalf("hasSupportedCUR2Settings(%#v) = false, want true", supportedParquet)
+	}
+
+	unsupported := supportedCSV
+	unsupported.OutputType = "CUSTOM_AND_STANDARD"
+	if hasSupportedCUR2Settings(unsupported) {
+		t.Fatalf("hasSupportedCUR2Settings(%#v) = true, want false", unsupported)
+	}
+}
+
+func TestHasSupportedCUR2GranularityAndOverwriteRejectUnsupportedValues(t *testing.T) {
+	for _, granularity := range []string{"", "WEEKLY"} {
+		if hasSupportedCUR2Granularity(cur2Candidate{Granularity: granularity}) {
+			t.Fatalf("hasSupportedCUR2Granularity(%q) = true, want false", granularity)
+		}
+	}
+
+	for _, overwrite := range []string{"", "APPEND_REPORT"} {
+		if hasSupportedCUR2Overwrite(cur2Candidate{Overwrite: overwrite}) {
+			t.Fatalf("hasSupportedCUR2Overwrite(%q) = true, want false", overwrite)
+		}
+	}
+}
+
 func TestRankedCUR2CandidatesPutsIncompleteMetadataBeforeUnsupportedSettings(t *testing.T) {
 	ranked := rankedCUR2Candidates([]cur2Candidate{
 		{
@@ -566,7 +879,7 @@ func TestRunAWSBillingSingleCandidateDeclinePreparesNewCUR2Plan(t *testing.T) {
 		},
 	}
 
-	output, err := runGuidedWithConfig("1\n1\ny\nn\n\n", Config{Registry: registry, AWSBilling: guide})
+	output, err := runGuidedWithConfig("1\n1\ny\nn\n1\n\n", Config{Registry: registry, AWSBilling: guide})
 
 	if err != nil {
 		t.Fatalf("RunWithConfig returned error: %v", err)
@@ -575,6 +888,7 @@ func TestRunAWSBillingSingleCandidateDeclinePreparesNewCUR2Plan(t *testing.T) {
 	for _, want := range []string{
 		"Detected one usable CUR 2.0 export cur2-cacacacacacacaca",
 		"Use this detected CUR 2.0 export? [Y/n]",
+		"Select AWS CUR 2.0 destination",
 		"Preparing a new Matilda AWS CUR 2.0 setup plan.",
 		"Result: ready_with_manual_steps",
 		"Support code: aws_cur2_create_export_approval_required",
@@ -628,7 +942,7 @@ func TestRunAWSBillingSingleNonSelectableCandidateCanPrepareNewCUR2Plan(t *testi
 		},
 	}
 
-	output, err := runGuidedWithConfig("1\n1\ny\n2\n\n", Config{Registry: registry, AWSBilling: guide})
+	output, err := runGuidedWithConfig("1\n1\ny\n2\n1\n\n", Config{Registry: registry, AWSBilling: guide})
 
 	if err != nil {
 		t.Fatalf("RunWithConfig returned error: %v", err)
@@ -640,6 +954,7 @@ func TestRunAWSBillingSingleNonSelectableCandidateCanPrepareNewCUR2Plan(t *testi
 		"Select AWS CUR 2.0 action",
 		"Review this CUR 2.0 export with full readiness preflight",
 		"Prepare a new Matilda CUR 2.0 setup plan",
+		"Select AWS CUR 2.0 destination",
 		"Preparing a new Matilda AWS CUR 2.0 setup plan.",
 		"Apply this AWS CUR 2.0 setup plan now? [y/N]",
 		"matilda-prep rapid-assessment billing aws apply-prereqs --profile default --region us-east-1 --create-cur2-export",
@@ -753,7 +1068,7 @@ func TestRunAWSBillingCreateCUR2PlanApprovedInGuidedModeUsesPlanBoundApprovals(t
 		},
 	}
 
-	output, err := runGuidedWithConfig("1\n1\ny\n3\ny\n", Config{Registry: registry, AWSBilling: guide})
+	output, err := runGuidedWithConfig("1\n1\ny\n3\n1\ny\n", Config{Registry: registry, AWSBilling: guide})
 
 	if err != nil {
 		t.Fatalf("RunWithConfig returned error: %v", err)
@@ -831,7 +1146,7 @@ func TestRunAWSBillingCreateCUR2PlanReuseDoesNotPromptForApply(t *testing.T) {
 		},
 	}
 
-	output, err := runGuidedWithConfig("1\n1\ny\n3\n", Config{Registry: registry, AWSBilling: guide})
+	output, err := runGuidedWithConfig("1\n1\ny\n3\n1\n", Config{Registry: registry, AWSBilling: guide})
 
 	if err != nil {
 		t.Fatalf("RunWithConfig returned error: %v", err)
@@ -882,7 +1197,7 @@ func TestRunAWSBillingCreateCUR2PlanBlockedDoesNotPromptForApply(t *testing.T) {
 		},
 	}
 
-	output, err := runGuidedWithConfig("1\n1\ny\n3\n", Config{Registry: registry, AWSBilling: guide})
+	output, err := runGuidedWithConfig("1\n1\ny\n3\n1\n", Config{Registry: registry, AWSBilling: guide})
 
 	if err != nil {
 		t.Fatalf("RunWithConfig returned error: %v", err)
@@ -1112,6 +1427,157 @@ func guidedCreateCUR2PlanReport(request workflow.Request) workflow.CapabilityRep
 			SourceHandles: handles,
 		},
 	}
+}
+
+func guidedExistingBucketSelectionReport(request workflow.Request) workflow.CapabilityReport {
+	handles := guidedCreateCUR2SourceHandles()
+	return workflow.CapabilityReport{
+		Status:        workflow.RunStatusManualSteps,
+		SupportStatus: workflow.SupportGuided,
+		Code:          "aws_cur2_existing_bucket_selection_required",
+		Message:       "Select one verified same-account S3 bucket before generating the AWS CUR 2.0 setup plan.",
+		Mutated:       false,
+		SourceHandles: handles,
+		PlanInput: &workflow.ExecutionPlanInput{
+			Request: request,
+			OperatorIdentitySummary: workflow.OperatorIdentitySummary{
+				IdentityStatus: "verified",
+				Summary:        "AWS caller identity was verified for account-ending-9012 before existing bucket discovery.",
+				SourceHandles:  handles,
+			},
+			CoverageRecommendation: workflow.CoverageRecommendation{
+				CoverageStatus: workflow.CoverageSingleAccount,
+				Summary:        "AWS billing coverage is single-account for this guided setup test.",
+			},
+			PackageSchemaStatus: workflow.PackageSchemaProviderSchemaRequired,
+			Steps: []workflow.PlanStep{{
+				Intent:                    workflow.PlanStepGuide,
+				Title:                     "Select existing same-account S3 bucket",
+				Description:               "Choose one S3 bucket discovered from the verified AWS account before a CUR 2.0 setup plan is generated.",
+				Reason:                    "Matilda Cloud Prep must bind the exact destination before any bucket policy or Data Exports change can be approved.",
+				ApprovalKind:              "not_required",
+				CurrentState:              "Existing same-account S3 buckets were discovered.",
+				TargetState:               "One bucket is selected by safe reference for the setup plan.",
+				RequiredPermission:        "s3:ListAllMyBuckets",
+				CredentialMaterialTouched: false,
+				Validation:                "The selected safe bucket ref is resolved again before planning.",
+				Rollback:                  "No cloud change was made.",
+				SourceHandles:             handles,
+			}},
+			Checks: []workflow.PlanCheck{{
+				ID:      "aws_cur2_existing_bucket_selection_required",
+				Status:  workflow.CheckWarn,
+				Title:   "AWS existing S3 bucket selection",
+				Message: "Existing same-account S3 buckets are available for selection by safe reference.",
+				Evidence: []workflow.PlanEvidence{
+					{Key: "candidate_1_bucket_ref", Value: "s3b-abcdefghijklmnop"},
+					{Key: "candidate_1_bucket_label", Value: "matilda-existing-cur2", PlanIDExcluded: true},
+					{Key: "candidate_1_bucket_region", Value: "us-east-1"},
+				},
+				SourceHandles: handles,
+			}},
+			SourceHandles: handles,
+		},
+	}
+}
+
+func guidedExistingBucketSelectionNoCandidatesReport(request workflow.Request) workflow.CapabilityReport {
+	report := guidedExistingBucketSelectionReport(request)
+	report.Message = "No existing same-account S3 buckets were discovered for the selected account and Region."
+	if report.PlanInput == nil {
+		return report
+	}
+	if len(report.PlanInput.Steps) > 0 {
+		report.PlanInput.Steps[0].CurrentState = "No existing same-account S3 buckets were discovered."
+		report.PlanInput.Steps[0].TargetState = "Use the generated same-account Matilda S3 bucket destination or add a suitable owned bucket before retrying existing-bucket selection."
+	}
+	if len(report.PlanInput.Checks) > 0 {
+		report.PlanInput.Checks[0].Message = "No existing same-account S3 buckets were returned for selection."
+		report.PlanInput.Checks[0].Evidence = []workflow.PlanEvidence{{Key: "candidate_count", Value: "0"}}
+	}
+	return report
+}
+
+func guidedCreateCUR2ExistingBucketPlanReport(request workflow.Request) workflow.CapabilityReport {
+	handles := guidedCreateCUR2SourceHandles()
+	return workflow.CapabilityReport{
+		Status:        workflow.RunStatusManualSteps,
+		SupportStatus: workflow.SupportGuided,
+		Code:          "aws_cur2_create_export_approval_required",
+		Message:       "Review the AWS CUR 2.0 setup plan and approve each mutating step before cloud changes are made.",
+		Mutated:       false,
+		SourceHandles: handles,
+		PlanInput: &workflow.ExecutionPlanInput{
+			Request: request,
+			OperatorIdentitySummary: workflow.OperatorIdentitySummary{
+				IdentityStatus: "verified",
+				Summary:        "AWS caller identity was verified for account-ending-9012 before CUR 2.0 setup.",
+				SourceHandles:  handles,
+			},
+			CoverageRecommendation: workflow.CoverageRecommendation{
+				CoverageStatus: workflow.CoverageSingleAccount,
+				Summary:        "AWS billing coverage is single-account for this guided setup test.",
+			},
+			PackageSchemaStatus: workflow.PackageSchemaProviderSchemaRequired,
+			Steps: []workflow.PlanStep{
+				{
+					ID:                        workflow.AWSCUR2MergeBucketPolicyOperationID,
+					Intent:                    workflow.PlanStepRepair,
+					Title:                     "Allow AWS Data Exports delivery to the selected bucket",
+					Description:               "Merge the scoped AWS Data Exports delivery statement into the selected same-account bucket policy.",
+					Reason:                    "AWS requires the bucket policy to allow Data Exports to write report objects with source conditions.",
+					ApprovalKind:              "cloud_mutation",
+					CurrentState:              "The selected same-account S3 bucket exists but does not yet contain the scoped Data Exports delivery statement.",
+					TargetState:               "The selected bucket policy allows Data Exports delivery for the selected account and export scope.",
+					RequiredPermission:        "s3:GetBucketPolicy, s3:PutBucketPolicy",
+					CredentialMaterialTouched: false,
+					Validation:                "The policy is read, parsed, merged, and written with the expected bucket owner.",
+					Rollback:                  "The tool does not remove bucket policy statements automatically.",
+					SourceHandles:             handles,
+				},
+				{
+					ID:                        workflow.AWSCUR2CreateExportOperationID,
+					Intent:                    workflow.PlanStepCreate,
+					Title:                     "Create Matilda AWS CUR 2.0 export",
+					Description:               "Create a Matilda-specific AWS CUR 2.0 export using the selected same-account S3 bucket.",
+					Reason:                    "Matilda Rapid Assessment - Billing Based needs a CUR 2.0 billing export when no reusable export is selected.",
+					ApprovalKind:              "cloud_mutation",
+					CurrentState:              "No matching Matilda-generated CUR 2.0 export exists for the selected bucket and region.",
+					TargetState:               "A Matilda-generated CUR 2.0 export writes monthly billing data to the selected S3 destination.",
+					RequiredPermission:        "bcm-data-exports:CreateExport",
+					CredentialMaterialTouched: false,
+					Validation:                "The created export request uses Matilda-supported CUR 2.0 settings and the selected bucket owner.",
+					Rollback:                  "The tool does not delete Data Exports resources automatically.",
+					SourceHandles:             handles,
+				},
+			},
+			Checks: []workflow.PlanCheck{{
+				ID:      "aws_cur2_create_export_plan_facts",
+				Status:  workflow.CheckWarn,
+				Title:   "AWS CUR 2.0 setup plan",
+				Message: "A Matilda-specific AWS CUR 2.0 setup plan was generated.",
+				Evidence: []workflow.PlanEvidence{
+					{Key: "destination_mode", Value: string(workflow.AWSCUR2DestinationExistingSameAccount)},
+					{Key: "selected_s3_bucket_ref", Value: "s3b-abcdefghijklmnop"},
+					{Key: "data_exports_region", Value: "us-east-1"},
+					{Key: "s3_region", Value: "us-east-1"},
+					{Key: "coverage_status", Value: string(workflow.CoverageSingleAccount)},
+				},
+				SourceHandles: handles,
+			}},
+			SourceHandles: handles,
+		},
+	}
+}
+
+func guidedCreateCUR2SourceHandles() []workflow.SourceHandle {
+	return []workflow.SourceHandle{{
+		Label: "AWS CUR 2.0 Create-New Export",
+		URI:   "docs/references/aws/aws-cur2-create-new-export.md",
+	}, {
+		Label: "AWS CUR 2.0 Existing Bucket Selection",
+		URI:   "docs/references/aws/aws-cur2-existing-bucket-selection.md",
+	}}
 }
 
 func guidedAmbiguousCUR2SelectionReport(request workflow.Request) workflow.CapabilityReport {

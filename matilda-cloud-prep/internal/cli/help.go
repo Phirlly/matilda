@@ -67,6 +67,8 @@ func writeAWSBillingApplyPrereqsHelp(stdout io.Writer) {
 AWS Rapid Assessment - Billing Based apply-prereqs operation options:
   --request-backfill       plan an AWS Support request for previous-month CUR 2.0 backfill
   --create-cur2-export     plan or apply AWS CUR 2.0 export creation
+  --cur2-destination <generated|existing-same-account>
+  --cur2-s3-bucket-ref <s3b-ref-from-previous-output>
 
 AWS Rapid Assessment - Billing Based apply-prereqs approval options:
   --confirm-create-support-case

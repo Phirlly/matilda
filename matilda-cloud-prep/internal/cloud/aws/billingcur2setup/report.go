@@ -13,6 +13,10 @@ func sourceHandles() []workflow.SourceHandle {
 			URI:   "docs/references/aws/aws-cur2-create-new-export.md",
 		},
 		{
+			Label: "AWS CUR 2.0 Existing Bucket Selection",
+			URI:   "docs/references/aws/aws-cur2-existing-bucket-selection.md",
+		},
+		{
 			Label: "AWS Rapid Assessment Billing CUR 2.0 Preflight Source Bundle",
 			URI:   "docs/references/aws/aws-rapid-assessment-billing-cur2-preflight-source-bundle.md",
 		},
@@ -81,19 +85,50 @@ func last4(value string) string {
 }
 
 func planFactsCheck(plan setupPlan) workflow.PlanCheck {
+	if existingBucketSelectionRequired(plan) {
+		return existingBucketSelectionCheck(plan)
+	}
+	evidence := []workflow.PlanEvidence{
+		{Key: "destination_mode", Value: string(plan.Facts.DestinationMode)},
+		{Key: "candidate_index", Value: plan.Facts.CandidateIndex},
+		{Key: "setup_binding_ref", Value: setupBindingRef(plan)},
+		{Key: "selected_export_ref", Value: safePlannedExportRef(plan), PlanIDExcluded: true},
+		{Key: "data_exports_region", Value: dataExportsRegion},
+		{Key: "s3_region", Value: plan.Region},
+		{Key: "coverage_status", Value: string(plan.Coverage.Status)},
+	}
+	if plan.Facts.BucketRef != "" {
+		evidence = append(evidence, workflow.PlanEvidence{Key: "selected_s3_bucket_ref", Value: plan.Facts.BucketRef})
+	}
 	return workflow.PlanCheck{
-		ID:      "aws_cur2_create_export_plan_facts",
-		Status:  workflow.CheckWarn,
-		Title:   "AWS CUR 2.0 setup plan",
-		Message: "A Matilda-specific AWS CUR 2.0 export setup plan was generated without exposing generated resource names or account identifiers.",
-		Evidence: []workflow.PlanEvidence{
-			{Key: "candidate_index", Value: plan.Facts.CandidateIndex},
-			{Key: "setup_binding_ref", Value: setupBindingRef(plan)},
-			{Key: "selected_export_ref", Value: safePlannedExportRef(plan), PlanIDExcluded: true},
-			{Key: "data_exports_region", Value: dataExportsRegion},
-			{Key: "s3_region", Value: plan.Region},
-			{Key: "coverage_status", Value: string(plan.Coverage.Status)},
-		},
+		ID:       "aws_cur2_create_export_plan_facts",
+		Status:   workflow.CheckWarn,
+		Title:    "AWS CUR 2.0 setup plan",
+		Message:  "A Matilda-specific AWS CUR 2.0 export setup plan was generated without exposing generated resource names or account identifiers.",
+		Evidence: evidence,
+	}
+}
+
+func existingBucketSelectionCheck(plan setupPlan) workflow.PlanCheck {
+	evidence := []workflow.PlanEvidence{
+		{Key: "destination_mode", Value: string(workflow.AWSCUR2DestinationExistingSameAccount)},
+		{Key: "s3_region", Value: plan.Region},
+		{Key: "candidate_count", Value: fmt.Sprintf("%d", len(plan.BucketCandidates))},
+	}
+	for index, candidate := range plan.BucketCandidates {
+		prefix := fmt.Sprintf("candidate_%d", index+1)
+		evidence = append(evidence,
+			workflow.PlanEvidence{Key: prefix + "_bucket_ref", Value: candidate.BucketRef},
+			workflow.PlanEvidence{Key: prefix + "_bucket_label", Value: safeBucketDisplayLabel(candidate.BucketName, candidate.BucketRef), PlanIDExcluded: true},
+			workflow.PlanEvidence{Key: prefix + "_bucket_region", Value: plan.Region},
+		)
+	}
+	return workflow.PlanCheck{
+		ID:       "aws_cur2_existing_bucket_selection_required",
+		Status:   workflow.CheckWarn,
+		Title:    "AWS existing S3 bucket selection",
+		Message:  "Select a verified same-account S3 bucket by safe reference before creating the AWS CUR 2.0 setup plan.",
+		Evidence: evidence,
 	}
 }
 
@@ -111,7 +146,42 @@ func setPlanEvidenceValue(input *workflow.ExecutionPlanInput, key string, value 
 	}
 }
 
+func existingBucketSelectionRequired(plan setupPlan) bool {
+	return guidePlanCode(plan) == "aws_cur2_existing_bucket_selection_required"
+}
+
+func guidePlanCode(plan setupPlan) string {
+	for _, step := range plan.Steps {
+		if step.Intent == "guide" {
+			return step.ID
+		}
+	}
+	return ""
+}
+
+func existingBucketSelectionCurrentState(plan setupPlan) string {
+	if len(plan.BucketCandidates) == 0 {
+		return "No existing same-account S3 buckets were discovered in the selected region."
+	}
+	return "Existing same-account S3 buckets were discovered."
+}
+
 func planSteps(plan setupPlan) []workflow.PlanStep {
+	if existingBucketSelectionRequired(plan) {
+		return []workflow.PlanStep{{
+			Intent:                    workflow.PlanStepGuide,
+			Title:                     "Select existing same-account S3 bucket",
+			Description:               "Choose one S3 bucket discovered from the verified AWS account before a CUR 2.0 setup plan is generated.",
+			Reason:                    "Matilda Cloud Prep must bind the exact destination before any bucket policy or Data Exports change can be approved.",
+			ApprovalKind:              "not_required",
+			CurrentState:              existingBucketSelectionCurrentState(plan),
+			TargetState:               "One bucket is selected by safe reference for the setup plan.",
+			RequiredPermission:        "s3:ListAllMyBuckets",
+			CredentialMaterialTouched: false,
+			Validation:                "The selected safe bucket ref is resolved again before planning.",
+			Rollback:                  "No cloud change was made.",
+		}}
+	}
 	if blockedCode := blockedPlanCode(plan); blockedCode != "" {
 		return []workflow.PlanStep{blockedSetupStep(blockedCode, plan.identityVerified())}
 	}
@@ -165,20 +235,32 @@ func planSteps(plan setupPlan) []workflow.PlanStep {
 		})
 	}
 	if plan.PolicyNeedsMerge {
+		policyDescription := "Merge the scoped AWS Data Exports delivery statement into the generated bucket policy."
+		policyCurrentState := "The generated bucket policy does not yet contain the scoped Data Exports delivery statement."
+		policyTargetState := "The generated bucket policy allows Data Exports delivery for the selected account and export scope."
+		if plan.Facts.DestinationMode == workflow.AWSCUR2DestinationExistingSameAccount {
+			policyDescription = "Merge the scoped AWS Data Exports delivery statement into the selected same-account bucket policy."
+			policyCurrentState = "The selected same-account S3 bucket policy does not yet contain the scoped Data Exports delivery statement."
+			policyTargetState = "The selected bucket policy allows Data Exports delivery for the selected account and export scope."
+		}
 		steps = append(steps, workflow.PlanStep{
 			ID:                        workflow.AWSCUR2MergeBucketPolicyOperationID,
 			Intent:                    workflow.PlanStepRepair,
 			Title:                     "Allow AWS Data Exports delivery to the bucket",
-			Description:               "Merge the scoped AWS Data Exports delivery statement into the generated bucket policy.",
+			Description:               policyDescription,
 			Reason:                    "AWS requires the bucket policy to allow Data Exports to write report objects with source conditions.",
 			ApprovalKind:              "cloud_mutation",
-			CurrentState:              "The generated bucket policy does not yet contain the scoped Data Exports delivery statement.",
-			TargetState:               "The generated bucket policy allows Data Exports delivery for the selected account and export scope.",
+			CurrentState:              policyCurrentState,
+			TargetState:               policyTargetState,
 			RequiredPermission:        "s3:GetBucketPolicy, s3:PutBucketPolicy",
 			CredentialMaterialTouched: false,
 			Validation:                "The policy is read, parsed, merged, and written with the expected bucket owner.",
 			Rollback:                  "The tool does not remove bucket policy statements automatically.",
 		})
+	}
+	exportTargetState := "A Matilda-generated CUR 2.0 export writes monthly billing data to the generated S3 destination."
+	if plan.Facts.DestinationMode == workflow.AWSCUR2DestinationExistingSameAccount {
+		exportTargetState = "A Matilda-generated CUR 2.0 export writes monthly billing data to the selected S3 destination."
 	}
 	steps = append(steps, workflow.PlanStep{
 		ID:                        workflow.AWSCUR2CreateExportOperationID,
@@ -188,7 +270,7 @@ func planSteps(plan setupPlan) []workflow.PlanStep {
 		Reason:                    "Matilda Rapid Assessment - Billing Based needs a CUR 2.0 billing export when no reusable export is selected.",
 		ApprovalKind:              "cloud_mutation",
 		CurrentState:              "No matching Matilda-generated CUR 2.0 export exists for the selected account and region.",
-		TargetState:               "A Matilda-generated CUR 2.0 export writes monthly billing data to the generated S3 destination.",
+		TargetState:               exportTargetState,
 		RequiredPermission:        "bcm-data-exports:CreateExport, cur:PutReportDefinition",
 		CredentialMaterialTouched: false,
 		Validation:                "The created export request uses COST_AND_USAGE_REPORT, monthly granularity, text CSV gzip output, create-new report files, and synchronous refresh.",

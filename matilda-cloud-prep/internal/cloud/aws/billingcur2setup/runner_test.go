@@ -54,6 +54,308 @@ func TestRunnerPlansCreateNewCUR2ExportWithoutMutation(t *testing.T) {
 	assertResultDoesNotLeakAWSSecrets(t, result)
 }
 
+func TestRunnerListsExistingSameAccountBucketsForSelectionWithoutMutation(t *testing.T) {
+	client := baselineSetupClient()
+	client.buckets = []BucketSummary{
+		{Name: "matilda-existing-cur2", Region: "us-west-2"},
+		{Name: "matilda-existing-cur2-logs", Region: "us-west-2"},
+	}
+
+	result := runSetup(t, client, createCUR2ExistingBucketSelectionOptions("default", "us-west-2", ""))
+
+	if result.Status != workflow.RunStatusManualSteps {
+		t.Fatalf("Status = %q, Code = %q, want manual steps", result.Status, result.Code)
+	}
+	if result.Code != "aws_cur2_existing_bucket_selection_required" {
+		t.Fatalf("Code = %q, want aws_cur2_existing_bucket_selection_required", result.Code)
+	}
+	if result.Mutated {
+		t.Fatal("Mutated = true, want false while selecting bucket")
+	}
+	if len(client.listBucketsRequests) != 1 {
+		t.Fatalf("ListBuckets calls = %d, want 1", len(client.listBucketsRequests))
+	}
+	if client.listBucketsRequests[0].Region != "us-west-2" {
+		t.Fatalf("ListBuckets region = %q, want selected region", client.listBucketsRequests[0].Region)
+	}
+	if client.createBucketCalls() != 0 || client.putBucketPolicyCalls() != 0 || client.createExportCalls() != 0 {
+		t.Fatalf("mutation calls before bucket selection = bucket %d policy %d export %d, want none", client.createBucketCalls(), client.putBucketPolicyCalls(), client.createExportCalls())
+	}
+	ref := checkEvidenceValue(result, "candidate_1_bucket_ref")
+	if ref == "" || !strings.HasPrefix(ref, "s3b-") {
+		t.Fatalf("candidate_1_bucket_ref = %q, want safe s3b ref", ref)
+	}
+	if got := checkEvidenceValue(result, "candidate_1_bucket_label"); got != "matilda-existing-cur2" {
+		t.Fatalf("candidate_1_bucket_label = %q, want audited bucket name", got)
+	}
+	if got := checkEvidenceValue(result, "candidate_1_bucket_region"); got != "us-west-2" {
+		t.Fatalf("candidate_1_bucket_region = %q, want us-west-2", got)
+	}
+	assertResultDoesNotLeakAWSSecrets(t, result)
+}
+
+func TestRunnerMasksUnsafeExistingBucketSelectionLabels(t *testing.T) {
+	client := baselineSetupClient()
+	client.buckets = []BucketSummary{{Name: "customer-123456789012-plain-token", Region: "us-west-2"}}
+
+	result := runSetup(t, client, createCUR2ExistingBucketSelectionOptions("default", "us-west-2", ""))
+
+	ref := checkEvidenceValue(result, "candidate_1_bucket_ref")
+	label := checkEvidenceValue(result, "candidate_1_bucket_label")
+	if ref == "" || !strings.HasPrefix(ref, "s3b-") {
+		t.Fatalf("candidate_1_bucket_ref = %q, want safe ref", ref)
+	}
+	if label != "bucket-"+ref {
+		t.Fatalf("candidate_1_bucket_label = %q, want masked label bucket-%s", label, ref)
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("Marshal returned error: %v", err)
+	}
+	for _, forbidden := range []string{"customer-123456789012-plain-token", "plain-token", "123456789012"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("result leaked unsafe bucket label %q in %s", forbidden, string(encoded))
+		}
+	}
+}
+
+func TestRunnerExistingBucketSelectionHandlesNoDiscoverableBuckets(t *testing.T) {
+	client := baselineSetupClient()
+
+	result := runSetup(t, client, createCUR2ExistingBucketSelectionOptions("default", "us-west-2", ""))
+
+	if result.Code != "aws_cur2_existing_bucket_selection_required" {
+		t.Fatalf("Code = %q, want selection required", result.Code)
+	}
+	if got := checkEvidenceValue(result, "candidate_count"); got != "0" {
+		t.Fatalf("candidate_count = %q, want 0", got)
+	}
+	if result.Plan == nil || len(result.Plan.Steps) != 1 {
+		t.Fatalf("Plan steps = %#v, want one guide step", result.Plan)
+	}
+	if !strings.Contains(result.Plan.Steps[0].CurrentState, "No existing same-account S3 buckets") {
+		t.Fatalf("CurrentState = %q, want no-buckets guidance", result.Plan.Steps[0].CurrentState)
+	}
+	if client.createBucketCalls() != 0 || client.putBucketPolicyCalls() != 0 || client.createExportCalls() != 0 {
+		t.Fatalf("mutation calls = bucket %d policy %d export %d, want none", client.createBucketCalls(), client.putBucketPolicyCalls(), client.createExportCalls())
+	}
+}
+
+func TestRunnerExistingBucketSelectionListFailureBlocksBeforeMutation(t *testing.T) {
+	client := baselineSetupClient()
+	client.listBucketsErr = NewProviderError("aws_s3_list_buckets_failed", "bucket listing denied")
+
+	result := runSetup(t, client, createCUR2ExistingBucketSelectionOptions("default", "us-west-2", ""))
+
+	if result.Code != "aws_s3_list_buckets_failed" {
+		t.Fatalf("Code = %q, want aws_s3_list_buckets_failed", result.Code)
+	}
+	if result.Status != workflow.RunStatusBlocked {
+		t.Fatalf("Status = %q, want blocked", result.Status)
+	}
+	if client.createBucketCalls() != 0 || client.putBucketPolicyCalls() != 0 || client.createExportCalls() != 0 {
+		t.Fatalf("mutation calls = bucket %d policy %d export %d, want none", client.createBucketCalls(), client.putBucketPolicyCalls(), client.createExportCalls())
+	}
+}
+
+func TestRunnerExistingBucketSelectionRejectsUnknownBucketRef(t *testing.T) {
+	client := baselineSetupClient()
+	client.buckets = []BucketSummary{{Name: "matilda-existing-cur2", Region: "us-west-2"}}
+
+	result := runSetup(t, client, createCUR2ExistingBucketSelectionOptions("default", "us-west-2", "s3b-abcdefghijklmnop"))
+
+	if result.Code != "aws_cur2_existing_bucket_ref_not_found" {
+		t.Fatalf("Code = %q, want aws_cur2_existing_bucket_ref_not_found", result.Code)
+	}
+	if len(client.headBucketRequests) != 0 {
+		t.Fatalf("HeadBucket calls = %d, want none for unknown selected ref", len(client.headBucketRequests))
+	}
+	if client.createBucketCalls() != 0 || client.putBucketPolicyCalls() != 0 || client.createExportCalls() != 0 {
+		t.Fatalf("mutation calls = bucket %d policy %d export %d, want none", client.createBucketCalls(), client.putBucketPolicyCalls(), client.createExportCalls())
+	}
+}
+
+func TestRunnerExistingBucketSelectionBlocksInaccessibleSelectedBucketBeforeMutation(t *testing.T) {
+	client := baselineSetupClient()
+	client.buckets = []BucketSummary{{Name: "matilda-existing-cur2", Region: "us-west-2"}}
+	bucketRef := safeS3BucketRef(client.identity.AccountID, "matilda-existing-cur2", "us-west-2")
+
+	result := runSetup(t, client, createCUR2ExistingBucketSelectionOptions("default", "us-west-2", bucketRef))
+
+	if result.Code != "aws_s3_bucket_not_found" {
+		t.Fatalf("Code = %q, want aws_s3_bucket_not_found", result.Code)
+	}
+	if result.Status != workflow.RunStatusBlocked {
+		t.Fatalf("Status = %q, want blocked", result.Status)
+	}
+	if len(client.headBucketRequests) != 1 {
+		t.Fatalf("HeadBucket calls = %d, want selected bucket validation", len(client.headBucketRequests))
+	}
+	head := client.headBucketRequests[0]
+	if head.Bucket != "matilda-existing-cur2" || head.ExpectedOwner != client.identity.AccountID || head.Region != "us-west-2" {
+		t.Fatalf("HeadBucket request = %#v, want selected same-account bucket proof", head)
+	}
+	if client.createBucketCalls() != 0 || client.putBucketPolicyCalls() != 0 || client.createExportCalls() != 0 {
+		t.Fatalf("mutation calls = bucket %d policy %d export %d, want none", client.createBucketCalls(), client.putBucketPolicyCalls(), client.createExportCalls())
+	}
+}
+
+func TestRunnerExistingBucketSelectionHonorsPaginationAndQuotaBlock(t *testing.T) {
+	client := baselineSetupClient()
+	client.buckets = []BucketSummary{{Name: "matilda-existing-cur2", Region: "us-west-2"}}
+	client.listBucketsNextToken = "next-token"
+	for index := 0; index < 5; index++ {
+		client.exports = append(client.exports, cur2preflight.Export{
+			Name:           fmt.Sprintf("external-cur2-%d", index),
+			ExportARN:      fmt.Sprintf("arn:aws:bcm-data-exports:us-east-1:123456789012:export/external-cur2-%d", index),
+			QueryStatement: "SELECT line_item_usage_amount FROM COST_AND_USAGE_REPORT",
+		})
+	}
+	bucketRef := safeS3BucketRef(client.identity.AccountID, "matilda-existing-cur2", "us-west-2")
+
+	result := runSetup(t, client, createCUR2ExistingBucketSelectionOptions("default", "us-west-2", bucketRef))
+
+	if result.Code != "aws_cur2_export_quota_full" {
+		t.Fatalf("Code = %q, want aws_cur2_export_quota_full", result.Code)
+	}
+	if len(client.listBucketsRequests) != 2 {
+		t.Fatalf("ListBuckets calls = %d, want two paginated calls", len(client.listBucketsRequests))
+	}
+	if client.listBucketsRequests[1].Token != "next-token" {
+		t.Fatalf("second ListBuckets token = %q, want next-token", client.listBucketsRequests[1].Token)
+	}
+	if len(client.headBucketRequests) != 0 {
+		t.Fatalf("HeadBucket calls = %d, want none after quota block", len(client.headBucketRequests))
+	}
+	if client.createBucketCalls() != 0 || client.putBucketPolicyCalls() != 0 || client.createExportCalls() != 0 {
+		t.Fatalf("mutation calls = bucket %d policy %d export %d, want none", client.createBucketCalls(), client.putBucketPolicyCalls(), client.createExportCalls())
+	}
+}
+
+func TestRunnerExistingBucketSelectionBlocksUnboundedBucketPaginationBeforeMutation(t *testing.T) {
+	client := baselineSetupClient()
+	client.buckets = []BucketSummary{{Name: "matilda-existing-cur2", Region: "us-west-2"}}
+	client.listBucketsNextToken = "next-token"
+	client.listBucketsAlwaysNextToken = true
+
+	result := runSetup(t, client, createCUR2ExistingBucketSelectionOptions("default", "us-west-2", ""))
+
+	if result.Code != "aws_s3_list_buckets_pagination_unbounded" {
+		t.Fatalf("Code = %q, want aws_s3_list_buckets_pagination_unbounded", result.Code)
+	}
+	if result.Status != workflow.RunStatusBlocked {
+		t.Fatalf("Status = %q, want blocked", result.Status)
+	}
+	if len(client.listBucketsRequests) != 10 {
+		t.Fatalf("ListBuckets calls = %d, want bounded retry limit of 10", len(client.listBucketsRequests))
+	}
+	if len(client.headBucketRequests) != 0 {
+		t.Fatalf("HeadBucket calls = %d, want none after unbounded bucket listing", len(client.headBucketRequests))
+	}
+	if client.createBucketCalls() != 0 || client.putBucketPolicyCalls() != 0 || client.createExportCalls() != 0 {
+		t.Fatalf("mutation calls = bucket %d policy %d export %d, want none", client.createBucketCalls(), client.putBucketPolicyCalls(), client.createExportCalls())
+	}
+}
+
+func TestRunnerUsesSelectedExistingSameAccountBucketWithoutCreatingBucket(t *testing.T) {
+	client := baselineSetupClient()
+	client.bucketExists = true
+	client.buckets = []BucketSummary{{Name: "matilda-existing-cur2", Region: "us-west-2"}}
+	bucketRef := safeS3BucketRef(client.identity.AccountID, "matilda-existing-cur2", "us-west-2")
+	preview := runSetup(t, client, createCUR2ExistingBucketSelectionOptions("default", "us-west-2", bucketRef))
+
+	if preview.Code != "aws_cur2_create_export_approval_required" {
+		t.Fatalf("preview Code = %q, want approval required", preview.Code)
+	}
+	if got := mutatingStepIDs(preview.Plan.Steps); !equalStrings(got, []string{workflow.AWSCUR2MergeBucketPolicyOperationID, workflow.AWSCUR2CreateExportOperationID}) {
+		t.Fatalf("mutating steps = %#v, want policy merge and export create only", got)
+	}
+	if got := checkEvidenceValue(preview, "destination_mode"); got != string(workflow.AWSCUR2DestinationExistingSameAccount) {
+		t.Fatalf("destination_mode = %q, want existing_same_account", got)
+	}
+	if got := checkEvidenceValue(preview, "selected_s3_bucket_ref"); got != bucketRef {
+		t.Fatalf("selected_s3_bucket_ref = %q, want %q", got, bucketRef)
+	}
+
+	result := runSetup(t, client, approvedExistingBucketCUR2Options("default", "us-west-2", bucketRef, preview.Plan))
+
+	if result.Code != "aws_cur2_create_export_created" {
+		t.Fatalf("Code = %q, want aws_cur2_create_export_created", result.Code)
+	}
+	if client.createBucketCalls() != 0 {
+		t.Fatalf("CreateBucket calls = %d, want 0 for selected existing bucket", client.createBucketCalls())
+	}
+	if client.putBucketPolicyCalls() != 1 {
+		t.Fatalf("PutBucketPolicy calls = %d, want 1", client.putBucketPolicyCalls())
+	}
+	if client.createExportCalls() != 1 {
+		t.Fatalf("CreateExport calls = %d, want 1", client.createExportCalls())
+	}
+	exportRequest := client.createExportRequests[0]
+	if exportRequest.Destination.Bucket != "matilda-existing-cur2" {
+		t.Fatalf("CreateExport bucket = %q, want selected existing bucket", exportRequest.Destination.Bucket)
+	}
+	if exportRequest.Destination.BucketOwner != client.identity.AccountID {
+		t.Fatalf("CreateExport bucket owner = %q, want caller account", exportRequest.Destination.BucketOwner)
+	}
+	if exportRequest.Destination.Prefix != matildaBillingPrefix {
+		t.Fatalf("CreateExport prefix = %q, want Matilda billing prefix", exportRequest.Destination.Prefix)
+	}
+	assertResultDoesNotLeakAWSSecrets(t, result)
+}
+
+func TestRunnerReusesManagedExportForSelectedExistingSameAccountBucket(t *testing.T) {
+	client := baselineSetupClient()
+	client.buckets = []BucketSummary{{Name: "matilda-existing-cur2", Region: "us-west-2"}}
+	identity := identityContext{
+		AccountID: client.identity.AccountID,
+		Partition: partitionFromARN(client.identity.CallerARN),
+	}
+	candidates := existingBucketCandidates(identity, "us-west-2", client.buckets)
+	if len(candidates) != 1 {
+		t.Fatalf("existing bucket candidates = %#v, want one", candidates)
+	}
+	configureReusableManagedExport(t, client, candidates[0])
+
+	result := runSetup(t, client, createCUR2ExistingBucketSelectionOptions("default", "us-west-2", candidates[0].BucketRef))
+
+	if result.Code != "aws_cur2_create_export_reused" {
+		t.Fatalf("Code = %q, want aws_cur2_create_export_reused", result.Code)
+	}
+	if result.Mutated {
+		t.Fatal("Mutated = true, want false when reusing existing managed export")
+	}
+	if got := checkEvidenceValue(result, "selected_s3_bucket_ref"); got != candidates[0].BucketRef {
+		t.Fatalf("selected_s3_bucket_ref = %q, want selected existing bucket ref", got)
+	}
+	if client.createBucketCalls() != 0 || client.putBucketPolicyCalls() != 0 || client.createExportCalls() != 0 {
+		t.Fatalf("mutation calls = bucket %d policy %d export %d, want none", client.createBucketCalls(), client.putBucketPolicyCalls(), client.createExportCalls())
+	}
+	if len(client.headBucketRequests) != 1 || len(client.getPolicyRequests) != 1 {
+		t.Fatalf("reuse validation calls = head %d policy %d, want one each", len(client.headBucketRequests), len(client.getPolicyRequests))
+	}
+	if client.headBucketRequests[0].Bucket != "matilda-existing-cur2" ||
+		client.headBucketRequests[0].ExpectedOwner != client.identity.AccountID {
+		t.Fatalf("HeadBucket request = %#v, want selected bucket and caller owner", client.headBucketRequests[0])
+	}
+	assertResultDoesNotLeakAWSSecrets(t, result)
+}
+
+func TestSelectedCUR2S3BucketRefHandlesMissingSelectorsAndTrimsValue(t *testing.T) {
+	if got := selectedCUR2S3BucketRef(workflow.ExecutionOptions{Selectors: &workflow.ExecutionSelectors{}}); got != "" {
+		t.Fatalf("selectedCUR2S3BucketRef without AWS selectors = %q, want empty", got)
+	}
+
+	options := workflow.ExecutionOptions{
+		Selectors: &workflow.ExecutionSelectors{
+			AWS: &workflow.AWSExecutionSelectors{CUR2S3BucketRef: " s3b-abcdefghijklmnop "},
+		},
+	}
+	if got := selectedCUR2S3BucketRef(options); got != "s3b-abcdefghijklmnop" {
+		t.Fatalf("selectedCUR2S3BucketRef = %q, want trimmed ref", got)
+	}
+}
+
 func TestRunnerRequiresCreateOperationBeforeResolvingClient(t *testing.T) {
 	client := baselineSetupClient()
 	preview := runSetup(t, client, createCUR2Options("default", "us-west-2"))
@@ -393,6 +695,81 @@ func TestLetterEncodeHashHonorsOddSafeLength(t *testing.T) {
 
 	if encoded != "b" {
 		t.Fatalf("letterEncodeHash odd length = %q, want first high-nibble letter", encoded)
+	}
+}
+
+func TestExistingBucketCandidatesFiltersSortsAndBindsSafeRefs(t *testing.T) {
+	identity := identityContext{AccountID: "123456789012", Partition: "aws"}
+
+	candidates := existingBucketCandidates(identity, "us-west-2", []BucketSummary{
+		{Name: " zeta-cur2 ", Region: "us-west-2 "},
+		{Name: "east-only", Region: "us-east-1"},
+		{Name: " ", Region: "us-west-2"},
+		{Name: "alpha-cur2", Region: "us-west-2"},
+	})
+
+	if len(candidates) != 2 {
+		t.Fatalf("candidates = %#v, want two matching-region buckets", candidates)
+	}
+	if candidates[0].BucketName != "alpha-cur2" || candidates[1].BucketName != "zeta-cur2" {
+		t.Fatalf("candidate order = %#v, want trimmed bucket names sorted by name", []string{candidates[0].BucketName, candidates[1].BucketName})
+	}
+	for index, candidate := range candidates {
+		if candidate.BucketOwner != identity.AccountID {
+			t.Fatalf("candidate %d bucket owner = %q, want caller account", index, candidate.BucketOwner)
+		}
+		if candidate.DestinationMode != workflow.AWSCUR2DestinationExistingSameAccount {
+			t.Fatalf("candidate %d destination mode = %q, want existing_same_account", index, candidate.DestinationMode)
+		}
+		if !strings.HasPrefix(candidate.BucketRef, "s3b-") || strings.Contains(candidate.BucketRef, candidate.BucketName) || strings.Contains(candidate.BucketRef, identity.AccountID) {
+			t.Fatalf("candidate %d bucket ref = %q, want opaque safe ref", index, candidate.BucketRef)
+		}
+		if !strings.HasPrefix(candidate.ExportName, "matilda-cur2-ra-billing-") ||
+			strings.Contains(candidate.ExportName, candidate.BucketName) ||
+			strings.Contains(candidate.ExportName, identity.AccountID) {
+			t.Fatalf("candidate %d export name = %q, want generated safe export name", index, candidate.ExportName)
+		}
+		if candidate.Prefix != matildaBillingPrefix {
+			t.Fatalf("candidate %d prefix = %q, want Matilda billing prefix", index, candidate.Prefix)
+		}
+	}
+	if candidates[0].CandidateIndex != "existing_00" || candidates[1].CandidateIndex != "existing_01" {
+		t.Fatalf("candidate indexes = %#v, want stable existing indexes", []string{candidates[0].CandidateIndex, candidates[1].CandidateIndex})
+	}
+}
+
+func TestExistingBucketCandidatesReturnsNilWhenSafeRefsCannotBeUnique(t *testing.T) {
+	identity := identityContext{AccountID: "123456789012", Partition: "aws"}
+
+	candidates := existingBucketCandidates(identity, "us-west-2", []BucketSummary{
+		{Name: "duplicate-cur2", Region: "us-west-2"},
+		{Name: "duplicate-cur2", Region: "us-west-2"},
+	})
+
+	if candidates != nil {
+		t.Fatalf("candidates = %#v, want nil when safe refs cannot distinguish duplicate buckets", candidates)
+	}
+}
+
+func TestSafeBucketDisplayLabelMasksUnsafeValues(t *testing.T) {
+	bucketRef := "s3b-abcdefghijklmnop"
+	tests := []struct {
+		name       string
+		bucketName string
+		want       string
+	}{
+		{name: "empty", bucketName: " ", want: "bucket-" + bucketRef},
+		{name: "too long", bucketName: strings.Repeat("a", 64), want: "bucket-" + bucketRef},
+		{name: "forbidden token", bucketName: "customer-plain-token", want: "bucket-" + bucketRef},
+		{name: "safe", bucketName: "matilda-existing-cur2", want: "matilda-existing-cur2"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := safeBucketDisplayLabel(tt.bucketName, bucketRef); got != tt.want {
+				t.Fatalf("safeBucketDisplayLabel(%q) = %q, want %q", tt.bucketName, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -2344,6 +2721,17 @@ func createCUR2Options(profile string, region string) workflow.ExecutionOptions 
 	return options
 }
 
+func createCUR2ExistingBucketSelectionOptions(profile string, region string, bucketRef string) workflow.ExecutionOptions {
+	options := createCUR2Options(profile, region)
+	options.Selectors.AWS.CUR2DestinationMode = workflow.AWSCUR2DestinationExistingSameAccount
+	options.Selectors.AWS.CUR2S3BucketRef = bucketRef
+	normalized, err := workflow.NormalizeExecutionOptionsForRequest(awsBillingApplyPrereqsRequest(), options)
+	if err != nil {
+		panic(err)
+	}
+	return normalized
+}
+
 func approvedCreateCUR2Options(profile string, region string, plan *workflow.ExecutionPlan) workflow.ExecutionOptions {
 	options := createCUR2Options(profile, region)
 	for _, step := range plan.Steps {
@@ -2356,6 +2744,17 @@ func approvedCreateCUR2Options(profile string, region string, plan *workflow.Exe
 			Confirmed:   true,
 		})
 	}
+	normalized, err := workflow.NormalizeExecutionOptionsForRequest(awsBillingApplyPrereqsRequest(), options)
+	if err != nil {
+		panic(err)
+	}
+	return normalized
+}
+
+func approvedExistingBucketCUR2Options(profile string, region string, bucketRef string, plan *workflow.ExecutionPlan) workflow.ExecutionOptions {
+	options := approvedCreateCUR2Options(profile, region, plan)
+	options.Selectors.AWS.CUR2DestinationMode = workflow.AWSCUR2DestinationExistingSameAccount
+	options.Selectors.AWS.CUR2S3BucketRef = bucketRef
 	normalized, err := workflow.NormalizeExecutionOptionsForRequest(awsBillingApplyPrereqsRequest(), options)
 	if err != nil {
 		panic(err)
@@ -2542,16 +2941,20 @@ type fakeSetupClient struct {
 	identityErr  error
 	organization Organization
 	exports      []cur2preflight.Export
+	buckets      []BucketSummary
 
-	bucketExists         bool
-	bucketPolicy         string
-	headBucketAccess     cur2preflight.BucketAccess
-	headBucketAccesses   []cur2preflight.BucketAccess
-	listExportsNextToken string
-	headBucketErrs       []error
+	bucketExists               bool
+	bucketPolicy               string
+	headBucketAccess           cur2preflight.BucketAccess
+	headBucketAccesses         []cur2preflight.BucketAccess
+	listExportsNextToken       string
+	listBucketsNextToken       string
+	listBucketsAlwaysNextToken bool
+	headBucketErrs             []error
 
 	describeOrganizationErr error
 	listExportsErr          error
+	listBucketsErr          error
 	getExportErr            error
 	headBucketErr           error
 	getBucketPolicyErr      error
@@ -2560,6 +2963,7 @@ type fakeSetupClient struct {
 	createExportErr         error
 
 	headBucketRequests   []HeadBucketRequest
+	listBucketsRequests  []ListBucketsRequest
 	createBucketRequests []CreateBucketRequest
 	getPolicyRequests    []BucketPolicyRequest
 	putPolicyRequests    []PutBucketPolicyRequest
@@ -2618,6 +3022,30 @@ func (client *fakeSetupClient) ListExports(context.Context, string) (cur2preflig
 		})
 	}
 	return cur2preflight.ExportPage{Exports: summaries, NextToken: client.listExportsNextToken}, nil
+}
+
+func (client *fakeSetupClient) ListBuckets(_ context.Context, request ListBucketsRequest) (BucketPage, error) {
+	client.listBucketsRequests = append(client.listBucketsRequests, request)
+	if client.listBucketsErr != nil {
+		return BucketPage{}, client.listBucketsErr
+	}
+	buckets := []BucketSummary{}
+	if request.Token == "" {
+		for _, bucket := range client.buckets {
+			if request.Region != "" && bucket.Region != request.Region {
+				continue
+			}
+			buckets = append(buckets, bucket)
+		}
+	}
+	nextToken := ""
+	if request.Token == "" {
+		nextToken = client.listBucketsNextToken
+	}
+	if client.listBucketsAlwaysNextToken {
+		nextToken = client.listBucketsNextToken
+	}
+	return BucketPage{Buckets: buckets, NextToken: nextToken}, nil
 }
 
 func (client *fakeSetupClient) GetExport(_ context.Context, exportARN string) (cur2preflight.Export, error) {

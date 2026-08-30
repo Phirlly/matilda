@@ -42,6 +42,7 @@ type dataExportsAPI interface {
 }
 
 type s3API interface {
+	ListBuckets(context.Context, *awss3.ListBucketsInput, ...func(*awss3.Options)) (*awss3.ListBucketsOutput, error)
 	HeadBucket(context.Context, *awss3.HeadBucketInput, ...func(*awss3.Options)) (*awss3.HeadBucketOutput, error)
 	CreateBucket(context.Context, *awss3.CreateBucketInput, ...func(*awss3.Options)) (*awss3.CreateBucketOutput, error)
 	GetBucketPolicy(context.Context, *awss3.GetBucketPolicyInput, ...func(*awss3.Options)) (*awss3.GetBucketPolicyOutput, error)
@@ -128,6 +129,44 @@ func (client *Client) DescribeOrganization(ctx context.Context) (billingcur2setu
 		Available:           true,
 		ManagementAccountID: aws.ToString(output.Organization.MasterAccountId),
 	}, nil
+}
+
+func (client *Client) ListBuckets(ctx context.Context, request billingcur2setup.ListBucketsRequest) (billingcur2setup.BucketPage, error) {
+	if err := client.ensureS3(ctx, request.Region); err != nil {
+		return billingcur2setup.BucketPage{}, err
+	}
+	input := &awss3.ListBucketsInput{}
+	if request.Region != "" {
+		input.BucketRegion = aws.String(request.Region)
+	}
+	if request.Prefix != "" {
+		input.Prefix = aws.String(request.Prefix)
+	}
+	if request.Token != "" {
+		input.ContinuationToken = aws.String(request.Token)
+	}
+	if request.Limit > 0 {
+		input.MaxBuckets = aws.Int32(request.Limit)
+	}
+	output, err := client.s3.ListBuckets(ctx, input)
+	if err != nil {
+		return billingcur2setup.BucketPage{}, classifyS3Error(err, "aws_s3_list_buckets_failed")
+	}
+	if output == nil {
+		return billingcur2setup.BucketPage{}, billingcur2setup.NewProviderError("aws_s3_list_buckets_failed", "AWS S3 ListBuckets response was empty.")
+	}
+	page := billingcur2setup.BucketPage{NextToken: aws.ToString(output.ContinuationToken)}
+	for _, bucket := range output.Buckets {
+		name := aws.ToString(bucket.Name)
+		if name == "" {
+			continue
+		}
+		page.Buckets = append(page.Buckets, billingcur2setup.BucketSummary{
+			Name:   name,
+			Region: aws.ToString(bucket.BucketRegion),
+		})
+	}
+	return page, nil
 }
 
 func (client *Client) HeadBucket(ctx context.Context, request billingcur2setup.HeadBucketRequest) (cur2preflight.BucketAccess, error) {
@@ -238,9 +277,10 @@ func (client *Client) CreateExport(ctx context.Context, request billingcur2setup
 			},
 			DestinationConfigurations: &bcmtypes.DestinationConfigurations{
 				S3Destination: &bcmtypes.S3Destination{
-					S3Bucket: aws.String(request.Destination.Bucket),
-					S3Prefix: aws.String(request.Destination.Prefix),
-					S3Region: aws.String(request.Destination.Region),
+					S3Bucket:      aws.String(request.Destination.Bucket),
+					S3BucketOwner: aws.String(request.Destination.BucketOwner),
+					S3Prefix:      aws.String(request.Destination.Prefix),
+					S3Region:      aws.String(request.Destination.Region),
 					S3OutputConfigurations: &bcmtypes.S3OutputConfigurations{
 						Format:      bcmtypes.FormatOption(request.Destination.Output.Format),
 						Compression: bcmtypes.CompressionOption(request.Destination.Output.Compression),

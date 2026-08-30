@@ -633,15 +633,20 @@ func directAWSBillingBackfillCommand(source billingguide.CredentialSource, expor
 }
 
 func directAWSBillingCreateCUR2Command(source billingguide.CredentialSource) string {
+	return directAWSBillingCreateCUR2CommandForResult(source, workflow.Result{})
+}
+
+func directAWSBillingCreateCUR2CommandForResult(source billingguide.CredentialSource, result workflow.Result) string {
 	parts := []string{"matilda-prep", "rapid-assessment", "billing", "aws", "apply-prereqs"}
 	parts = directAWSBillingSelectorParts(parts, source, "")
+	parts = directAWSBillingCUR2DestinationParts(parts, result)
 	parts = append(parts, "--create-cur2-export")
 	return strings.Join(parts, " ")
 }
 
 func awsBillingFollowupCommand(source billingguide.CredentialSource, result workflow.Result) (string, string) {
 	if isCreateCUR2SetupResult(result) {
-		return "Next command:", directAWSBillingCreateCUR2Command(source)
+		return "Next command:", directAWSBillingCreateCUR2CommandForResult(source, result)
 	}
 	switch result.Code {
 	case "aws_backfill_manual_step_required":
@@ -655,6 +660,9 @@ func awsBillingFollowupCommand(source billingguide.CredentialSource, result work
 
 func isCreateCUR2SetupResult(result workflow.Result) bool {
 	if result.ExecutionOptions.AWSBillingOperation == workflow.AWSBillingOperationCreateCUR2Export {
+		return true
+	}
+	if result.Code == "aws_cur2_existing_bucket_selection_required" {
 		return true
 	}
 	return result.Request.Action == assessment.ActionApplyPrereqs &&
@@ -716,6 +724,7 @@ func directAWSBillingCreateCUR2ApprovalCommand(source billingguide.CredentialSou
 	}
 	parts := []string{"matilda-prep", "rapid-assessment", "billing", "aws", "apply-prereqs"}
 	parts = directAWSBillingSelectorParts(parts, source, "")
+	parts = directAWSBillingCUR2DestinationParts(parts, result)
 	parts = append(parts, "--create-cur2-export", "--approve-plan", shellArg(result.Plan.Approval.ApprovalPlanID))
 	for _, step := range result.Plan.Steps {
 		if step.RequiresApproval {
@@ -723,6 +732,27 @@ func directAWSBillingCreateCUR2ApprovalCommand(source billingguide.CredentialSou
 		}
 	}
 	return strings.Join(parts, " ")
+}
+
+func directAWSBillingCUR2DestinationParts(parts []string, result workflow.Result) []string {
+	if result.ExecutionOptions.Selectors == nil || result.ExecutionOptions.Selectors.AWS == nil {
+		return parts
+	}
+	aws := result.ExecutionOptions.Selectors.AWS
+	switch aws.CUR2DestinationMode {
+	case workflow.AWSCUR2DestinationExistingSameAccount:
+		parts = append(parts, "--cur2-destination", "existing-same-account")
+	case workflow.AWSCUR2DestinationGenerated:
+		if aws.CUR2S3BucketRef == "" {
+			return parts
+		}
+	default:
+		return parts
+	}
+	if aws.CUR2S3BucketRef != "" {
+		parts = append(parts, "--cur2-s3-bucket-ref", shellArg(aws.CUR2S3BucketRef))
+	}
+	return parts
 }
 
 func directAWSBillingCommandWithParts(parts []string, source billingguide.CredentialSource, exportRef string) string {

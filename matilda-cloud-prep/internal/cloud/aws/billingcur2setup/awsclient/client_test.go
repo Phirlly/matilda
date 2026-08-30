@@ -51,6 +51,9 @@ func TestCreateExportMapsSetupRequestToSDK(t *testing.T) {
 		aws.ToString(destination.S3Region) != "us-west-2" {
 		t.Fatalf("S3Destination = %#v, want mapped bucket, prefix, region", destination)
 	}
+	if aws.ToString(destination.S3BucketOwner) != "123456789012" {
+		t.Fatalf("S3BucketOwner = %q, want caller account", aws.ToString(destination.S3BucketOwner))
+	}
 	output := destination.S3OutputConfigurations
 	if output.Format != bcmtypes.FormatOptionTextOrCsv ||
 		output.Compression != bcmtypes.CompressionOptionGzip ||
@@ -117,6 +120,57 @@ func TestS3MethodsUseExpectedBucketOwnerAndRegion(t *testing.T) {
 	if s3.createBucketInput.CreateBucketConfiguration == nil ||
 		s3.createBucketInput.CreateBucketConfiguration.LocationConstraint != s3types.BucketLocationConstraintUsWest2 {
 		t.Fatalf("CreateBucketConfiguration = %#v, want us-west-2 location constraint", s3.createBucketInput.CreateBucketConfiguration)
+	}
+}
+
+func TestListBucketsMapsOwnedBucketPage(t *testing.T) {
+	s3 := &fakeS3{
+		listBucketsOutput: &awss3.ListBucketsOutput{
+			Buckets: []s3types.Bucket{
+				{Name: aws.String("matilda-existing-cur2"), BucketRegion: aws.String("us-west-2")},
+				{BucketRegion: aws.String("us-west-2")},
+				{Name: aws.String("matilda-existing-cur2-logs"), BucketRegion: aws.String("us-west-2")},
+			},
+			ContinuationToken: aws.String("next-token"),
+		},
+	}
+	client := New(Config{S3Client: s3})
+
+	page, err := client.ListBuckets(context.Background(), billingcur2setup.ListBucketsRequest{
+		Region: "us-west-2",
+		Prefix: "matilda",
+		Token:  "input-token",
+		Limit:  1000,
+	})
+	if err != nil {
+		t.Fatalf("ListBuckets returned error: %v", err)
+	}
+	if s3.listBucketsInput == nil {
+		t.Fatal("ListBuckets input was not captured")
+	}
+	if aws.ToString(s3.listBucketsInput.BucketRegion) != "us-west-2" ||
+		aws.ToString(s3.listBucketsInput.Prefix) != "matilda" ||
+		aws.ToString(s3.listBucketsInput.ContinuationToken) != "input-token" ||
+		aws.ToInt32(s3.listBucketsInput.MaxBuckets) != 1000 {
+		t.Fatalf("ListBuckets input = %#v, want region, prefix, token, limit", s3.listBucketsInput)
+	}
+	if page.NextToken != "next-token" || len(page.Buckets) != 2 {
+		t.Fatalf("Bucket page = %#v, want two buckets and next token", page)
+	}
+	if page.Buckets[0] != (billingcur2setup.BucketSummary{Name: "matilda-existing-cur2", Region: "us-west-2"}) {
+		t.Fatalf("first bucket = %#v, want mapped bucket", page.Buckets[0])
+	}
+}
+
+func TestListBucketsRejectsEmptyAWSResponse(t *testing.T) {
+	s3 := &fakeS3{listBucketsNilOutput: true}
+	client := New(Config{S3Client: s3})
+
+	_, err := client.ListBuckets(context.Background(), billingcur2setup.ListBucketsRequest{Region: "us-west-2"})
+
+	var providerErr billingcur2setup.ProviderError
+	if !errors.As(err, &providerErr) || providerErr.Code != "aws_s3_list_buckets_failed" {
+		t.Fatalf("ListBuckets error = %#v, want aws_s3_list_buckets_failed provider error", err)
 	}
 }
 
@@ -776,9 +830,10 @@ func sampleCreateExportRequest() billingcur2setup.CreateExportRequest {
 			},
 		},
 		Destination: cur2preflight.S3Destination{
-			Bucket: "matilda-ra-billing-aws-us-west-2-abcdefghijkl-00",
-			Prefix: "matilda/rapid-assessment/billing",
-			Region: "us-west-2",
+			Bucket:      "matilda-ra-billing-aws-us-west-2-abcdefghijkl-00",
+			BucketOwner: "123456789012",
+			Prefix:      "matilda/rapid-assessment/billing",
+			Region:      "us-west-2",
 			Output: cur2preflight.S3Output{
 				Format:      "TEXT_OR_CSV",
 				Compression: "GZIP",
@@ -888,6 +943,11 @@ func (fake *fakeDataExports) CreateExport(ctx context.Context, input *awsbcm.Cre
 }
 
 type fakeS3 struct {
+	listBucketsInput     *awss3.ListBucketsInput
+	listBucketsOutput    *awss3.ListBucketsOutput
+	listBucketsNilOutput bool
+	listBucketsErr       error
+
 	headBucketInput          *awss3.HeadBucketInput
 	headBucketOutput         *awss3.HeadBucketOutput
 	headBucketNilOutput      bool
@@ -902,6 +962,20 @@ type fakeS3 struct {
 	putBucketPolicyInput     *awss3.PutBucketPolicyInput
 	putBucketPolicyNilOutput bool
 	putBucketPolicyErr       error
+}
+
+func (fake *fakeS3) ListBuckets(ctx context.Context, input *awss3.ListBucketsInput, optFns ...func(*awss3.Options)) (*awss3.ListBucketsOutput, error) {
+	fake.listBucketsInput = input
+	if fake.listBucketsErr != nil {
+		return nil, fake.listBucketsErr
+	}
+	if fake.listBucketsNilOutput {
+		return nil, nil
+	}
+	if fake.listBucketsOutput != nil {
+		return fake.listBucketsOutput, nil
+	}
+	return &awss3.ListBucketsOutput{}, nil
 }
 
 func (fake *fakeS3) HeadBucket(ctx context.Context, input *awss3.HeadBucketInput, optFns ...func(*awss3.Options)) (*awss3.HeadBucketOutput, error) {
