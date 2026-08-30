@@ -225,6 +225,179 @@ func TestWriteAWSBillingSummaryShowsBackfillApplyPrereqsCommand(t *testing.T) {
 	assertGuidedOutputSafe(t, got)
 }
 
+func TestWriteAWSBillingSummaryBackfillWithoutSafeRefShowsPreflight(t *testing.T) {
+	tests := []struct {
+		name   string
+		result workflow.Result
+	}{
+		{
+			name: "missing ref",
+			result: workflow.Result{
+				Status:  workflow.RunStatusManualSteps,
+				Code:    "aws_backfill_manual_step_required",
+				Message: "AWS CUR 2.0 billing preflight requires previous-month billing backfill or manual remediation.",
+			},
+		},
+		{
+			name: "unsafe ref",
+			result: workflow.Result{
+				Status: workflow.RunStatusManualSteps,
+				Code:   "aws_backfill_manual_step_required",
+				ExecutionOptions: workflow.ExecutionOptions{
+					Selectors: &workflow.ExecutionSelectors{
+						AWS: &workflow.AWSExecutionSelectors{
+							CUR2ExportRef: "arn:aws:bcm-data-exports:us-east-1:123456789012:export/live",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var output bytes.Buffer
+			writeAWSBillingSummary(&output, billingguide.CredentialSource{
+				Kind:    billingguide.CredentialSourceProfile,
+				Profile: "default",
+				Region:  "us-east-1",
+			}, tt.result)
+
+			got := output.String()
+			for _, want := range []string{
+				"Next command:",
+				"matilda-prep rapid-assessment billing aws preflight --profile default --region us-east-1",
+			} {
+				if !strings.Contains(got, want) {
+					t.Fatalf("output = %q, want to contain %q", got, want)
+				}
+			}
+			for _, forbidden := range []string{
+				"--request-backfill",
+				"--confirm-create-support-case",
+				"--approve-plan",
+				"arn:aws",
+			} {
+				if strings.Contains(got, forbidden) {
+					t.Fatalf("output printed unsafe or ambiguous backfill guidance %q in %s", forbidden, got)
+				}
+			}
+			assertGuidedOutputSafe(t, got)
+		})
+	}
+}
+
+func TestWriteAWSBillingSummaryShowsBackfillApprovalCommand(t *testing.T) {
+	var output bytes.Buffer
+	result := workflow.Result{
+		Status:  workflow.RunStatusManualSteps,
+		Code:    "aws_backfill_support_case_approval_required",
+		Message: "AWS Support case creation requires explicit plan-bound backfill approval.",
+		ExecutionOptions: workflow.ExecutionOptions{
+			Selectors: &workflow.ExecutionSelectors{
+				AWS: &workflow.AWSExecutionSelectors{
+					CUR2ExportRef: "cur2-abcdefghijklmnop",
+				},
+			},
+		},
+		Plan: &workflow.ExecutionPlan{
+			Approval: workflow.ApprovalSummary{
+				Required:       true,
+				ApprovalPlanID: "plan_abcdefghijklmnop",
+			},
+			Steps: []workflow.PlanStep{{
+				ID:               workflow.AWSBackfillSupportCaseOperationID,
+				RequiresApproval: true,
+			}},
+		},
+	}
+
+	writeAWSBillingSummary(&output, billingguide.CredentialSource{
+		Kind:    billingguide.CredentialSourceProfile,
+		Profile: "default",
+		Region:  "us-east-1",
+	}, result)
+
+	got := output.String()
+	for _, want := range []string{
+		"Approve with:",
+		"matilda-prep rapid-assessment billing aws apply-prereqs --profile default --region us-east-1 --export-ref cur2-abcdefghijklmnop --request-backfill --confirm-create-support-case --approve-plan plan_abcdefghijklmnop --approve-step aws.billing.cur2.previous_month_backfill_support_case",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("output = %q, want to contain %q", got, want)
+		}
+	}
+	for _, forbidden := range []string{
+		"Reproduce with:",
+		"rapid-assessment billing aws preflight",
+		"Report name:",
+		"S3 bucket:",
+		"Please backfill AWS CUR 2.0 cost data",
+	} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("backfill approval summary leaked or printed wrong follow-up %q in %s", forbidden, got)
+		}
+	}
+	assertGuidedOutputSafe(t, got)
+}
+
+func TestWriteAWSBillingSummaryShowsManualSupportFallbackWithoutApprovalFlags(t *testing.T) {
+	var output bytes.Buffer
+	result := workflow.Result{
+		Status:  workflow.RunStatusManualSteps,
+		Code:    "aws_support_case_manual_fallback_required",
+		Message: "AWS Support API case creation is unavailable; use the manual AWS Support request path.",
+		ExecutionOptions: workflow.ExecutionOptions{
+			Selectors: &workflow.ExecutionSelectors{
+				AWS: &workflow.AWSExecutionSelectors{
+					CUR2ExportRef: "cur2-abcdefghijklmnop",
+				},
+			},
+		},
+		Plan: &workflow.ExecutionPlan{Checks: []workflow.PlanCheck{{
+			ID:     "aws_support_case_manual_fallback_required",
+			Status: workflow.CheckWarn,
+			Evidence: []workflow.PlanEvidence{
+				{Key: "selected_export_ref", Value: "cur2-abcdefghijklmnop"},
+				{Key: "previous_billing_period", Value: "2026-06"},
+				{Key: "missing_previous_month_component", Value: "manifest"},
+				{Key: "manual_support_request_needs", Value: "report name, billing period, S3 bucket details"},
+			},
+		}}},
+	}
+
+	writeAWSBillingSummary(&output, billingguide.CredentialSource{
+		Kind:    billingguide.CredentialSourceProfile,
+		Profile: "default",
+		Region:  "us-east-1",
+	}, result)
+
+	got := output.String()
+	for _, want := range []string{
+		"Support code: aws_support_case_manual_fallback_required",
+		"matilda-prep rapid-assessment billing aws apply-prereqs --profile default --region us-east-1 --export-ref cur2-abcdefghijklmnop --request-backfill",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("output = %q, want to contain %q", got, want)
+		}
+	}
+	for _, forbidden := range []string{
+		"--confirm-create-support-case",
+		"--approve-plan",
+		"--approve-step",
+		"Report name:",
+		"S3 bucket:",
+		"Please backfill AWS CUR 2.0 cost data",
+		"arn:aws",
+		"/Users/",
+	} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("manual fallback output leaked or printed approval flag %q in %s", forbidden, got)
+		}
+	}
+	assertGuidedOutputSafe(t, got)
+}
+
 func TestWriteAWSBillingSummaryShowsCreateCUR2ExportCommandWhenNoCURExists(t *testing.T) {
 	var output bytes.Buffer
 	result := workflow.Result{
@@ -1858,6 +2031,120 @@ func TestDirectAWSBillingCommandShellQuotesUnsafeSelectorCharacters(t *testing.T
 	}
 	if strings.Contains(command, "--profile prod;date") {
 		t.Fatalf("command left shell metacharacter unquoted: %q", command)
+	}
+}
+
+func TestSelectedExportRefUsesOnlyUniqueSafeEvidenceRef(t *testing.T) {
+	tests := []struct {
+		name     string
+		result   workflow.Result
+		wantRef  string
+		wantSafe bool
+	}{
+		{
+			name: "selector wins",
+			result: workflow.Result{
+				ExecutionOptions: workflow.ExecutionOptions{
+					Selectors: &workflow.ExecutionSelectors{AWS: &workflow.AWSExecutionSelectors{CUR2ExportRef: "cur2-abcdefghijklmnop"}},
+				},
+				Plan: &workflow.ExecutionPlan{Checks: []workflow.PlanCheck{{Evidence: []workflow.PlanEvidence{
+					{Key: "selected_export_ref", Value: "cur2-bbbbbbbbbbbbbbbb"},
+				}}}},
+			},
+			wantRef:  "cur2-abcdefghijklmnop",
+			wantSafe: true,
+		},
+		{
+			name: "single evidence ref",
+			result: workflow.Result{Plan: &workflow.ExecutionPlan{Checks: []workflow.PlanCheck{{Evidence: []workflow.PlanEvidence{
+				{Key: "selected_export_ref", Value: "cur2-bbbbbbbbbbbbbbbb"},
+			}}}}},
+			wantRef:  "cur2-bbbbbbbbbbbbbbbb",
+			wantSafe: true,
+		},
+		{
+			name: "conflicting evidence refs",
+			result: workflow.Result{Plan: &workflow.ExecutionPlan{Checks: []workflow.PlanCheck{
+				{Evidence: []workflow.PlanEvidence{{Key: "selected_export_ref", Value: "cur2-bbbbbbbbbbbbbbbb"}}},
+				{Evidence: []workflow.PlanEvidence{{Key: "selected_export_ref", Value: "cur2-cccccccccccccccc"}}},
+			}}},
+		},
+		{
+			name: "unsafe evidence ref",
+			result: workflow.Result{Plan: &workflow.ExecutionPlan{Checks: []workflow.PlanCheck{{Evidence: []workflow.PlanEvidence{
+				{Key: "selected_export_ref", Value: "arn:aws:bcm-data-exports:us-east-1:123456789012:export/live"},
+			}}}}},
+		},
+		{
+			name:   "no plan",
+			result: workflow.Result{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := selectedExportRef(tt.result)
+			if got != tt.wantRef {
+				t.Fatalf("selectedExportRef = %q, want %q", got, tt.wantRef)
+			}
+			if tt.wantSafe && !safeCUR2ExportRef(got) {
+				t.Fatalf("selectedExportRef returned unsafe ref %q", got)
+			}
+		})
+	}
+}
+
+func TestDirectAWSBillingBackfillApprovalCommandRequiresCurrentSafePlan(t *testing.T) {
+	source := billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}
+	base := workflow.Result{
+		ExecutionOptions: workflow.ExecutionOptions{
+			Selectors: &workflow.ExecutionSelectors{AWS: &workflow.AWSExecutionSelectors{CUR2ExportRef: "cur2-abcdefghijklmnop"}},
+		},
+		Plan: &workflow.ExecutionPlan{
+			Approval: workflow.ApprovalSummary{Required: true, ApprovalPlanID: "plan_abcdefghijklmnop"},
+			Steps:    []workflow.PlanStep{{ID: workflow.AWSBackfillSupportCaseOperationID, RequiresApproval: true}},
+		},
+	}
+
+	if got := directAWSBillingBackfillApprovalCommand(source, base); !strings.Contains(got, "--confirm-create-support-case") {
+		t.Fatalf("approval command = %q, want support case confirmation", got)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(workflow.Result) workflow.Result
+	}{
+		{
+			name: "missing plan",
+			mutate: func(result workflow.Result) workflow.Result {
+				result.Plan = nil
+				return result
+			},
+		},
+		{
+			name: "blocked plan",
+			mutate: func(result workflow.Result) workflow.Result {
+				plan := *result.Plan
+				plan.Approval.Blocked = true
+				result.Plan = &plan
+				return result
+			},
+		},
+		{
+			name: "missing export ref",
+			mutate: func(result workflow.Result) workflow.Result {
+				result.ExecutionOptions.Selectors.AWS.CUR2ExportRef = ""
+				return result
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := directAWSBillingBackfillApprovalCommand(source, tt.mutate(base)); got != "" {
+				t.Fatalf("approval command = %q, want empty", got)
+			}
+		})
 	}
 }
 

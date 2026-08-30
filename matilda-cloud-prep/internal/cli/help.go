@@ -76,7 +76,8 @@ AWS Rapid Assessment - Billing Based apply-prereqs approval options:
   --approve-step <plan-step-id>
 
 Backfill support case creation requires:
-  --request-backfill --confirm-create-support-case --approve-plan <plan-id> --approve-step aws.billing.cur2.previous_month_backfill_support_case
+  --export-ref <cur2-ref> --request-backfill
+  --export-ref <cur2-ref> --request-backfill --confirm-create-support-case --approve-plan <plan-id> --approve-step aws.billing.cur2.previous_month_backfill_support_case
 
 CUR 2.0 export creation requires:
   --create-cur2-export --approve-plan <plan-id> --approve-step <plan-step-id>

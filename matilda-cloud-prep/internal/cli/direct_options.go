@@ -100,6 +100,9 @@ func parseExecutionOptions(request workflow.Request, args []string) (workflow.Ex
 	if createCUR2Export && provided["export-ref"] {
 		return workflow.ExecutionOptions{}, fmt.Errorf("export-ref selects an existing AWS CUR 2.0 export for preflight, package handoff, or apply-prereqs --request-backfill; it cannot be used with --create-cur2-export")
 	}
+	if requestBackfill && !provided["export-ref"] {
+		return workflow.ExecutionOptions{}, fmt.Errorf("AWS backfill request requires --export-ref from AWS billing preflight output")
+	}
 	if confirmCreateSupportCase && !requestBackfill {
 		return workflow.ExecutionOptions{}, fmt.Errorf("AWS backfill support case confirmation requires --request-backfill")
 	}

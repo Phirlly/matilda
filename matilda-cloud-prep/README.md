@@ -197,7 +197,9 @@ AWS Rapid Assessment - Billing Based `apply-prereqs` uses explicit operations.
 Without an operation flag, it returns guidance only.
 
 ```bash
-matilda-prep rapid-assessment billing aws apply-prereqs --request-backfill
+matilda-prep rapid-assessment billing aws apply-prereqs \
+  --export-ref cur2-abcdefghijklmnop \
+  --request-backfill
 matilda-prep rapid-assessment billing aws apply-prereqs --create-cur2-export
 ```
 
@@ -207,6 +209,7 @@ current plan that you approve.
 
 ```bash
 matilda-prep rapid-assessment billing aws apply-prereqs \
+  --export-ref cur2-abcdefghijklmnop \
   --request-backfill \
   --confirm-create-support-case \
   --approve-plan plan_abcdefghijklmnop \

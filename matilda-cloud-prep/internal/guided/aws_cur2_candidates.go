@@ -20,7 +20,7 @@ func handleAWSBillingResult(ctx context.Context, reader *bufio.Scanner, stdout i
 		if shouldOfferCreateCUR2SetupFromBillingResult(result) {
 			return offerCreateCUR2SetupPlanAfterBillingResult(reader, stdout, config, selected.Identity.Source)
 		}
-		return nil
+		return maybeRunBackfillPreviewAfterPreflight(stdout, config, selected.Identity.Source, result)
 	}
 
 	candidates := cur2Candidates(result)
@@ -48,7 +48,7 @@ func handleAWSBillingResult(ctx context.Context, reader *bufio.Scanner, stdout i
 		fmt.Fprintf(stdout, "Running readiness preflight for selected CUR 2.0 export %s\n", candidate.Ref)
 		selectedResult := runSelectedCUR2PreflightWithConfig(config, selected.Identity.Source, candidate.Ref)
 		writeAWSBillingSummary(stdout, selected.Identity.Source, selectedResult)
-		return nil
+		return maybeRunBackfillPreviewAfterPreflight(stdout, config, selected.Identity.Source, selectedResult)
 	default:
 		fmt.Fprintln(stdout, "Select AWS CUR 2.0 export")
 		for index, candidate := range ranked {
@@ -71,7 +71,7 @@ func handleAWSBillingResult(ctx context.Context, reader *bufio.Scanner, stdout i
 		fmt.Fprintf(stdout, "Running readiness preflight for selected CUR 2.0 export %s\n", selectedCandidate.Ref)
 		selectedResult := runSelectedCUR2PreflightWithConfig(config, selected.Identity.Source, selectedCandidate.Ref)
 		writeAWSBillingSummary(stdout, selected.Identity.Source, selectedResult)
-		return nil
+		return maybeRunBackfillPreviewAfterPreflight(stdout, config, selected.Identity.Source, selectedResult)
 	}
 }
 
@@ -93,7 +93,7 @@ func selectSingleCUR2CandidateAction(reader *bufio.Scanner, stdout io.Writer, co
 	fmt.Fprintf(stdout, "Running readiness preflight for selected CUR 2.0 export %s\n", candidate.Ref)
 	selectedResult := runSelectedCUR2PreflightWithConfig(config, source, candidate.Ref)
 	writeAWSBillingSummary(stdout, source, selectedResult)
-	return nil
+	return maybeRunBackfillPreviewAfterPreflight(stdout, config, source, selectedResult)
 }
 
 func isCUR2CandidateSelectionResult(result workflow.Result) bool {
@@ -379,6 +379,82 @@ func runSelectedCUR2PreflightWithConfig(config Config, source billingguide.Crede
 	return runSelectedCUR2Preflight(ctx, config.Registry, source, exportRef)
 }
 
+func maybeRunBackfillPreviewAfterPreflight(stdout io.Writer, config Config, source billingguide.CredentialSource, result workflow.Result) error {
+	if result.Code != "aws_backfill_manual_step_required" {
+		return nil
+	}
+	exportRef := selectedExportRef(result)
+	if exportRef == "" {
+		writeBackfillPreviewRefUnavailable(stdout, source)
+		return nil
+	}
+	return runBackfillPreview(stdout, config, source, exportRef)
+}
+
+func continueAfterCreateCUR2Setup(stdout io.Writer, config Config, source billingguide.CredentialSource, result workflow.Result) error {
+	exportRef := selectedExportRef(result)
+	if exportRef == "" {
+		writeCreateCUR2FollowupRefUnavailable(stdout, source)
+		return nil
+	}
+	fmt.Fprintf(stdout, "Validating selected Matilda AWS CUR 2.0 export %s.\n", exportRef)
+	selectedResult := runSelectedCUR2PreflightWithConfig(config, source, exportRef)
+	writeAWSBillingSummary(stdout, source, selectedResult)
+	return maybeRunBackfillPreviewAfterPreflight(stdout, config, source, selectedResult)
+}
+
+func runBackfillPreview(stdout io.Writer, config Config, source billingguide.CredentialSource, exportRef string) error {
+	fmt.Fprintln(stdout, "Preparing AWS Support backfill request plan.")
+	ctx, cancel := guidedContext(config)
+	defer cancel()
+	result := runBackfillPreviewWithConfig(ctx, config.Registry, source, exportRef)
+	writeAWSBillingSummary(stdout, source, result)
+	return nil
+}
+
+func runBackfillPreviewWithConfig(ctx context.Context, registry workflow.Registry, source billingguide.CredentialSource, exportRef string) workflow.Result {
+	request := awsBillingApplyPrereqsRequest()
+	options, err := awsBillingOptions(source)
+	if err != nil {
+		return workflow.Result{
+			Status:  workflow.RunStatusBlocked,
+			Code:    "aws_config_invalid_selector",
+			Message: "Selected AWS credential source contains unsafe selector metadata.",
+			Request: request,
+		}
+	}
+	if options.Selectors == nil {
+		options.Selectors = &workflow.ExecutionSelectors{}
+	}
+	if options.Selectors.AWS == nil {
+		options.Selectors.AWS = &workflow.AWSExecutionSelectors{}
+	}
+	options.Selectors.AWS.CUR2ExportRef = exportRef
+	options.AWSBillingOperation = workflow.AWSBillingOperationRequestBackfill
+	options, err = workflow.NormalizeExecutionOptionsForRequest(request, options)
+	if err != nil {
+		return workflow.Result{
+			Status:  workflow.RunStatusBlocked,
+			Code:    "aws_cur2_export_ref_invalid",
+			Message: "Selected AWS CUR 2.0 export reference is invalid.",
+			Request: request,
+		}
+	}
+	return registry.ExecuteContext(ctx, request, options)
+}
+
+func writeBackfillPreviewRefUnavailable(stdout io.Writer, source billingguide.CredentialSource) {
+	fmt.Fprintln(stdout, "Backfill request planning needs a safe CUR 2.0 export ref. Rerun AWS billing preflight to select the export explicitly.")
+	fmt.Fprintln(stdout, "Next command:")
+	fmt.Fprintf(stdout, "  %s\n", directAWSBillingCommand(source, ""))
+}
+
+func writeCreateCUR2FollowupRefUnavailable(stdout io.Writer, source billingguide.CredentialSource) {
+	fmt.Fprintln(stdout, "Follow-up validation needs a safe CUR 2.0 export ref. Rerun AWS billing preflight to rediscover the created export.")
+	fmt.Fprintln(stdout, "Next command:")
+	fmt.Fprintf(stdout, "  %s\n", directAWSBillingCommand(source, ""))
+}
+
 func runCreateCUR2SetupPlanWithConfig(reader *bufio.Scanner, stdout io.Writer, config Config, source billingguide.CredentialSource) error {
 	destinationMode, err := selectCreateCUR2Destination(reader, stdout)
 	if err != nil {
@@ -418,6 +494,9 @@ func runCreateCUR2SetupPlanForDestination(reader *bufio.Scanner, stdout io.Write
 	result := runCreateCUR2SetupPlanWithDestination(ctx, config.Registry, source, destinationMode, bucketRef)
 	cancel()
 	writeAWSBillingSummary(stdout, source, result)
+	if isCompletedCreateCUR2SetupResult(result) {
+		return continueAfterCreateCUR2Setup(stdout, config, source, result)
+	}
 	if !shouldOfferCreateCUR2GuidedApply(result) {
 		return nil
 	}
@@ -435,7 +514,7 @@ func runCreateCUR2SetupPlanForDestination(reader *bufio.Scanner, stdout io.Write
 	defer applyCancel()
 	applied := runApprovedCreateCUR2SetupPlan(applyCtx, config.Registry, source, result)
 	writeAWSBillingSummary(stdout, source, applied)
-	return nil
+	return continueAfterCreateCUR2Setup(stdout, config, source, applied)
 }
 
 func shouldOfferGeneratedBucketFallbackAfterExistingBucketSelection(result workflow.Result) bool {
@@ -697,6 +776,10 @@ func preserveCreateCUR2DestinationSelectors(options *workflow.ExecutionOptions, 
 }
 
 func safeCUR2ExportRef(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
 	options := workflow.ExecutionOptions{
 		Selectors: &workflow.ExecutionSelectors{
 			AWS: &workflow.AWSExecutionSelectors{

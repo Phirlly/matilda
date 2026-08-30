@@ -826,13 +826,18 @@ func TestAWSBackfillOperationFlagsAreScopedToAWSBillingApplyPrereqs(t *testing.T
 			want: "AWS backfill support case confirmation requires --request-backfill",
 		},
 		{
+			name: "request backfill without explicit export ref",
+			args: []string{"rapid-assessment", "billing", "aws", "apply-prereqs", "--request-backfill"},
+			want: "AWS backfill request requires --export-ref from AWS billing preflight output",
+		},
+		{
 			name: "confirm without plan-bound approval",
-			args: []string{"rapid-assessment", "billing", "aws", "apply-prereqs", "--request-backfill", "--confirm-create-support-case"},
+			args: []string{"rapid-assessment", "billing", "aws", "apply-prereqs", "--export-ref", "cur2-abcdefghijklmnop", "--request-backfill", "--confirm-create-support-case"},
 			want: "AWS backfill support case approval requires --confirm-create-support-case, --approve-plan, and at least one --approve-step",
 		},
 		{
 			name: "approve without confirm",
-			args: []string{"rapid-assessment", "billing", "aws", "apply-prereqs", "--request-backfill", "--approve-plan", "plan_abcdefghijklmnop", "--approve-step", workflow.AWSBackfillSupportCaseOperationID},
+			args: []string{"rapid-assessment", "billing", "aws", "apply-prereqs", "--export-ref", "cur2-abcdefghijklmnop", "--request-backfill", "--approve-plan", "plan_abcdefghijklmnop", "--approve-step", workflow.AWSBackfillSupportCaseOperationID},
 			want: "AWS backfill support case approval requires --confirm-create-support-case, --approve-plan, and at least one --approve-step",
 		},
 	}
@@ -1379,7 +1384,8 @@ func TestHelpAndVersionAreDeterministicAndPublicSafe(t *testing.T) {
 		"AWS Rapid Assessment - Billing Based preflight/backfill selection options:",
 		"--export-ref <cur2-ref-from-previous-output>",
 		"--request-backfill       plan an AWS Support request for previous-month CUR 2.0 backfill",
-		"--request-backfill --confirm-create-support-case --approve-plan <plan-id> --approve-step aws.billing.cur2.previous_month_backfill_support_case",
+		"--export-ref <cur2-ref> --request-backfill",
+		"--export-ref <cur2-ref> --request-backfill --confirm-create-support-case --approve-plan <plan-id> --approve-step aws.billing.cur2.previous_month_backfill_support_case",
 		"--cur2-destination <generated|existing-same-account>",
 		"--cur2-s3-bucket-ref <s3b-ref-from-previous-output>",
 		"--create-cur2-export --approve-plan <plan-id> --approve-step <plan-step-id>",
@@ -1508,7 +1514,8 @@ func TestAWSBillingApplyPrereqsActionHelpIncludesOperationAndApprovalFlags(t *te
 		"--cur2-s3-bucket-ref <s3b-ref-from-previous-output>",
 		"--approve-plan <plan-id>",
 		"--approve-step <plan-step-id>",
-		"aws.billing.cur2.previous_month_backfill_support_case",
+		"--export-ref <cur2-ref> --request-backfill",
+		"--export-ref <cur2-ref> --request-backfill --confirm-create-support-case --approve-plan <plan-id> --approve-step aws.billing.cur2.previous_month_backfill_support_case",
 		"repeat --approve-step for each mutating step ID returned by the current plan",
 	} {
 		if !strings.Contains(stdout, want) {
