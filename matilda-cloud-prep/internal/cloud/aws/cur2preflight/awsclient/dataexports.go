@@ -2,6 +2,7 @@ package awsclient
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/cloud/aws/cur2preflight"
@@ -49,14 +50,17 @@ func (client *Client) GetTable(ctx context.Context, name string, properties map[
 	if output == nil {
 		return cur2preflight.Table{}, providerError("aws_cur2_table_unavailable")
 	}
-	table := cur2preflight.Table{
-		Name:       aws.ToString(output.TableName),
-		Properties: copyStringMap(output.TableProperties),
+	tableName := aws.ToString(output.TableName)
+	if strings.TrimSpace(tableName) == "" || strings.TrimSpace(tableName) != tableName || tableName != name {
+		return cur2preflight.Table{}, providerError("aws_cur2_table_invalid_shape")
 	}
+	table := cur2preflight.Table{Name: tableName, Properties: copyStringMap(output.TableProperties)}
 	for _, column := range output.Schema {
-		if name := aws.ToString(column.Name); name != "" {
-			table.Columns = append(table.Columns, name)
+		name := aws.ToString(column.Name)
+		if strings.TrimSpace(name) == "" || strings.TrimSpace(name) != name {
+			return cur2preflight.Table{}, providerError("aws_cur2_table_invalid_shape")
 		}
+		table.Columns = append(table.Columns, name)
 	}
 	return table, nil
 }

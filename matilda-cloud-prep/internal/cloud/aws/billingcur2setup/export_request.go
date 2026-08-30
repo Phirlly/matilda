@@ -2,16 +2,21 @@ package billingcur2setup
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/Phirlly/matilda/matilda-cloud-prep/internal/cloud/aws/cur2preflight"
 )
 
+const maxQueryStatementLength = 36000
+
+var cur2ColumnNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
 func buildCreateExportRequest(plan setupPlan) CreateExportRequest {
 	return CreateExportRequest{
 		Name:                plan.Facts.ExportName,
-		QueryStatement:      matildaCUR2QueryStatement(),
-		TableConfigurations: matildaCUR2TableConfigurations(),
+		QueryStatement:      plan.QueryStatement,
+		TableConfigurations: matildaCUR2TableConfigurations(plan.Identity),
 		Destination: cur2preflight.S3Destination{
 			Bucket:      plan.Facts.BucketName,
 			BucketOwner: plan.Facts.BucketOwner,
@@ -29,21 +34,79 @@ func buildCreateExportRequest(plan setupPlan) CreateExportRequest {
 	}
 }
 
-func matildaCUR2QueryStatement() string {
-	return "SELECT line_item_product_code, product.product_name AS product_product_name, line_item_operation, line_item_line_item_description, line_item_line_item_type, line_item_currency_code, pricing_unit, line_item_usage_amount, line_item_unblended_cost, line_item_usage_type FROM COST_AND_USAGE_REPORT"
+func matildaCUR2QueryStatement(columns []string) (string, error) {
+	selected := make([]string, 0, len(columns)+1)
+	seen := map[string]bool{}
+	for _, column := range columns {
+		trimmed := strings.TrimSpace(column)
+		if trimmed == "" || trimmed != column || !cur2ColumnNamePattern.MatchString(column) {
+			return "", NewProviderError("aws_cur2_table_invalid_shape", "AWS CUR 2.0 table schema contains an unsafe column name.")
+		}
+		if seen[trimmed] {
+			return "", NewProviderError("aws_cur2_table_invalid_shape", "AWS CUR 2.0 table schema contains duplicate column names.")
+		}
+		seen[trimmed] = true
+		selected = append(selected, trimmed)
+	}
+	if len(selected) == 0 {
+		return "", NewProviderError("aws_cur2_table_invalid_shape", "AWS CUR 2.0 table schema is empty.")
+	}
+	if !seen["product_product_name"] && seen["product"] {
+		selected = append(selected, "product.product_name AS product_product_name")
+	}
+	if missing := missingMatildaLogicalColumns(seen); len(missing) > 0 {
+		return "", NewProviderError("aws_cur2_table_invalid_shape", "AWS CUR 2.0 table schema is missing required Matilda billing fields.")
+	}
+	query := "SELECT " + strings.Join(selected, ", ") + " FROM " + cur2TableName
+	if len(query) > maxQueryStatementLength {
+		return "", NewProviderError("aws_cur2_table_invalid_shape", "AWS CUR 2.0 complete-schema query exceeds the AWS QueryStatement length limit.")
+	}
+	return query, nil
 }
 
-func matildaCUR2TableConfigurations() map[string]map[string]string {
-	return map[string]map[string]string{
-		cur2TableName: {
-			"TIME_GRANULARITY":                      "MONTHLY",
-			"INCLUDE_RESOURCES":                     "FALSE",
-			"INCLUDE_SPLIT_COST_ALLOCATION_DATA":    "FALSE",
-			"INCLUDE_CAPACITY_RESERVATION_DATA":     "FALSE",
-			"INCLUDE_IAM_PRINCIPAL_DATA":            "FALSE",
-			"INCLUDE_MANUAL_DISCOUNT_COMPATIBILITY": "FALSE",
-		},
+func matildaCUR2TableConfigurations(identity identityContext) map[string]map[string]string {
+	return map[string]map[string]string{cur2TableName: matildaCUR2TableConfiguration(identity)}
+}
+
+func matildaCUR2TableConfiguration(identity identityContext) map[string]string {
+	return map[string]string{
+		"BILLING_VIEW_ARN":                      primaryBillingViewARN(identity),
+		"TIME_GRANULARITY":                      "MONTHLY",
+		"INCLUDE_RESOURCES":                     "FALSE",
+		"INCLUDE_SPLIT_COST_ALLOCATION_DATA":    "FALSE",
+		"INCLUDE_CAPACITY_RESERVATION_DATA":     "FALSE",
+		"INCLUDE_IAM_PRINCIPAL_DATA":            "FALSE",
+		"INCLUDE_MANUAL_DISCOUNT_COMPATIBILITY": "FALSE",
 	}
+}
+
+func missingMatildaLogicalColumns(columns map[string]bool) []string {
+	required := []string{
+		"line_item_product_code",
+		"product_product_name",
+		"line_item_operation",
+		"line_item_line_item_description",
+		"line_item_line_item_type",
+		"line_item_currency_code",
+		"pricing_unit",
+		"line_item_usage_amount",
+		"line_item_unblended_cost",
+		"line_item_usage_type",
+	}
+	missing := []string{}
+	for _, column := range required {
+		if column == "product_product_name" && columns["product"] {
+			continue
+		}
+		if !columns[column] {
+			missing = append(missing, column)
+		}
+	}
+	return missing
+}
+
+func primaryBillingViewARN(identity identityContext) string {
+	return fmt.Sprintf("arn:%s:billing::%s:billingview/primary", strings.TrimSpace(identity.Partition), strings.TrimSpace(identity.AccountID))
 }
 
 func exportFromRequest(request CreateExportRequest, exportARN string) cur2preflight.Export {

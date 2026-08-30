@@ -139,13 +139,24 @@ func (runner Runner) buildPlan(ctx context.Context, client Client, options workf
 	coverage := classifyCoverage(ctx, client, identityContext.AccountID)
 
 	candidates := generatedNameCandidates(identityContext, region)
+	queryStatement, err := buildCompleteCUR2QueryStatement(ctx, client, identityContext)
+	if err != nil {
+		return setupPlan{
+			Facts:          candidates[0],
+			Identity:       identityContext,
+			Region:         region,
+			QueryStatement: queryStatement,
+			Coverage:       coverage,
+		}, err
+	}
 	exports, err := listFullExports(ctx, client)
 	if err != nil {
 		return setupPlan{
-			Facts:    candidates[0],
-			Identity: identityContext,
-			Region:   region,
-			Coverage: coverage,
+			Facts:          candidates[0],
+			Identity:       identityContext,
+			Region:         region,
+			QueryStatement: queryStatement,
+			Coverage:       coverage,
 		}, err
 	}
 
@@ -156,30 +167,29 @@ func (runner Runner) buildPlan(ctx context.Context, client Client, options workf
 		}
 	}
 	if selectedCUR2DestinationMode(options) == workflow.AWSCUR2DestinationExistingSameAccount {
-		return runner.buildExistingBucketPlan(ctx, client, options, identityContext, region, coverage, exports, cur2Count)
+		return runner.buildExistingBucketPlan(ctx, client, options, identityContext, region, queryStatement, coverage, exports, cur2Count)
 	}
 
 	for _, facts := range candidates {
 		plan := setupPlan{
-			Facts:    facts,
-			Identity: identityContext,
-			Region:   region,
-			Coverage: coverage,
+			Facts:          facts,
+			Identity:       identityContext,
+			Region:         region,
+			QueryStatement: queryStatement,
+			Coverage:       coverage,
 		}
-		for _, export := range exports {
-			if isManagedExport(export, plan) {
-				exportCopy := export
-				plan.ManagedExport = &exportCopy
-				return verifyManagedExportReuse(ctx, client, plan)
-			}
+		if managed := managedExportForPlan(exports, plan); managed != nil {
+			plan.ManagedExport = managed
+			return verifyManagedExportReuse(ctx, client, plan)
 		}
 	}
 	if cur2Count >= 5 {
 		plan := setupPlan{
-			Facts:    candidates[0],
-			Identity: identityContext,
-			Region:   region,
-			Coverage: coverage,
+			Facts:          candidates[0],
+			Identity:       identityContext,
+			Region:         region,
+			QueryStatement: queryStatement,
+			Coverage:       coverage,
 		}
 		plan.Steps = []plannedStep{{ID: "aws_cur2_export_quota_full", Intent: "blocked"}}
 		return plan, nil
@@ -187,10 +197,14 @@ func (runner Runner) buildPlan(ctx context.Context, client Client, options workf
 
 	for _, facts := range candidates {
 		plan := setupPlan{
-			Facts:    facts,
-			Identity: identityContext,
-			Region:   region,
-			Coverage: coverage,
+			Facts:          facts,
+			Identity:       identityContext,
+			Region:         region,
+			QueryStatement: queryStatement,
+			Coverage:       coverage,
+		}
+		if err := ensureNoGeneratedExportNameConflict(exports, plan); err != nil {
+			return plan, err
 		}
 		access, err := client.HeadBucket(ctx, HeadBucketRequest{
 			Bucket:        facts.BucketName,
@@ -236,21 +250,56 @@ func (runner Runner) buildPlan(ctx context.Context, client Client, options workf
 		return plan, nil
 	}
 	return setupPlan{
-		Facts:    candidates[0],
-		Identity: identityContext,
-		Region:   region,
-		Coverage: coverage,
+		Facts:          candidates[0],
+		Identity:       identityContext,
+		Region:         region,
+		QueryStatement: queryStatement,
+		Coverage:       coverage,
 	}, NewProviderError("aws_cur2_bucket_name_candidates_exhausted", "No generated bucket name candidate is safely available.")
 }
 
-func (runner Runner) buildExistingBucketPlan(ctx context.Context, client Client, options workflow.ExecutionOptions, identity identityContext, region string, coverage coverageResult, exports []cur2preflight.Export, cur2Count int) (setupPlan, error) {
+func buildCompleteCUR2QueryStatement(ctx context.Context, client Client, identity identityContext) (string, error) {
+	table, err := client.GetTable(ctx, cur2TableName, matildaCUR2TableConfiguration(identity))
+	if err != nil {
+		return "", err
+	}
+	return matildaCUR2QueryStatement(table.Columns)
+}
+
+func managedExportForPlan(exports []cur2preflight.Export, plan setupPlan) *cur2preflight.Export {
+	if strings.TrimSpace(plan.Facts.ExportName) == "" {
+		return nil
+	}
+	for _, export := range exports {
+		if isManagedExport(export, plan) {
+			exportCopy := export
+			return &exportCopy
+		}
+	}
+	return nil
+}
+
+func ensureNoGeneratedExportNameConflict(exports []cur2preflight.Export, plan setupPlan) error {
+	if strings.TrimSpace(plan.Facts.ExportName) == "" {
+		return nil
+	}
+	for _, export := range exports {
+		if export.Name == plan.Facts.ExportName && !isManagedExport(export, plan) {
+			return NewProviderError("aws_cur2_generated_export_name_conflict", "An existing AWS Data Export uses the generated Matilda export name but does not match the current setup contract.")
+		}
+	}
+	return nil
+}
+
+func (runner Runner) buildExistingBucketPlan(ctx context.Context, client Client, options workflow.ExecutionOptions, identity identityContext, region string, queryStatement string, coverage coverageResult, exports []cur2preflight.Export, cur2Count int) (setupPlan, error) {
 	candidates, err := listExistingBucketCandidates(ctx, client, identity, region)
 	if err != nil {
 		return setupPlan{
-			Facts:    setupFacts{DestinationMode: workflow.AWSCUR2DestinationExistingSameAccount},
-			Identity: identity,
-			Region:   region,
-			Coverage: coverage,
+			Facts:          setupFacts{DestinationMode: workflow.AWSCUR2DestinationExistingSameAccount},
+			Identity:       identity,
+			Region:         region,
+			QueryStatement: queryStatement,
+			Coverage:       coverage,
 		}, err
 	}
 	selectedRef := selectedCUR2S3BucketRef(options)
@@ -259,6 +308,7 @@ func (runner Runner) buildExistingBucketPlan(ctx context.Context, client Client,
 			Facts:            setupFacts{DestinationMode: workflow.AWSCUR2DestinationExistingSameAccount},
 			Identity:         identity,
 			Region:           region,
+			QueryStatement:   queryStatement,
 			Coverage:         coverage,
 			BucketCandidates: candidates,
 			Steps:            []plannedStep{{ID: "aws_cur2_existing_bucket_selection_required", Intent: "guide"}},
@@ -268,24 +318,26 @@ func (runner Runner) buildExistingBucketPlan(ctx context.Context, client Client,
 	facts, ok := findExistingBucketCandidate(candidates, selectedRef)
 	if !ok {
 		return setupPlan{
-			Facts:    setupFacts{BucketRef: selectedRef, DestinationMode: workflow.AWSCUR2DestinationExistingSameAccount},
-			Identity: identity,
-			Region:   region,
-			Coverage: coverage,
+			Facts:          setupFacts{BucketRef: selectedRef, DestinationMode: workflow.AWSCUR2DestinationExistingSameAccount},
+			Identity:       identity,
+			Region:         region,
+			QueryStatement: queryStatement,
+			Coverage:       coverage,
 		}, NewProviderError("aws_cur2_existing_bucket_ref_not_found", "Selected existing S3 bucket ref was not found in the verified AWS account.")
 	}
 	plan := setupPlan{
-		Facts:    facts,
-		Identity: identity,
-		Region:   region,
-		Coverage: coverage,
+		Facts:          facts,
+		Identity:       identity,
+		Region:         region,
+		QueryStatement: queryStatement,
+		Coverage:       coverage,
 	}
-	for _, export := range exports {
-		if isManagedExport(export, plan) {
-			exportCopy := export
-			plan.ManagedExport = &exportCopy
-			return verifyManagedExportReuse(ctx, client, plan)
-		}
+	if managed := managedExportForPlan(exports, plan); managed != nil {
+		plan.ManagedExport = managed
+		return verifyManagedExportReuse(ctx, client, plan)
+	}
+	if err := ensureNoGeneratedExportNameConflict(exports, plan); err != nil {
+		return plan, err
 	}
 	if cur2Count >= 5 {
 		plan.Steps = []plannedStep{{ID: "aws_cur2_export_quota_full", Intent: "blocked"}}

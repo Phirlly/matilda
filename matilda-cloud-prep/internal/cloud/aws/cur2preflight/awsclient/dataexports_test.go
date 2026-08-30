@@ -181,6 +181,57 @@ func TestIdentityAndDataExportsMapping(t *testing.T) {
 	}
 }
 
+func TestGetTableFailsClosedOnMalformedTableMetadata(t *testing.T) {
+	tests := []struct {
+		name      string
+		tableName *string
+		schema    []bcmtypes.Column
+	}{
+		{
+			name:      "nil returned table name",
+			tableName: nil,
+			schema:    []bcmtypes.Column{{Name: aws.String("line_item_usage_amount")}},
+		},
+		{
+			name:      "unexpected returned table name",
+			tableName: aws.String("OTHER_TABLE"),
+			schema:    []bcmtypes.Column{{Name: aws.String("line_item_usage_amount")}},
+		},
+		{
+			name:      "nil column name",
+			tableName: aws.String("COST_AND_USAGE_REPORT"),
+			schema:    []bcmtypes.Column{{Name: nil}},
+		},
+		{
+			name:      "empty column name",
+			tableName: aws.String("COST_AND_USAGE_REPORT"),
+			schema:    []bcmtypes.Column{{Name: aws.String("")}},
+		},
+		{
+			name:      "whitespace padded column name",
+			tableName: aws.String("COST_AND_USAGE_REPORT"),
+			schema:    []bcmtypes.Column{{Name: aws.String(" line_item_usage_amount")}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := readyClient(t, &fakeSTS{}, &fakeDataExports{
+				getTableOutput: &awsbcm.GetTableOutput{
+					TableName: tt.tableName,
+					Schema:    tt.schema,
+				},
+			}, &fakeS3{})
+
+			table, err := client.GetTable(context.Background(), "COST_AND_USAGE_REPORT", nil)
+
+			assertProviderCode(t, err, "aws_cur2_table_invalid_shape")
+			if len(table.Columns) != 0 {
+				t.Fatalf("table columns = %#v, want no mapped columns on malformed schema", table.Columns)
+			}
+		})
+	}
+}
+
 func TestIdentityNilOutputMapsToEmptyIdentity(t *testing.T) {
 	client := readyClient(t, &fakeSTS{output: nil}, &fakeDataExports{}, &fakeS3{})
 

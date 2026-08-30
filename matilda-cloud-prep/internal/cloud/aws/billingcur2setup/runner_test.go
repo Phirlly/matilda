@@ -37,6 +37,17 @@ func TestRunnerPlansCreateNewCUR2ExportWithoutMutation(t *testing.T) {
 	if result.Plan.CoverageRecommendation.CoverageStatus != workflow.CoverageOrganizationWide {
 		t.Fatalf("CoverageStatus = %q, want organization_wide", result.Plan.CoverageRecommendation.CoverageStatus)
 	}
+	if len(client.getTableRequests) != 1 {
+		t.Fatalf("GetTable calls = %d, want 1 before planning create-new export", len(client.getTableRequests))
+	}
+	if client.getTableRequests[0].Name != cur2TableName {
+		t.Fatalf("GetTable table = %q, want %s", client.getTableRequests[0].Name, cur2TableName)
+	}
+	for _, key := range optionalCUR2ContentSettingKeysForTest() {
+		if client.getTableRequests[0].Properties[key] != "FALSE" {
+			t.Fatalf("GetTable %s = %q, want FALSE for authorized CUR2 table settings", key, client.getTableRequests[0].Properties[key])
+		}
+	}
 	wantSteps := []string{
 		workflow.AWSCUR2CreateBucketOperationID,
 		workflow.AWSCUR2MergeBucketPolicyOperationID,
@@ -52,6 +63,40 @@ func TestRunnerPlansCreateNewCUR2ExportWithoutMutation(t *testing.T) {
 		}
 	}
 	assertResultDoesNotLeakAWSSecrets(t, result)
+}
+
+func TestRunnerBlocksBeforeMutationWhenCompleteCUR2SchemaUnavailable(t *testing.T) {
+	client := baselineSetupClient()
+	client.getTableErr = NewProviderError("aws_cur2_table_unavailable", "table unavailable")
+
+	result := runSetup(t, client, createCUR2Options("default", "us-west-2"))
+
+	if result.Code != "aws_cur2_table_unavailable" {
+		t.Fatalf("Code = %q, want aws_cur2_table_unavailable", result.Code)
+	}
+	if result.Mutated {
+		t.Fatal("Mutated = true, want false when schema lookup fails")
+	}
+	if client.createBucketCalls() != 0 || client.putBucketPolicyCalls() != 0 || client.createExportCalls() != 0 {
+		t.Fatalf("mutation calls = bucket %d policy %d export %d, want none", client.createBucketCalls(), client.putBucketPolicyCalls(), client.createExportCalls())
+	}
+}
+
+func TestRunnerBlocksBeforeMutationWhenCompleteCUR2SchemaIsUnsafe(t *testing.T) {
+	client := baselineSetupClient()
+	client.table.Columns = []string{"identity_line_item_id", "line_item_usage_amount)", "product"}
+
+	result := runSetup(t, client, createCUR2Options("default", "us-west-2"))
+
+	if result.Code != "aws_cur2_table_invalid_shape" {
+		t.Fatalf("Code = %q, want aws_cur2_table_invalid_shape", result.Code)
+	}
+	if result.Mutated {
+		t.Fatal("Mutated = true, want false when schema is unsafe")
+	}
+	if client.createBucketCalls() != 0 || client.putBucketPolicyCalls() != 0 || client.createExportCalls() != 0 {
+		t.Fatalf("mutation calls = bucket %d policy %d export %d, want none", client.createBucketCalls(), client.putBucketPolicyCalls(), client.createExportCalls())
+	}
 }
 
 func TestRunnerListsExistingSameAccountBucketsForSelectionWithoutMutation(t *testing.T) {
@@ -169,6 +214,141 @@ func TestRunnerExistingBucketSelectionRejectsUnknownBucketRef(t *testing.T) {
 	}
 	if len(client.headBucketRequests) != 0 {
 		t.Fatalf("HeadBucket calls = %d, want none for unknown selected ref", len(client.headBucketRequests))
+	}
+	if client.createBucketCalls() != 0 || client.putBucketPolicyCalls() != 0 || client.createExportCalls() != 0 {
+		t.Fatalf("mutation calls = bucket %d policy %d export %d, want none", client.createBucketCalls(), client.putBucketPolicyCalls(), client.createExportCalls())
+	}
+}
+
+func TestRunnerBlocksSameNameMismatchedGeneratedExportBeforeMutation(t *testing.T) {
+	client := baselineSetupClient()
+	preview := runSetup(t, client, createCUR2Options("default", "us-west-2"))
+	facts := setupFactsFromPlan(t, client, preview.Plan)
+	client.headBucketRequests = nil
+	client.getPolicyRequests = nil
+	client.exports = []cur2preflight.Export{{
+		Name:                facts.ExportName,
+		ExportARN:           "arn:aws:bcm-data-exports:us-east-1:123456789012:export/" + facts.ExportName,
+		QueryStatement:      "SELECT " + requiredCUR2SelectForSetupTest() + " FROM COST_AND_USAGE_REPORT",
+		TableConfigurations: matildaCUR2TableConfigurations(identityContext{AccountID: client.identity.AccountID, Partition: "aws"}),
+		Destination: cur2preflight.S3Destination{
+			Bucket:      facts.BucketName,
+			BucketOwner: client.identity.AccountID,
+			Prefix:      facts.Prefix,
+			Region:      "us-west-2",
+			Output: cur2preflight.S3Output{
+				Format:      "TEXT_OR_CSV",
+				Compression: "GZIP",
+				Overwrite:   "CREATE_NEW_REPORT",
+				OutputType:  "CUSTOM",
+			},
+		},
+		RefreshCadence: "SYNCHRONOUS",
+	}}
+
+	result := runSetup(t, client, createCUR2Options("default", "us-west-2"))
+
+	if result.Code != "aws_cur2_generated_export_name_conflict" {
+		t.Fatalf("Code = %q, want aws_cur2_generated_export_name_conflict", result.Code)
+	}
+	if result.Mutated {
+		t.Fatal("Mutated = true, want false for generated export name conflict")
+	}
+	if len(client.headBucketRequests) != 0 || len(client.getPolicyRequests) != 0 {
+		t.Fatalf("S3 calls = head %d policy %d, want none before name conflict is resolved", len(client.headBucketRequests), len(client.getPolicyRequests))
+	}
+	if client.createBucketCalls() != 0 || client.putBucketPolicyCalls() != 0 || client.createExportCalls() != 0 {
+		t.Fatalf("mutation calls = bucket %d policy %d export %d, want none", client.createBucketCalls(), client.putBucketPolicyCalls(), client.createExportCalls())
+	}
+}
+
+func TestRunnerDoesNotBlockGeneratedPlanForUnusedLaterNameConflict(t *testing.T) {
+	client := baselineSetupClient()
+	identity := identityContext{AccountID: client.identity.AccountID, Partition: "aws"}
+	candidates := generatedNameCandidates(identity, "us-west-2")
+	if len(candidates) < 2 {
+		t.Fatalf("generated candidates = %#v, want at least two", candidates)
+	}
+	unusedFacts := candidates[1]
+	client.exports = []cur2preflight.Export{{
+		Name:                unusedFacts.ExportName,
+		ExportARN:           "arn:aws:bcm-data-exports:us-east-1:123456789012:export/" + unusedFacts.ExportName,
+		QueryStatement:      "SELECT " + requiredCUR2SelectForSetupTest() + " FROM COST_AND_USAGE_REPORT",
+		TableConfigurations: matildaCUR2TableConfigurations(identity),
+		Destination: cur2preflight.S3Destination{
+			Bucket:      unusedFacts.BucketName,
+			BucketOwner: client.identity.AccountID,
+			Prefix:      unusedFacts.Prefix,
+			Region:      "us-west-2",
+			Output: cur2preflight.S3Output{
+				Format:      "TEXT_OR_CSV",
+				Compression: "GZIP",
+				Overwrite:   "CREATE_NEW_REPORT",
+				OutputType:  "CUSTOM",
+			},
+		},
+		RefreshCadence: "SYNCHRONOUS",
+	}}
+
+	result := runSetup(t, client, createCUR2Options("default", "us-west-2"))
+
+	if result.Code != "aws_cur2_create_export_approval_required" {
+		t.Fatalf("Code = %q, want aws_cur2_create_export_approval_required for first available generated candidate", result.Code)
+	}
+	if got := checkEvidenceValue(result, "candidate_index"); got != "00" {
+		t.Fatalf("candidate_index = %q, want first generated candidate 00", got)
+	}
+	if len(client.headBucketRequests) != 1 {
+		t.Fatalf("HeadBucket calls = %d, want first generated candidate checked", len(client.headBucketRequests))
+	}
+	if client.headBucketRequests[0].Bucket != candidates[0].BucketName {
+		t.Fatalf("HeadBucket bucket = %q, want first candidate %q", client.headBucketRequests[0].Bucket, candidates[0].BucketName)
+	}
+	if result.Mutated {
+		t.Fatal("Mutated = true, want false for plan-only create-new")
+	}
+}
+
+func TestRunnerBlocksSameNameMismatchedExistingBucketExportBeforeMutation(t *testing.T) {
+	client := baselineSetupClient()
+	client.bucketExists = true
+	client.buckets = []BucketSummary{{Name: "matilda-existing-cur2", Region: "us-west-2"}}
+	identity := identityContext{AccountID: client.identity.AccountID, Partition: "aws"}
+	candidates := existingBucketCandidates(identity, "us-west-2", client.buckets)
+	if len(candidates) != 1 {
+		t.Fatalf("existing bucket candidates = %#v, want one", candidates)
+	}
+	facts := candidates[0]
+	client.exports = []cur2preflight.Export{{
+		Name:                facts.ExportName,
+		ExportARN:           "arn:aws:bcm-data-exports:us-east-1:123456789012:export/" + facts.ExportName,
+		QueryStatement:      "SELECT " + requiredCUR2SelectForSetupTest() + " FROM COST_AND_USAGE_REPORT",
+		TableConfigurations: matildaCUR2TableConfigurations(identity),
+		Destination: cur2preflight.S3Destination{
+			Bucket:      facts.BucketName,
+			BucketOwner: client.identity.AccountID,
+			Prefix:      facts.Prefix,
+			Region:      "us-west-2",
+			Output: cur2preflight.S3Output{
+				Format:      "TEXT_OR_CSV",
+				Compression: "GZIP",
+				Overwrite:   "CREATE_NEW_REPORT",
+				OutputType:  "CUSTOM",
+			},
+		},
+		RefreshCadence: "SYNCHRONOUS",
+	}}
+
+	result := runSetup(t, client, createCUR2ExistingBucketSelectionOptions("default", "us-west-2", facts.BucketRef))
+
+	if result.Code != "aws_cur2_generated_export_name_conflict" {
+		t.Fatalf("Code = %q, want aws_cur2_generated_export_name_conflict", result.Code)
+	}
+	if result.Mutated {
+		t.Fatal("Mutated = true, want false for generated export name conflict")
+	}
+	if len(client.headBucketRequests) != 0 || len(client.getPolicyRequests) != 0 {
+		t.Fatalf("S3 calls = head %d policy %d, want none before name conflict is resolved", len(client.headBucketRequests), len(client.getPolicyRequests))
 	}
 	if client.createBucketCalls() != 0 || client.putBucketPolicyCalls() != 0 || client.createExportCalls() != 0 {
 		t.Fatalf("mutation calls = bucket %d policy %d export %d, want none", client.createBucketCalls(), client.putBucketPolicyCalls(), client.createExportCalls())
@@ -302,6 +482,208 @@ func TestRunnerUsesSelectedExistingSameAccountBucketWithoutCreatingBucket(t *tes
 		t.Fatalf("CreateExport prefix = %q, want Matilda billing prefix", exportRequest.Destination.Prefix)
 	}
 	assertResultDoesNotLeakAWSSecrets(t, result)
+}
+
+func TestBuildCreateExportRequestIncludesPrimaryBillingViewARN(t *testing.T) {
+	identity := identityContext{AccountID: "123456789012", Partition: "aws"}
+	existingCandidates := existingBucketCandidates(identity, "us-west-2", []BucketSummary{{Name: "matilda-existing-cur2", Region: "us-west-2"}})
+	if len(existingCandidates) != 1 {
+		t.Fatalf("existing bucket candidates = %#v, want one", existingCandidates)
+	}
+
+	tests := []struct {
+		name string
+		plan setupPlan
+	}{
+		{
+			name: "generated destination",
+			plan: setupPlan{
+				Facts:    generatedNameCandidates(identity, "us-west-2")[0],
+				Identity: identity,
+				Region:   "us-west-2",
+			},
+		},
+		{
+			name: "existing same-account destination",
+			plan: setupPlan{
+				Facts:    existingCandidates[0],
+				Identity: identity,
+				Region:   "us-west-2",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.plan.QueryStatement = "SELECT identity_line_item_id, line_item_product_code, product.product_name AS product_product_name FROM COST_AND_USAGE_REPORT"
+			request := buildCreateExportRequest(tt.plan)
+			if got := request.TableConfigurations[cur2TableName]["BILLING_VIEW_ARN"]; got != "arn:aws:billing::123456789012:billingview/primary" {
+				t.Fatalf("BILLING_VIEW_ARN = %q, want primary billing view ARN", got)
+			}
+		})
+	}
+}
+
+func TestBuildCreateExportRequestUsesCompleteTableSchemaQuery(t *testing.T) {
+	identity := identityContext{AccountID: "123456789012", Partition: "aws"}
+	query, err := matildaCUR2QueryStatement(completeCUR2TableColumnsForTest())
+	if err != nil {
+		t.Fatalf("matildaCUR2QueryStatement returned error: %v", err)
+	}
+	plan := setupPlan{
+		Facts:          generatedNameCandidates(identity, "us-west-2")[0],
+		Identity:       identity,
+		Region:         "us-west-2",
+		QueryStatement: query,
+	}
+
+	request := buildCreateExportRequest(plan)
+
+	for _, want := range completeCUR2TableColumnsForTest() {
+		if !strings.Contains(request.QueryStatement, want) {
+			t.Fatalf("QueryStatement = %q, want complete schema column %q", request.QueryStatement, want)
+		}
+	}
+	for _, forbidden := range []string{"SELECT *", " WHERE ", " LIMIT "} {
+		if strings.Contains(strings.ToUpper(request.QueryStatement), forbidden) {
+			t.Fatalf("QueryStatement = %q, want no %s", request.QueryStatement, forbidden)
+		}
+	}
+	if !strings.Contains(request.QueryStatement, "product.product_name AS product_product_name") {
+		t.Fatalf("QueryStatement = %q, want Matilda product name logical alias", request.QueryStatement)
+	}
+	if strings.Contains(request.QueryStatement, "line_item_product_code, product.product_name AS product_product_name, line_item_operation") {
+		t.Fatalf("QueryStatement = %q, want complete schema query instead of reduced mandatory-field query", request.QueryStatement)
+	}
+}
+
+func TestMatildaCUR2QueryStatementRejectsUnsafeSchema(t *testing.T) {
+	tests := []struct {
+		name    string
+		columns []string
+	}{
+		{name: "empty schema", columns: nil},
+		{name: "unsafe syntax", columns: []string{"identity_line_item_id", "line_item_usage_amount)", "product"}},
+		{name: "whitespace padded schema name", columns: func() []string {
+			columns := completeCUR2TableColumnsForTest()
+			columns[1] = " line_item_product_code"
+			return columns
+		}()},
+		{name: "duplicate", columns: []string{"identity_line_item_id", "identity_line_item_id", "product"}},
+		{name: "missing product logical source", columns: requiredSetupColumnsWithoutProductName()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if query, err := matildaCUR2QueryStatement(tt.columns); err == nil {
+				t.Fatalf("matildaCUR2QueryStatement = %q nil error, want failure", query)
+			}
+		})
+	}
+}
+
+func TestMatildaCUR2QueryStatementRejectsAWSLengthOverflow(t *testing.T) {
+	columns := completeCUR2TableColumnsForTest()
+	for index := 0; index < 4000; index++ {
+		columns = append(columns, fmt.Sprintf("synthetic_column_%04d", index))
+	}
+
+	if query, err := matildaCUR2QueryStatement(columns); err == nil {
+		t.Fatalf("matildaCUR2QueryStatement length %d nil error, want failure", len(query))
+	}
+}
+
+func TestMatildaCUR2QueryStatementDoesNotDuplicatePhysicalProductName(t *testing.T) {
+	columns := append(requiredSetupColumnsWithoutProductName(), "product_product_name")
+
+	query, err := matildaCUR2QueryStatement(columns)
+
+	if err != nil {
+		t.Fatalf("matildaCUR2QueryStatement returned error: %v", err)
+	}
+	if strings.Contains(query, "product.product_name AS product_product_name") {
+		t.Fatalf("QueryStatement = %q, want no product alias when physical product_product_name exists", query)
+	}
+	if !strings.Contains(query, "product_product_name") {
+		t.Fatalf("QueryStatement = %q, want physical product_product_name", query)
+	}
+}
+
+func TestMatildaCUR2TableConfigurationsPreserveAuthorizedSettings(t *testing.T) {
+	configs := matildaCUR2TableConfigurations(identityContext{AccountID: "123456789012", Partition: "aws"})[cur2TableName]
+
+	for _, key := range optionalCUR2ContentSettingKeysForTest() {
+		if configs[key] != "FALSE" {
+			t.Fatalf("%s = %q, want FALSE for authorized CUR2 table settings", key, configs[key])
+		}
+	}
+	if configs["TIME_GRANULARITY"] != "MONTHLY" {
+		t.Fatalf("TIME_GRANULARITY = %q, want MONTHLY", configs["TIME_GRANULARITY"])
+	}
+	if configs["BILLING_VIEW_ARN"] != "arn:aws:billing::123456789012:billingview/primary" {
+		t.Fatalf("BILLING_VIEW_ARN = %q, want primary billing view ARN", configs["BILLING_VIEW_ARN"])
+	}
+}
+
+func optionalCUR2ContentSettingKeysForTest() []string {
+	return []string{
+		"INCLUDE_RESOURCES",
+		"INCLUDE_SPLIT_COST_ALLOCATION_DATA",
+		"INCLUDE_CAPACITY_RESERVATION_DATA",
+		"INCLUDE_IAM_PRINCIPAL_DATA",
+		"INCLUDE_MANUAL_DISCOUNT_COMPATIBILITY",
+	}
+}
+
+func completeCUR2TableColumnsForTest() []string {
+	return []string{
+		"identity_line_item_id",
+		"identity_time_interval",
+		"bill_invoice_id",
+		"bill_billing_entity",
+		"bill_billing_period_start_date",
+		"line_item_product_code",
+		"line_item_operation",
+		"line_item_line_item_description",
+		"line_item_line_item_type",
+		"line_item_currency_code",
+		"pricing_unit",
+		"line_item_usage_amount",
+		"line_item_unblended_cost",
+		"line_item_usage_type",
+		"line_item_legal_entity",
+		"pricing_term",
+		"product",
+		"discount",
+		"cost_category",
+		"resource_tags",
+	}
+}
+
+func completeCUR2QueryStatementForTest() string {
+	query, err := matildaCUR2QueryStatement(completeCUR2TableColumnsForTest())
+	if err != nil {
+		panic(err)
+	}
+	return query
+}
+
+func requiredSetupColumnsWithoutProductName() []string {
+	return []string{
+		"identity_line_item_id",
+		"line_item_product_code",
+		"line_item_operation",
+		"line_item_line_item_description",
+		"line_item_line_item_type",
+		"line_item_currency_code",
+		"pricing_unit",
+		"line_item_usage_amount",
+		"line_item_unblended_cost",
+		"line_item_usage_type",
+	}
+}
+
+func requiredCUR2SelectForSetupTest() string {
+	return strings.Join(append(requiredSetupColumnsWithoutProductName(), "product.product_name AS product_product_name"), ", ")
 }
 
 func TestRunnerReusesManagedExportForSelectedExistingSameAccountBucket(t *testing.T) {
@@ -604,6 +986,16 @@ func TestRunnerCreatesBucketPolicyAndExportAfterPlanBoundApproval(t *testing.T) 
 	if exportRequest.TableConfigurations["COST_AND_USAGE_REPORT"]["TIME_GRANULARITY"] != "MONTHLY" {
 		t.Fatalf("TIME_GRANULARITY = %q, want MONTHLY", exportRequest.TableConfigurations["COST_AND_USAGE_REPORT"]["TIME_GRANULARITY"])
 	}
+	for _, key := range optionalCUR2ContentSettingKeysForTest() {
+		if exportRequest.TableConfigurations[cur2TableName][key] != "FALSE" {
+			t.Fatalf("%s = %q, want FALSE for authorized CUR2 table settings", key, exportRequest.TableConfigurations[cur2TableName][key])
+		}
+	}
+	for _, want := range completeCUR2TableColumnsForTest() {
+		if !strings.Contains(exportRequest.QueryStatement, want) {
+			t.Fatalf("CreateExport QueryStatement = %q, want schema column %q", exportRequest.QueryStatement, want)
+		}
+	}
 	if !strings.Contains(client.putPolicyRequests[0].Policy, `"aws:SourceAccount":"123456789012"`) {
 		t.Fatalf("bucket policy does not include source account condition: %s", client.putPolicyRequests[0].Policy)
 	}
@@ -683,6 +1075,10 @@ func TestSetupBindingRefIsOpaqueAndSensitiveToSetupFacts(t *testing.T) {
 	changedFacts := plan
 	changedFacts.Facts = generatedNameCandidates(plan.Identity, plan.Region)[1]
 	assertDifferentSetupBindingRef(t, base, changedFacts, "generated setup facts")
+
+	changedQuery := plan
+	changedQuery.QueryStatement = strings.Replace(plan.QueryStatement, "identity_time_interval", "identity_time_interval AS identity_time_interval", 1)
+	assertDifferentSetupBindingRef(t, base, changedQuery, "query statement")
 
 	managedExport := plan
 	export := exportFromRequest(buildCreateExportRequest(plan), plannedExportARN(plan))
@@ -1790,9 +2186,10 @@ func TestPolicyMergeUsesAWSDocumentedDataExportsStatementShape(t *testing.T) {
 	client := baselineSetupClient()
 	facts := generatedNameCandidates(identityContext{AccountID: client.identity.AccountID, Partition: "aws"}, "us-west-2")[0]
 	plan := setupPlan{
-		Facts:    facts,
-		Identity: identityContext{AccountID: client.identity.AccountID, Partition: "aws"},
-		Region:   "us-west-2",
+		Facts:          facts,
+		Identity:       identityContext{AccountID: client.identity.AccountID, Partition: "aws"},
+		Region:         "us-west-2",
+		QueryStatement: completeCUR2QueryStatementForTest(),
 	}
 
 	merged, changed, err := mergeDataExportsPolicy("", plan)
@@ -1817,9 +2214,10 @@ func TestPolicyMergeTreatsEquivalentDifferentSidStatementAsReady(t *testing.T) {
 	client := baselineSetupClient()
 	facts := generatedNameCandidates(identityContext{AccountID: client.identity.AccountID, Partition: "aws"}, "us-west-2")[0]
 	plan := setupPlan{
-		Facts:    facts,
-		Identity: identityContext{AccountID: client.identity.AccountID, Partition: "aws"},
-		Region:   "us-west-2",
+		Facts:          facts,
+		Identity:       identityContext{AccountID: client.identity.AccountID, Partition: "aws"},
+		Region:         "us-west-2",
+		QueryStatement: completeCUR2QueryStatementForTest(),
 	}
 	generated, _, err := mergeDataExportsPolicy("", plan)
 	if err != nil {
@@ -1847,9 +2245,10 @@ func TestPolicyMergeTreatsEquivalentSingleValueStatementAsReady(t *testing.T) {
 	client := baselineSetupClient()
 	facts := generatedNameCandidates(identityContext{AccountID: client.identity.AccountID, Partition: "aws"}, "us-west-2")[0]
 	plan := setupPlan{
-		Facts:    facts,
-		Identity: identityContext{AccountID: client.identity.AccountID, Partition: "aws"},
-		Region:   "us-west-2",
+		Facts:          facts,
+		Identity:       identityContext{AccountID: client.identity.AccountID, Partition: "aws"},
+		Region:         "us-west-2",
+		QueryStatement: completeCUR2QueryStatementForTest(),
 	}
 	existingDocument := map[string]any{
 		"Version": "2012-10-17",
@@ -1858,7 +2257,7 @@ func TestPolicyMergeTreatsEquivalentSingleValueStatementAsReady(t *testing.T) {
 			"Effect":    "Allow",
 			"Principal": map[string]any{"Service": "bcm-data-exports.amazonaws.com"},
 			"Action":    "s3:PutObject",
-			"Resource":  fmt.Sprintf("arn:aws:s3:::%s/%s/*", facts.BucketName, facts.Prefix),
+			"Resource":  fmt.Sprintf("arn:aws:s3:::%s/*", facts.BucketName),
 			"Condition": map[string]any{
 				"ArnLike":      map[string]any{"aws:SourceArn": fmt.Sprintf("arn:aws:bcm-data-exports:%s:%s:export/*", dataExportsRegion, client.identity.AccountID)},
 				"StringEquals": map[string]any{"aws:SourceAccount": client.identity.AccountID},
@@ -1901,7 +2300,7 @@ func TestPolicyMergeTreatsEquivalentSameSidSingleValueStatementAsReady(t *testin
 			"Effect":    "Allow",
 			"Principal": map[string]any{"Service": "bcm-data-exports.amazonaws.com"},
 			"Action":    "s3:PutObject",
-			"Resource":  fmt.Sprintf("arn:aws:s3:::%s/%s/*", facts.BucketName, facts.Prefix),
+			"Resource":  fmt.Sprintf("arn:aws:s3:::%s/*", facts.BucketName),
 			"Condition": map[string]any{
 				"ArnLike":      map[string]any{"aws:SourceArn": fmt.Sprintf("arn:aws:bcm-data-exports:%s:%s:export/*", dataExportsRegion, client.identity.AccountID)},
 				"StringEquals": map[string]any{"aws:SourceAccount": client.identity.AccountID},
@@ -1944,7 +2343,7 @@ func TestPolicyMergeAcceptsSingleStatementDocument(t *testing.T) {
 			"Effect":    "Allow",
 			"Principal": map[string]any{"Service": "bcm-data-exports.amazonaws.com"},
 			"Action":    "s3:PutObject",
-			"Resource":  fmt.Sprintf("arn:aws:s3:::%s/%s/*", facts.BucketName, facts.Prefix),
+			"Resource":  fmt.Sprintf("arn:aws:s3:::%s/*", facts.BucketName),
 			"Condition": map[string]any{
 				"ArnLike":      map[string]any{"aws:SourceArn": fmt.Sprintf("arn:aws:bcm-data-exports:%s:%s:export/*", dataExportsRegion, client.identity.AccountID)},
 				"StringEquals": map[string]any{"aws:SourceAccount": client.identity.AccountID},
@@ -2020,6 +2419,59 @@ func TestPolicyMergePreservesUnrelatedListFormStatements(t *testing.T) {
 	}
 	if !strings.Contains(merged, `"Sid":"KeepListForm"`) {
 		t.Fatalf("merged policy dropped unrelated list-form statement: %s", merged)
+	}
+	assertDataExportsPolicyShape(t, merged)
+}
+
+func TestPolicyMergeRepairsPreviousMatildaPrefixScopedDeliveryStatement(t *testing.T) {
+	client := baselineSetupClient()
+	facts := generatedNameCandidates(identityContext{AccountID: client.identity.AccountID, Partition: "aws"}, "us-west-2")[0]
+	plan := setupPlan{
+		Facts:    facts,
+		Identity: identityContext{AccountID: client.identity.AccountID, Partition: "aws"},
+		Region:   "us-west-2",
+	}
+	existingDocument := map[string]any{
+		"Version": "2012-10-17",
+		"Statement": []any{map[string]any{
+			"Sid":       dataExportsDeliveryStatementSid,
+			"Effect":    "Allow",
+			"Principal": map[string]any{"Service": "bcm-data-exports.amazonaws.com"},
+			"Action":    "s3:PutObject",
+			"Resource":  fmt.Sprintf("arn:aws:s3:::%s/%s/*", facts.BucketName, facts.Prefix),
+			"Condition": map[string]any{
+				"ArnLike":      map[string]any{"aws:SourceArn": fmt.Sprintf("arn:aws:bcm-data-exports:%s:%s:export/*", dataExportsRegion, client.identity.AccountID)},
+				"StringEquals": map[string]any{"aws:SourceAccount": client.identity.AccountID},
+			},
+		}, map[string]any{
+			"Sid":       "Keep",
+			"Effect":    "Allow",
+			"Principal": map[string]any{"AWS": "arn:aws:iam::999999999999:root"},
+			"Action":    "s3:GetObject",
+			"Resource":  "arn:aws:s3:::example/*",
+		}},
+	}
+	existingBytes, err := json.Marshal(existingDocument)
+	if err != nil {
+		t.Fatalf("json.Marshal returned error: %v", err)
+	}
+
+	merged, changed, err := mergeDataExportsPolicy(string(existingBytes), plan)
+
+	if err != nil {
+		t.Fatalf("mergeDataExportsPolicy returned error: %v", err)
+	}
+	if !changed {
+		t.Fatal("changed = false, want repair of previous prefix-scoped Matilda delivery statement")
+	}
+	if strings.Contains(merged, fmt.Sprintf("arn:aws:s3:::%s/%s/*", facts.BucketName, facts.Prefix)) {
+		t.Fatalf("merged policy retained prefix-scoped Matilda delivery resource: %s", merged)
+	}
+	if got := strings.Count(merged, dataExportsDeliveryStatementSid); got != 1 {
+		t.Fatalf("Matilda delivery statement count = %d, want 1 in %s", got, merged)
+	}
+	if !strings.Contains(merged, `"Sid":"Keep"`) {
+		t.Fatalf("merged policy dropped unrelated statement: %s", merged)
 	}
 	assertDataExportsPolicyShape(t, merged)
 }
@@ -2584,6 +3036,21 @@ func TestExportAndPolicyPredicatesRejectMismatches(t *testing.T) {
 			export.TableConfigurations[cur2TableName]["TIME_GRANULARITY"] = "DAILY"
 			return export
 		}(),
+		func() cur2preflight.Export {
+			export := cloneExport(matching)
+			delete(export.TableConfigurations[cur2TableName], "BILLING_VIEW_ARN")
+			return export
+		}(),
+		func() cur2preflight.Export {
+			export := cloneExport(matching)
+			export.TableConfigurations[cur2TableName]["BILLING_VIEW_ARN"] = "arn:aws:billing::123456789012:billingview/other"
+			return export
+		}(),
+		func() cur2preflight.Export {
+			export := cloneExport(matching)
+			export.TableConfigurations[cur2TableName]["INCLUDE_RESOURCES"] = "TRUE"
+			return export
+		}(),
 	}
 	for index, export := range mismatches {
 		if isManagedExport(export, plan) {
@@ -2611,6 +3078,17 @@ func cloneExport(export cur2preflight.Export) cur2preflight.Export {
 		}
 	}
 	return cloned
+}
+
+func copyTestStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	copied := make(map[string]string, len(values))
+	for key, value := range values {
+		copied[key] = value
+	}
+	return copied
 }
 
 func runSetup(t *testing.T, client *fakeSetupClient, options workflow.ExecutionOptions) workflow.Result {
@@ -2859,6 +3337,7 @@ func assertDataExportsPolicyShape(t *testing.T, policy string) {
 			Sid       string                    `json:"Sid"`
 			Principal map[string]any            `json:"Principal"`
 			Action    any                       `json:"Action"`
+			Resource  any                       `json:"Resource"`
 			Condition map[string]map[string]any `json:"Condition"`
 		} `json:"Statement"`
 	}
@@ -2876,6 +3355,13 @@ func assertDataExportsPolicyShape(t *testing.T, policy string) {
 		action, ok := statement.Action.([]any)
 		if !ok || len(action) != 1 || action[0] != "s3:PutObject" {
 			t.Fatalf("Action = %#v, want single-item array", statement.Action)
+		}
+		resource, ok := statement.Resource.(string)
+		if !ok || !strings.HasPrefix(resource, "arn:aws:s3:::") || !strings.HasSuffix(resource, "/*") {
+			t.Fatalf("Resource = %#v, want bucket object wildcard", statement.Resource)
+		}
+		if strings.Contains(resource, matildaBillingPrefix) {
+			t.Fatalf("Resource = %q, want bucket object wildcard without Matilda prefix", resource)
 		}
 		if _, ok := statement.Condition["ArnLike"]["aws:SourceArn"]; !ok {
 			t.Fatalf("missing ArnLike.aws:SourceArn in %#v", statement.Condition)
@@ -2910,7 +3396,8 @@ func assertResultDoesNotLeakAWSSecrets(t *testing.T, result workflow.Result) {
 	}
 	for _, forbidden := range []string{
 		"123456789012",
-		"arn:aws:",
+		"arn:",
+		"billingview/primary",
 		"access_key",
 		"secret_key",
 		"session_token",
@@ -2940,6 +3427,7 @@ type fakeSetupClient struct {
 	identity     cur2preflight.Identity
 	identityErr  error
 	organization Organization
+	table        cur2preflight.Table
 	exports      []cur2preflight.Export
 	buckets      []BucketSummary
 
@@ -2953,6 +3441,7 @@ type fakeSetupClient struct {
 	headBucketErrs             []error
 
 	describeOrganizationErr error
+	getTableErr             error
 	listExportsErr          error
 	listBucketsErr          error
 	getExportErr            error
@@ -2963,6 +3452,7 @@ type fakeSetupClient struct {
 	createExportErr         error
 
 	headBucketRequests   []HeadBucketRequest
+	getTableRequests     []getTableRequest
 	listBucketsRequests  []ListBucketsRequest
 	createBucketRequests []CreateBucketRequest
 	getPolicyRequests    []BucketPolicyRequest
@@ -2975,6 +3465,11 @@ type fakeSetupClient struct {
 	createdExportIdentifierSuffix string
 }
 
+type getTableRequest struct {
+	Name       string
+	Properties map[string]string
+}
+
 func baselineSetupClient() *fakeSetupClient {
 	return &fakeSetupClient{
 		config: cur2preflight.Configuration{Region: "us-west-2"},
@@ -2985,6 +3480,10 @@ func baselineSetupClient() *fakeSetupClient {
 		organization: Organization{
 			ManagementAccountID: "123456789012",
 			Available:           true,
+		},
+		table: cur2preflight.Table{
+			Name:    cur2TableName,
+			Columns: completeCUR2TableColumnsForTest(),
 		},
 	}
 }
@@ -3008,6 +3507,17 @@ func (client *fakeSetupClient) DescribeOrganization(context.Context) (Organizati
 		return Organization{}, client.describeOrganizationErr
 	}
 	return client.organization, nil
+}
+
+func (client *fakeSetupClient) GetTable(_ context.Context, name string, properties map[string]string) (cur2preflight.Table, error) {
+	client.getTableRequests = append(client.getTableRequests, getTableRequest{
+		Name:       name,
+		Properties: copyTestStringMap(properties),
+	})
+	if client.getTableErr != nil {
+		return cur2preflight.Table{}, client.getTableErr
+	}
+	return client.table, nil
 }
 
 func (client *fakeSetupClient) ListExports(context.Context, string) (cur2preflight.ExportPage, error) {
@@ -3150,7 +3660,8 @@ func managedExportFromFacts(client *fakeSetupClient, facts setupFacts) cur2prefl
 			AccountID: client.identity.AccountID,
 			Partition: partitionFromARN(client.identity.CallerARN),
 		},
-		Region: client.config.Region,
+		Region:         client.config.Region,
+		QueryStatement: completeCUR2QueryStatementForTest(),
 	})
 	return exportFromRequest(request, "arn:aws:bcm-data-exports:us-east-1:123456789012:export/"+request.Name)
 }

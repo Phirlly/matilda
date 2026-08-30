@@ -37,6 +37,8 @@ func messageForCode(code string) string {
 		return "AWS Data Exports request failed with a transient provider error."
 	case "aws_cur2_table_unavailable":
 		return "AWS CUR 2.0 table metadata is not available."
+	case "aws_cur2_table_invalid_shape":
+		return "AWS CUR 2.0 table metadata is incomplete or invalid."
 	case "aws_cur2_export_invalid_shape":
 		return "AWS CUR 2.0 export metadata is incomplete or invalid."
 	case "aws_s3_bucket_policy_inaccessible":

@@ -205,11 +205,11 @@ func planSteps(plan setupPlan) []workflow.PlanStep {
 			ID:                        workflow.AWSCUR2MergeBucketPolicyOperationID,
 			Intent:                    workflow.PlanStepRepair,
 			Title:                     "Repair Matilda AWS CUR 2.0 export delivery policy",
-			Description:               "Merge the scoped AWS Data Exports delivery statement into the generated bucket policy for the existing Matilda CUR 2.0 export.",
+			Description:               "Merge the AWS Data Exports bucket object delivery statement into the generated bucket policy for the existing Matilda CUR 2.0 export.",
 			Reason:                    "The existing Matilda-generated CUR 2.0 export matches the setup contract, but AWS delivery requires the generated bucket policy to allow Data Exports writes.",
 			ApprovalKind:              "cloud_mutation",
-			CurrentState:              "The existing Matilda-generated bucket policy is missing the scoped Data Exports delivery statement.",
-			TargetState:               "The bucket policy allows Data Exports delivery for the selected account and export scope without creating a duplicate export.",
+			CurrentState:              "The existing Matilda-generated bucket policy is missing the AWS Data Exports bucket object delivery statement.",
+			TargetState:               "The bucket policy allows Data Exports to write objects in the bucket with source account and export ARN conditions, without creating a duplicate export.",
 			RequiredPermission:        "s3:GetBucketPolicy, s3:PutBucketPolicy",
 			CredentialMaterialTouched: false,
 			Validation:                "The policy is read, parsed, merged, written with the expected bucket owner, and revalidated before completion.",
@@ -235,20 +235,20 @@ func planSteps(plan setupPlan) []workflow.PlanStep {
 		})
 	}
 	if plan.PolicyNeedsMerge {
-		policyDescription := "Merge the scoped AWS Data Exports delivery statement into the generated bucket policy."
-		policyCurrentState := "The generated bucket policy does not yet contain the scoped Data Exports delivery statement."
-		policyTargetState := "The generated bucket policy allows Data Exports delivery for the selected account and export scope."
+		policyDescription := "Merge the AWS Data Exports bucket object delivery statement into the generated bucket policy."
+		policyCurrentState := "The generated bucket policy does not yet contain the AWS Data Exports bucket object delivery statement."
+		policyTargetState := "The generated bucket policy allows Data Exports to write objects in the bucket with source account and export ARN conditions."
 		if plan.Facts.DestinationMode == workflow.AWSCUR2DestinationExistingSameAccount {
-			policyDescription = "Merge the scoped AWS Data Exports delivery statement into the selected same-account bucket policy."
-			policyCurrentState = "The selected same-account S3 bucket policy does not yet contain the scoped Data Exports delivery statement."
-			policyTargetState = "The selected bucket policy allows Data Exports delivery for the selected account and export scope."
+			policyDescription = "Merge the AWS Data Exports bucket object delivery statement into the selected same-account bucket policy."
+			policyCurrentState = "The selected same-account S3 bucket policy does not yet contain the AWS Data Exports bucket object delivery statement."
+			policyTargetState = "The selected bucket policy allows Data Exports to write objects in the bucket with source account and export ARN conditions."
 		}
 		steps = append(steps, workflow.PlanStep{
 			ID:                        workflow.AWSCUR2MergeBucketPolicyOperationID,
 			Intent:                    workflow.PlanStepRepair,
 			Title:                     "Allow AWS Data Exports delivery to the bucket",
 			Description:               policyDescription,
-			Reason:                    "AWS requires the bucket policy to allow Data Exports to write report objects with source conditions.",
+			Reason:                    "AWS requires the bucket policy to allow Data Exports to write bucket objects with source conditions; the export destination keeps the selected S3 prefix.",
 			ApprovalKind:              "cloud_mutation",
 			CurrentState:              policyCurrentState,
 			TargetState:               policyTargetState,
@@ -266,14 +266,14 @@ func planSteps(plan setupPlan) []workflow.PlanStep {
 		ID:                        workflow.AWSCUR2CreateExportOperationID,
 		Intent:                    workflow.PlanStepCreate,
 		Title:                     "Create Matilda AWS CUR 2.0 export",
-		Description:               "Create a Matilda-specific AWS CUR 2.0 export using the verified Rapid Assessment - Billing Based setup defaults.",
+		Description:               "Create a Matilda-specific AWS CUR 2.0 export using the verified Rapid Assessment - Billing Based setup settings and every returned CUR 2.0 column.",
 		Reason:                    "Matilda Rapid Assessment - Billing Based needs a CUR 2.0 billing export when no reusable export is selected.",
 		ApprovalKind:              "cloud_mutation",
 		CurrentState:              "No matching Matilda-generated CUR 2.0 export exists for the selected account and region.",
 		TargetState:               exportTargetState,
 		RequiredPermission:        "bcm-data-exports:CreateExport, cur:PutReportDefinition",
 		CredentialMaterialTouched: false,
-		Validation:                "The created export request uses COST_AND_USAGE_REPORT, monthly granularity, text CSV gzip output, create-new report files, and synchronous refresh.",
+		Validation:                "The created export request uses COST_AND_USAGE_REPORT, all columns returned by AWS for the configured table, monthly granularity, text CSV gzip output, create-new report files, and synchronous refresh.",
 		Rollback:                  "The tool does not delete Data Exports resources automatically.",
 	})
 	return steps
@@ -292,6 +292,21 @@ func blockedSetupStep(code string, identityVerified bool) workflow.PlanStep {
 			RequiredPermission:        "s3:ListBucket for existing bucket checks, plus s3:CreateBucket, s3:GetBucketPolicy, s3:PutBucketPolicy, bcm-data-exports:CreateExport, and cur:PutReportDefinition for approved setup.",
 			CredentialMaterialTouched: false,
 			Validation:                "Do not manually create or select arbitrary buckets for the normal guided path. Resolve S3 access ambiguity, then rerun apply-prereqs to get a new approval-required setup plan.",
+			Rollback:                  "No cloud change was made.",
+		}
+	}
+	if code == "aws_cur2_generated_export_name_conflict" {
+		return workflow.PlanStep{
+			Intent:                    workflow.PlanStepBlocked,
+			Title:                     "Resolve AWS CUR 2.0 export name conflict",
+			Description:               "Stop before AWS CUR 2.0 setup because an existing AWS Data Export already uses the generated Matilda export name with different settings.",
+			Reason:                    "The setup plan must not update S3 policy or create another export when the deterministic export name is already occupied by a non-matching export.",
+			ApprovalKind:              "not_required",
+			CurrentState:              "An existing AWS Data Export has the generated Matilda export name but does not match the current setup contract.",
+			TargetState:               "The generated Matilda export name is either reusable with matching settings or no longer conflicts before setup is planned.",
+			RequiredPermission:        "Read-only AWS Data Exports permissions to inspect existing export definitions.",
+			CredentialMaterialTouched: false,
+			Validation:                "Review the existing export settings, then rerun apply-prereqs after the conflict is resolved.",
 			Rollback:                  "No cloud change was made.",
 		}
 	}
