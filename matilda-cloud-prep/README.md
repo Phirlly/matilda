@@ -99,11 +99,13 @@ After account confirmation, guided mode inspects AWS CUR 2.0 exports. If
 usable exports are discovered, the user can continue with the detected export
 or choose from the discovered safe refs. If none of the discovered exports is
 the one the user wants, guided mode can prepare a new Matilda-managed CUR 2.0
-setup plan for the connected AWS account. The normal create-new path uses a
-generated same-account S3 bucket and prefix; users are not asked to invent or
-select arbitrary bucket names before discovery. If the generated destination
-can be verified safely, guided mode shows the planned bucket, bucket-policy,
-and CUR 2.0 export changes before asking for approval. The plan remains
+setup plan for the connected AWS account. The recommended create-new path uses
+a generated same-account S3 bucket and prefix. Guided mode can also list
+existing S3 buckets owned by the connected AWS account and let the user select
+one by safe generated bucket ref; users are not asked to invent or type bucket
+names in the normal flow. If the selected destination can be verified safely,
+guided mode shows the planned destination, bucket-policy, and CUR 2.0 export
+changes before asking for approval. The plan remains
 non-mutating until the user explicitly approves the current setup plan in
 guided mode or reruns the create-new command with the returned plan ID and
 approved mutating step IDs. Blocked setup plans stop safely and explain what
@@ -216,6 +218,8 @@ Creating a new AWS CUR 2.0 export uses the same plan-bound pattern:
 ```bash
 matilda-prep rapid-assessment billing aws apply-prereqs \
   --create-cur2-export \
+  --cur2-destination existing-same-account \
+  --cur2-s3-bucket-ref s3b-abcdefghijklmnop \
   --approve-plan plan_abcdefghijklmnop \
   --approve-step <plan-step-id>
 ```
@@ -226,7 +230,11 @@ plan.
 `--request-backfill` by itself is plan-only. It does not create an AWS Support
 case unless the confirmation and plan-bound approval flags are also supplied.
 `--create-cur2-export` does not use `--export-ref`; it creates or reuses the
-Matilda-managed CUR 2.0 setup plan for the connected AWS account.
+Matilda-managed CUR 2.0 setup plan for the connected AWS account. Use
+`--cur2-destination existing-same-account` with a `--cur2-s3-bucket-ref`
+returned by a prior create-new setup discovery result to target an existing
+owned bucket. Without those destination flags, create-new setup uses the
+recommended generated same-account Matilda bucket path.
 
 ## Implementation Direction
 

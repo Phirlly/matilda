@@ -70,10 +70,11 @@ type Export struct {
 }
 
 type S3Destination struct {
-	Bucket string
-	Prefix string
-	Region string
-	Output S3Output
+	Bucket      string
+	BucketOwner string
+	Prefix      string
+	Region      string
+	Output      S3Output
 }
 
 type S3Output struct {

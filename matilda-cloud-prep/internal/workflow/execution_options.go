@@ -30,17 +30,25 @@ type ExecutionSelectors struct {
 }
 
 type AWSExecutionSelectors struct {
-	Profile       string `json:"profile,omitempty"`
-	Region        string `json:"region,omitempty"`
-	CUR2ExportRef string `json:"cur2_export_ref,omitempty"`
+	Profile             string                 `json:"profile,omitempty"`
+	Region              string                 `json:"region,omitempty"`
+	CUR2ExportRef       string                 `json:"cur2_export_ref,omitempty"`
+	CUR2DestinationMode AWSCUR2DestinationMode `json:"cur2_destination_mode,omitempty"`
+	CUR2S3BucketRef     string                 `json:"cur2_s3_bucket_ref,omitempty"`
 }
 
 type AWSBillingOperation string
+type AWSCUR2DestinationMode string
 
 const (
 	AWSBillingOperationRequestBackfill  AWSBillingOperation = "request_backfill"
 	AWSBillingOperationCreateCUR2Export AWSBillingOperation = "create_cur2_export"
 	AWSBillingOperationConflict         AWSBillingOperation = "conflict"
+)
+
+const (
+	AWSCUR2DestinationGenerated           AWSCUR2DestinationMode = "generated"
+	AWSCUR2DestinationExistingSameAccount AWSCUR2DestinationMode = "existing_same_account"
 )
 
 type ExecutionApproval struct {
@@ -60,6 +68,7 @@ const (
 
 var (
 	generatedCUR2ExportRefPattern = regexp.MustCompile(`^cur2-[a-p]+$`)
+	generatedS3BucketRefPattern   = regexp.MustCompile(`^s3b-[a-p]+$`)
 	planIDPattern                 = regexp.MustCompile(`^plan_[a-p]{16}$`)
 	awsAccountIDLikePattern       = regexp.MustCompile(`^\d{12}$`)
 	awsAccessKeyIDLikePattern     = regexp.MustCompile(`(?i)^(AKIA|ASIA)[A-Z0-9]{16}$`)
@@ -120,6 +129,12 @@ func NormalizeExecutionOptionsForRequest(request Request, input ExecutionOptions
 	options, err := NormalizeExecutionOptions(input)
 	if err != nil {
 		return ExecutionOptions{}, err
+	}
+	if hasAWSCUR2DestinationSelectors(options) && !requestAllowsAWSBillingApplyPrereqs(request) {
+		return ExecutionOptions{}, fmt.Errorf("AWS CUR 2.0 destination selector flags are supported only for matilda-prep rapid-assessment billing aws apply-prereqs --create-cur2-export")
+	}
+	if hasAWSCUR2DestinationSelectors(options) && options.AWSBillingOperation != AWSBillingOperationCreateCUR2Export {
+		return ExecutionOptions{}, fmt.Errorf("AWS CUR 2.0 destination selector flags require create_cur2_export")
 	}
 	if options.Selectors != nil && options.Selectors.AWS != nil && !requestAllowsAWSBillingSelectors(request) {
 		return ExecutionOptions{}, fmt.Errorf("AWS selector flags are supported only for matilda-prep rapid-assessment billing aws preflight, apply-prereqs, or package")
@@ -258,9 +273,11 @@ func normalizeAWSExecutionSelectors(input *AWSExecutionSelectors) (*AWSExecution
 	}
 
 	normalized := &AWSExecutionSelectors{
-		Profile:       strings.TrimSpace(input.Profile),
-		Region:        strings.TrimSpace(input.Region),
-		CUR2ExportRef: strings.TrimSpace(input.CUR2ExportRef),
+		Profile:             strings.TrimSpace(input.Profile),
+		Region:              strings.TrimSpace(input.Region),
+		CUR2ExportRef:       strings.TrimSpace(input.CUR2ExportRef),
+		CUR2DestinationMode: AWSCUR2DestinationMode(strings.TrimSpace(string(input.CUR2DestinationMode))),
+		CUR2S3BucketRef:     strings.TrimSpace(input.CUR2S3BucketRef),
 	}
 	if normalized.Profile != "" {
 		if err := ensureSafeText("execution_options aws profile", normalized.Profile); err != nil {
@@ -292,7 +309,27 @@ func normalizeAWSExecutionSelectors(input *AWSExecutionSelectors) (*AWSExecution
 			return nil, fmt.Errorf("cur2_export_ref must use format cur2- plus 16, 24, or 32 lowercase generated reference characters")
 		}
 	}
-	if normalized.Profile == "" && normalized.Region == "" && normalized.CUR2ExportRef == "" {
+	switch normalized.CUR2DestinationMode {
+	case "", AWSCUR2DestinationGenerated, AWSCUR2DestinationExistingSameAccount:
+	default:
+		return nil, fmt.Errorf("cur2_destination_mode is unsupported")
+	}
+	if normalized.CUR2S3BucketRef != "" {
+		if err := ensureSafeText("execution_options aws cur2_s3_bucket_ref", normalized.CUR2S3BucketRef); err != nil {
+			return nil, fmt.Errorf("cur2_s3_bucket_ref: %w", err)
+		}
+		if !validS3BucketRef(normalized.CUR2S3BucketRef) {
+			return nil, fmt.Errorf("cur2_s3_bucket_ref must use format s3b- plus 16, 24, or 32 lowercase generated reference characters")
+		}
+		if normalized.CUR2DestinationMode == "" {
+			normalized.CUR2DestinationMode = AWSCUR2DestinationExistingSameAccount
+		}
+		if normalized.CUR2DestinationMode != AWSCUR2DestinationExistingSameAccount {
+			return nil, fmt.Errorf("cur2_s3_bucket_ref requires existing_same_account destination mode")
+		}
+	}
+	if normalized.Profile == "" && normalized.Region == "" && normalized.CUR2ExportRef == "" &&
+		normalized.CUR2DestinationMode == "" && normalized.CUR2S3BucketRef == "" {
 		return nil, nil
 	}
 	return normalized, nil
@@ -306,8 +343,24 @@ func validCUR2ExportRef(value string) bool {
 	return refLength == 16 || refLength == 24 || refLength == 32
 }
 
+func validS3BucketRef(value string) bool {
+	if !generatedS3BucketRefPattern.MatchString(value) {
+		return false
+	}
+	refLength := len(value) - len("s3b-")
+	return refLength == 16 || refLength == 24 || refLength == 32
+}
+
 func validPlanID(value string) bool {
 	return planIDPattern.MatchString(value)
+}
+
+func hasAWSCUR2DestinationSelectors(options ExecutionOptions) bool {
+	if options.Selectors == nil || options.Selectors.AWS == nil {
+		return false
+	}
+	aws := options.Selectors.AWS
+	return aws.CUR2DestinationMode != "" || aws.CUR2S3BucketRef != ""
 }
 
 func pathLikeSelectorValue(value string) bool {

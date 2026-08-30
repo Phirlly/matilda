@@ -88,6 +88,9 @@ func (runner Runner) Run(ctx context.Context, request workflow.Request, options 
 	if blockedCode := blockedPlanCode(plan); blockedCode != "" {
 		return reportWithPlan(request, workflow.RunStatusBlocked, workflow.SupportBlocked, blockedCode, "AWS CUR 2.0 create-export setup is blocked before mutation.", false, input)
 	}
+	if guideCode := guidePlanCode(plan); guideCode != "" {
+		return reportWithPlan(request, workflow.RunStatusManualSteps, workflow.SupportGuided, guideCode, "Select one verified same-account S3 bucket before generating the AWS CUR 2.0 setup plan.", false, input)
+	}
 
 	previewInput := input
 	previewInput.ExecutionOptions = createPlanPreviewOptions(options)
@@ -151,6 +154,9 @@ func (runner Runner) buildPlan(ctx context.Context, client Client, options workf
 		if cur2preflight.IsCUR2ExportCandidate(export) {
 			cur2Count++
 		}
+	}
+	if selectedCUR2DestinationMode(options) == workflow.AWSCUR2DestinationExistingSameAccount {
+		return runner.buildExistingBucketPlan(ctx, client, options, identityContext, region, coverage, exports, cur2Count)
 	}
 
 	for _, facts := range candidates {
@@ -235,6 +241,114 @@ func (runner Runner) buildPlan(ctx context.Context, client Client, options workf
 		Region:   region,
 		Coverage: coverage,
 	}, NewProviderError("aws_cur2_bucket_name_candidates_exhausted", "No generated bucket name candidate is safely available.")
+}
+
+func (runner Runner) buildExistingBucketPlan(ctx context.Context, client Client, options workflow.ExecutionOptions, identity identityContext, region string, coverage coverageResult, exports []cur2preflight.Export, cur2Count int) (setupPlan, error) {
+	candidates, err := listExistingBucketCandidates(ctx, client, identity, region)
+	if err != nil {
+		return setupPlan{
+			Facts:    setupFacts{DestinationMode: workflow.AWSCUR2DestinationExistingSameAccount},
+			Identity: identity,
+			Region:   region,
+			Coverage: coverage,
+		}, err
+	}
+	selectedRef := selectedCUR2S3BucketRef(options)
+	if selectedRef == "" {
+		return setupPlan{
+			Facts:            setupFacts{DestinationMode: workflow.AWSCUR2DestinationExistingSameAccount},
+			Identity:         identity,
+			Region:           region,
+			Coverage:         coverage,
+			BucketCandidates: candidates,
+			Steps:            []plannedStep{{ID: "aws_cur2_existing_bucket_selection_required", Intent: "guide"}},
+		}, nil
+	}
+
+	facts, ok := findExistingBucketCandidate(candidates, selectedRef)
+	if !ok {
+		return setupPlan{
+			Facts:    setupFacts{BucketRef: selectedRef, DestinationMode: workflow.AWSCUR2DestinationExistingSameAccount},
+			Identity: identity,
+			Region:   region,
+			Coverage: coverage,
+		}, NewProviderError("aws_cur2_existing_bucket_ref_not_found", "Selected existing S3 bucket ref was not found in the verified AWS account.")
+	}
+	plan := setupPlan{
+		Facts:    facts,
+		Identity: identity,
+		Region:   region,
+		Coverage: coverage,
+	}
+	for _, export := range exports {
+		if isManagedExport(export, plan) {
+			exportCopy := export
+			plan.ManagedExport = &exportCopy
+			return verifyManagedExportReuse(ctx, client, plan)
+		}
+	}
+	if cur2Count >= 5 {
+		plan.Steps = []plannedStep{{ID: "aws_cur2_export_quota_full", Intent: "blocked"}}
+		return plan, nil
+	}
+
+	access, err := client.HeadBucket(ctx, HeadBucketRequest{
+		Bucket:        facts.BucketName,
+		Region:        region,
+		ExpectedOwner: identity.AccountID,
+	})
+	if err != nil {
+		return plan, err
+	}
+	if err := validateBucketAccessForPlan(access, plan); err != nil {
+		return plan, err
+	}
+	plan.BucketExists = true
+	policy, err := client.GetBucketPolicy(ctx, BucketPolicyRequest{
+		Bucket:        facts.BucketName,
+		ExpectedOwner: identity.AccountID,
+	})
+	if err != nil {
+		return plan, err
+	}
+	merged, changed, err := mergeDataExportsPolicy(policy, plan)
+	if err != nil {
+		return plan, NewProviderError("aws_s3_bucket_policy_unmergeable", "S3 bucket policy cannot be merged safely.")
+	}
+	plan.PolicyNeedsMerge = changed
+	plan.Policy = merged
+	return plan, nil
+}
+
+func listExistingBucketCandidates(ctx context.Context, client Client, identity identityContext, region string) ([]setupFacts, error) {
+	buckets := []BucketSummary{}
+	token := ""
+	for page := 0; page < 10; page++ {
+		result, err := client.ListBuckets(ctx, ListBucketsRequest{
+			Region: region,
+			Token:  token,
+			Limit:  1000,
+		})
+		if err != nil {
+			return nil, err
+		}
+		buckets = append(buckets, result.Buckets...)
+		if result.NextToken == "" {
+			return existingBucketCandidates(identity, region, buckets), nil
+		}
+		token = result.NextToken
+	}
+	return nil, NewProviderError("aws_s3_list_buckets_pagination_unbounded", "AWS S3 bucket listing pagination did not converge.")
+}
+
+func findExistingBucketCandidate(candidates []setupFacts, ref string) (setupFacts, bool) {
+	ref = strings.TrimSpace(ref)
+	for _, candidate := range candidates {
+		if candidate.BucketRef == ref {
+			return candidate, true
+		}
+	}
+	return setupFacts{}, false
 }
 
 func verifyManagedExportReuse(ctx context.Context, client Client, plan setupPlan) (setupPlan, error) {
@@ -501,6 +615,20 @@ func createApprovalState(options workflow.ExecutionOptions, planID string, steps
 func createPlanPreviewOptions(options workflow.ExecutionOptions) workflow.ExecutionOptions {
 	options.Approvals = nil
 	return options
+}
+
+func selectedCUR2DestinationMode(options workflow.ExecutionOptions) workflow.AWSCUR2DestinationMode {
+	if options.Selectors == nil || options.Selectors.AWS == nil || options.Selectors.AWS.CUR2DestinationMode == "" {
+		return workflow.AWSCUR2DestinationGenerated
+	}
+	return options.Selectors.AWS.CUR2DestinationMode
+}
+
+func selectedCUR2S3BucketRef(options workflow.ExecutionOptions) string {
+	if options.Selectors == nil || options.Selectors.AWS == nil {
+		return ""
+	}
+	return strings.TrimSpace(options.Selectors.AWS.CUR2S3BucketRef)
 }
 
 func blockedPlanCode(plan setupPlan) string {

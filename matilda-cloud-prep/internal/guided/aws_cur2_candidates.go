@@ -356,9 +356,35 @@ func runSelectedCUR2PreflightWithConfig(config Config, source billingguide.Crede
 }
 
 func runCreateCUR2SetupPlanWithConfig(reader *bufio.Scanner, stdout io.Writer, config Config, source billingguide.CredentialSource) error {
+	destinationMode, err := selectCreateCUR2Destination(reader, stdout)
+	if err != nil {
+		return err
+	}
+	bucketRef := ""
+	if destinationMode == workflow.AWSCUR2DestinationExistingSameAccount {
+		fmt.Fprintln(stdout, "Discovering existing S3 buckets in the selected AWS account.")
+		ctx, cancel := guidedContext(config)
+		selection := runCreateCUR2SetupPlanWithDestination(ctx, config.Registry, source, destinationMode, "")
+		cancel()
+		if !isExistingBucketSelectionResult(selection) {
+			writeAWSBillingSummary(stdout, source, selection)
+			return nil
+		}
+		candidates := existingS3BucketCandidates(selection)
+		if len(candidates) == 0 {
+			writeAWSBillingSummary(stdout, source, selection)
+			return nil
+		}
+		selectedRef, err := selectExistingS3Bucket(reader, stdout, candidates)
+		if err != nil {
+			return err
+		}
+		bucketRef = selectedRef
+	}
+
 	fmt.Fprintln(stdout, "Preparing a new Matilda AWS CUR 2.0 setup plan.")
 	ctx, cancel := guidedContext(config)
-	result := runCreateCUR2SetupPlan(ctx, config.Registry, source)
+	result := runCreateCUR2SetupPlanWithDestination(ctx, config.Registry, source, destinationMode, bucketRef)
 	cancel()
 	writeAWSBillingSummary(stdout, source, result)
 	if !shouldOfferCreateCUR2GuidedApply(result) {
@@ -379,6 +405,94 @@ func runCreateCUR2SetupPlanWithConfig(reader *bufio.Scanner, stdout io.Writer, c
 	applied := runApprovedCreateCUR2SetupPlan(applyCtx, config.Registry, source, result)
 	writeAWSBillingSummary(stdout, source, applied)
 	return nil
+}
+
+func selectCreateCUR2Destination(reader *bufio.Scanner, stdout io.Writer) (workflow.AWSCUR2DestinationMode, error) {
+	fmt.Fprintln(stdout, "Select AWS CUR 2.0 destination")
+	fmt.Fprintln(stdout, "  1. Use a generated same-account Matilda S3 bucket")
+	fmt.Fprintln(stdout, "     Recommended when you do not need to reuse an existing bucket.")
+	fmt.Fprintln(stdout, "  2. Use an existing S3 bucket owned by this AWS account")
+	fmt.Fprintln(stdout, "     Matilda Cloud Prep will list owned buckets and bind your selection by safe reference.")
+	index, err := readChoice(reader, stdout, "Select AWS CUR 2.0 destination [1-2]: ", "AWS CUR 2.0 destination", 2)
+	if err != nil {
+		return "", err
+	}
+	if index == 1 {
+		return workflow.AWSCUR2DestinationExistingSameAccount, nil
+	}
+	return workflow.AWSCUR2DestinationGenerated, nil
+}
+
+type existingS3BucketCandidate struct {
+	Index  int
+	Ref    string
+	Label  string
+	Region string
+}
+
+func existingS3BucketCandidates(result workflow.Result) []existingS3BucketCandidate {
+	if result.Plan == nil {
+		return nil
+	}
+	byIndex := map[int]*existingS3BucketCandidate{}
+	for _, check := range result.Plan.Checks {
+		for _, evidence := range check.Evidence {
+			index, field, ok := candidateEvidenceKey(evidence.Key)
+			if !ok {
+				continue
+			}
+			candidate := byIndex[index]
+			if candidate == nil {
+				candidate = &existingS3BucketCandidate{Index: index}
+				byIndex[index] = candidate
+			}
+			switch field {
+			case "bucket_ref":
+				if safeS3BucketRef(evidence.Value) {
+					candidate.Ref = strings.TrimSpace(evidence.Value)
+				}
+			case "bucket_label":
+				candidate.Label = safeCandidateLabelValue(evidence.Value)
+			case "bucket_region":
+				candidate.Region = safeCandidateLabelValue(evidence.Value)
+			}
+		}
+	}
+
+	indexes := make([]int, 0, len(byIndex))
+	for index := range byIndex {
+		indexes = append(indexes, index)
+	}
+	sort.Ints(indexes)
+
+	candidates := make([]existingS3BucketCandidate, 0, len(indexes))
+	for _, index := range indexes {
+		candidate := *byIndex[index]
+		if candidate.Ref == "" {
+			continue
+		}
+		if candidate.Label == "" {
+			candidate.Label = candidate.Ref
+		}
+		candidates = append(candidates, candidate)
+	}
+	return candidates
+}
+
+func selectExistingS3Bucket(reader *bufio.Scanner, stdout io.Writer, candidates []existingS3BucketCandidate) (string, error) {
+	fmt.Fprintln(stdout, "Select S3 bucket for new Matilda CUR 2.0 export")
+	for index, candidate := range candidates {
+		label := candidate.Label
+		if candidate.Region != "" {
+			label += " in " + candidate.Region
+		}
+		fmt.Fprintf(stdout, "  %d. %s (%s)\n", index+1, label, candidate.Ref)
+	}
+	index, err := readChoice(reader, stdout, fmt.Sprintf("Select S3 bucket [1-%d]: ", len(candidates)), "S3 bucket", len(candidates))
+	if err != nil {
+		return "", err
+	}
+	return candidates[index].Ref, nil
 }
 
 func runSelectedCUR2Preflight(ctx context.Context, registry workflow.Registry, source billingguide.CredentialSource, exportRef string) workflow.Result {
@@ -409,6 +523,10 @@ func runSelectedCUR2Preflight(ctx context.Context, registry workflow.Registry, s
 }
 
 func runCreateCUR2SetupPlan(ctx context.Context, registry workflow.Registry, source billingguide.CredentialSource) workflow.Result {
+	return runCreateCUR2SetupPlanWithDestination(ctx, registry, source, workflow.AWSCUR2DestinationGenerated, "")
+}
+
+func runCreateCUR2SetupPlanWithDestination(ctx context.Context, registry workflow.Registry, source billingguide.CredentialSource, destinationMode workflow.AWSCUR2DestinationMode, bucketRef string) workflow.Result {
 	request := awsBillingApplyPrereqsRequest()
 	options, err := awsBillingOptions(source)
 	if err != nil {
@@ -419,6 +537,18 @@ func runCreateCUR2SetupPlan(ctx context.Context, registry workflow.Registry, sou
 		}
 	}
 	options.AWSBillingOperation = workflow.AWSBillingOperationCreateCUR2Export
+	if options.Selectors == nil {
+		options.Selectors = &workflow.ExecutionSelectors{}
+	}
+	if options.Selectors.AWS == nil {
+		options.Selectors.AWS = &workflow.AWSExecutionSelectors{}
+	}
+	if destinationMode != "" && destinationMode != workflow.AWSCUR2DestinationGenerated {
+		options.Selectors.AWS.CUR2DestinationMode = destinationMode
+	}
+	if bucketRef != "" {
+		options.Selectors.AWS.CUR2S3BucketRef = bucketRef
+	}
 	options, err = workflow.NormalizeExecutionOptionsForRequest(request, options)
 	if err != nil {
 		return workflow.Result{
@@ -428,6 +558,10 @@ func runCreateCUR2SetupPlan(ctx context.Context, registry workflow.Registry, sou
 		}
 	}
 	return registry.ExecuteContext(ctx, request, options)
+}
+
+func isExistingBucketSelectionResult(result workflow.Result) bool {
+	return result.Code == "aws_cur2_existing_bucket_selection_required"
 }
 
 func shouldOfferCreateCUR2GuidedApply(result workflow.Result) bool {
@@ -467,6 +601,7 @@ func createCUR2SetupApprovalOptions(source billingguide.CredentialSource, previe
 		return workflow.ExecutionOptions{}, err
 	}
 	options.AWSBillingOperation = workflow.AWSBillingOperationCreateCUR2Export
+	preserveCreateCUR2DestinationSelectors(&options, preview)
 	if preview.Plan == nil {
 		return workflow.ExecutionOptions{}, fmt.Errorf("create CUR 2.0 setup plan is missing")
 	}
@@ -494,6 +629,21 @@ func createCUR2SetupApprovalOptions(source billingguide.CredentialSource, previe
 	return workflow.NormalizeExecutionOptionsForRequest(request, options)
 }
 
+func preserveCreateCUR2DestinationSelectors(options *workflow.ExecutionOptions, preview workflow.Result) {
+	if options == nil || preview.ExecutionOptions.Selectors == nil || preview.ExecutionOptions.Selectors.AWS == nil {
+		return
+	}
+	if options.Selectors == nil {
+		options.Selectors = &workflow.ExecutionSelectors{}
+	}
+	if options.Selectors.AWS == nil {
+		options.Selectors.AWS = &workflow.AWSExecutionSelectors{}
+	}
+	previewAWS := preview.ExecutionOptions.Selectors.AWS
+	options.Selectors.AWS.CUR2DestinationMode = previewAWS.CUR2DestinationMode
+	options.Selectors.AWS.CUR2S3BucketRef = previewAWS.CUR2S3BucketRef
+}
+
 func safeCUR2ExportRef(value string) bool {
 	options := workflow.ExecutionOptions{
 		Selectors: &workflow.ExecutionSelectors{
@@ -503,6 +653,20 @@ func safeCUR2ExportRef(value string) bool {
 		},
 	}
 	_, err := workflow.NormalizeExecutionOptions(options)
+	return err == nil
+}
+
+func safeS3BucketRef(value string) bool {
+	options := workflow.ExecutionOptions{
+		AWSBillingOperation: workflow.AWSBillingOperationCreateCUR2Export,
+		Selectors: &workflow.ExecutionSelectors{
+			AWS: &workflow.AWSExecutionSelectors{
+				CUR2DestinationMode: workflow.AWSCUR2DestinationExistingSameAccount,
+				CUR2S3BucketRef:     value,
+			},
+		},
+	}
+	_, err := workflow.NormalizeExecutionOptionsForRequest(awsBillingApplyPrereqsRequest(), options)
 	return err == nil
 }
 

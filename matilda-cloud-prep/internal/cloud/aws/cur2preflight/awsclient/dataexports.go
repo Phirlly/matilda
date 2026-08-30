@@ -168,9 +168,10 @@ func mapExport(output *awsbcm.GetExportOutput) cur2preflight.Export {
 
 func mapS3Destination(destination *bcmtypes.S3Destination) cur2preflight.S3Destination {
 	mapped := cur2preflight.S3Destination{
-		Bucket: aws.ToString(destination.S3Bucket),
-		Prefix: aws.ToString(destination.S3Prefix),
-		Region: aws.ToString(destination.S3Region),
+		Bucket:      aws.ToString(destination.S3Bucket),
+		BucketOwner: aws.ToString(destination.S3BucketOwner),
+		Prefix:      aws.ToString(destination.S3Prefix),
+		Region:      aws.ToString(destination.S3Region),
 	}
 	if destination.S3OutputConfigurations != nil {
 		mapped.Output = cur2preflight.S3Output{

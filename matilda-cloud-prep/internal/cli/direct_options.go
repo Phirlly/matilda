@@ -21,6 +21,8 @@ func parseExecutionOptions(request workflow.Request, args []string) (workflow.Ex
 	var profile string
 	var region string
 	var exportRef string
+	var cur2Destination string
+	var cur2S3BucketRef string
 	var timeoutValue string
 	var requestBackfill bool
 	var confirmCreateSupportCase bool
@@ -33,6 +35,8 @@ func parseExecutionOptions(request workflow.Request, args []string) (workflow.Ex
 	flags.StringVar(&profile, "profile", "", "AWS shared config profile")
 	flags.StringVar(&region, "region", "", "AWS region")
 	flags.StringVar(&exportRef, "export-ref", "", "Matilda-generated AWS CUR 2.0 export ref")
+	flags.StringVar(&cur2Destination, "cur2-destination", "", "AWS CUR 2.0 create-new destination mode")
+	flags.StringVar(&cur2S3BucketRef, "cur2-s3-bucket-ref", "", "Matilda-generated AWS S3 bucket ref")
 	flags.BoolVar(&requestBackfill, "request-backfill", false, "request previous-month AWS CUR 2.0 backfill")
 	flags.BoolVar(&confirmCreateSupportCase, "confirm-create-support-case", false, "confirm AWS Support case creation")
 	flags.BoolVar(&createCUR2Export, "create-cur2-export", false, "plan or apply AWS CUR 2.0 export creation")
@@ -59,11 +63,18 @@ func parseExecutionOptions(request workflow.Request, args []string) (workflow.Ex
 	if provided["export-ref"] && strings.TrimSpace(exportRef) == "" {
 		return workflow.ExecutionOptions{}, fmt.Errorf("export-ref cannot be empty")
 	}
+	if provided["cur2-destination"] && strings.TrimSpace(cur2Destination) == "" {
+		return workflow.ExecutionOptions{}, fmt.Errorf("cur2-destination cannot be empty")
+	}
+	if provided["cur2-s3-bucket-ref"] && strings.TrimSpace(cur2S3BucketRef) == "" {
+		return workflow.ExecutionOptions{}, fmt.Errorf("cur2-s3-bucket-ref cannot be empty")
+	}
 	if provided["approve-plan"] && strings.TrimSpace(approvePlan) == "" {
 		return workflow.ExecutionOptions{}, fmt.Errorf("approve-plan cannot be empty")
 	}
 
-	awsSelectorUsed := provided["profile"] || provided["region"] || provided["export-ref"]
+	cur2DestinationUsed := provided["cur2-destination"] || provided["cur2-s3-bucket-ref"]
+	awsSelectorUsed := provided["profile"] || provided["region"] || provided["export-ref"] || cur2DestinationUsed
 	if awsSelectorUsed && !isAWSBillingSelectorCommand(request) {
 		return workflow.ExecutionOptions{}, fmt.Errorf("AWS selector flags are supported only for matilda-prep rapid-assessment billing aws preflight, apply-prereqs, or package")
 	}
@@ -76,6 +87,12 @@ func parseExecutionOptions(request workflow.Request, args []string) (workflow.Ex
 	}
 	if (createOperationUsed || approvalUsed) && !isAWSBillingApplyPrereqs(request) {
 		return workflow.ExecutionOptions{}, fmt.Errorf("AWS billing operation flags are supported only for matilda-prep rapid-assessment billing aws apply-prereqs")
+	}
+	if cur2DestinationUsed && !isAWSBillingApplyPrereqs(request) {
+		return workflow.ExecutionOptions{}, fmt.Errorf("AWS CUR 2.0 destination selector flags are supported only for matilda-prep rapid-assessment billing aws apply-prereqs --create-cur2-export")
+	}
+	if cur2DestinationUsed && !createCUR2Export {
+		return workflow.ExecutionOptions{}, fmt.Errorf("AWS CUR 2.0 destination selector flags require --create-cur2-export")
 	}
 	if createCUR2Export && backfillOperationUsed {
 		return workflow.ExecutionOptions{}, fmt.Errorf("aws_billing_prereqs_operation_conflict")
@@ -96,6 +113,10 @@ func parseExecutionOptions(request workflow.Request, args []string) (workflow.Ex
 		(!confirmCreateSupportCase || strings.TrimSpace(approvePlan) == "" || len(approveSteps) == 0) {
 		return workflow.ExecutionOptions{}, fmt.Errorf("AWS backfill support case approval requires --confirm-create-support-case, --approve-plan, and at least one --approve-step")
 	}
+	destinationMode, err := parseCUR2DestinationMode(cur2Destination)
+	if err != nil {
+		return workflow.ExecutionOptions{}, err
+	}
 
 	timeout, err := time.ParseDuration(timeoutValue)
 	if err != nil {
@@ -115,9 +136,11 @@ func parseExecutionOptions(request workflow.Request, args []string) (workflow.Ex
 	if awsSelectorUsed {
 		options.Selectors = &workflow.ExecutionSelectors{
 			AWS: &workflow.AWSExecutionSelectors{
-				Profile:       profile,
-				Region:        region,
-				CUR2ExportRef: exportRef,
+				Profile:             profile,
+				Region:              region,
+				CUR2ExportRef:       exportRef,
+				CUR2DestinationMode: destinationMode,
+				CUR2S3BucketRef:     cur2S3BucketRef,
 			},
 		}
 	}
@@ -145,6 +168,19 @@ func parseExecutionOptions(request workflow.Request, args []string) (workflow.Ex
 		}
 	}
 	return workflow.NormalizeExecutionOptionsForRequest(request, options)
+}
+
+func parseCUR2DestinationMode(input string) (workflow.AWSCUR2DestinationMode, error) {
+	switch strings.TrimSpace(input) {
+	case "":
+		return "", nil
+	case string(workflow.AWSCUR2DestinationGenerated):
+		return workflow.AWSCUR2DestinationGenerated, nil
+	case "existing-same-account", string(workflow.AWSCUR2DestinationExistingSameAccount):
+		return workflow.AWSCUR2DestinationExistingSameAccount, nil
+	default:
+		return "", fmt.Errorf("cur2-destination is unsupported")
+	}
 }
 
 type repeatedStringFlag []string

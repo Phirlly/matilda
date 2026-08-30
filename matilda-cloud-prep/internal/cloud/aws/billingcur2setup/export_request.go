@@ -13,9 +13,10 @@ func buildCreateExportRequest(plan setupPlan) CreateExportRequest {
 		QueryStatement:      matildaCUR2QueryStatement(),
 		TableConfigurations: matildaCUR2TableConfigurations(),
 		Destination: cur2preflight.S3Destination{
-			Bucket: plan.Facts.BucketName,
-			Prefix: plan.Facts.Prefix,
-			Region: plan.Region,
+			Bucket:      plan.Facts.BucketName,
+			BucketOwner: plan.Facts.BucketOwner,
+			Prefix:      plan.Facts.Prefix,
+			Region:      plan.Region,
 			Output: cur2preflight.S3Output{
 				Format:      "TEXT_OR_CSV",
 				Compression: "GZIP",
@@ -106,6 +107,7 @@ func isManagedExport(export cur2preflight.Export, plan setupPlan) bool {
 		return false
 	}
 	if export.Destination.Bucket != request.Destination.Bucket ||
+		export.Destination.BucketOwner != request.Destination.BucketOwner ||
 		export.Destination.Prefix != request.Destination.Prefix ||
 		export.Destination.Region != request.Destination.Region {
 		return false

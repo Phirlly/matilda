@@ -35,6 +35,39 @@ func runCLIWithRegistry(registryInput string, args ...string) (int, string, stri
 	return code, stdout.String(), stderr.String()
 }
 
+func TestParseCUR2DestinationMode(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    workflow.AWSCUR2DestinationMode
+		wantErr bool
+	}{
+		{name: "blank", input: " ", want: ""},
+		{name: "generated", input: "generated", want: workflow.AWSCUR2DestinationGenerated},
+		{name: "existing hyphen", input: "existing-same-account", want: workflow.AWSCUR2DestinationExistingSameAccount},
+		{name: "existing underscore", input: "existing_same_account", want: workflow.AWSCUR2DestinationExistingSameAccount},
+		{name: "unsupported", input: "cross-account", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseCUR2DestinationMode(tt.input)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("parseCUR2DestinationMode(%q) error = nil, want error", tt.input)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseCUR2DestinationMode(%q) returned error: %v", tt.input, err)
+			}
+			if got != tt.want {
+				t.Fatalf("parseCUR2DestinationMode(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestStartGuidesToSelectedPreflightCommand(t *testing.T) {
 	code, stdout, stderr := runCLIWithInput("1\n3\n", "start")
 
@@ -609,6 +642,69 @@ func TestAWSBillingCreateCUR2ExportPlanFlagsReachRunnerAndJSON(t *testing.T) {
 	}
 }
 
+func TestAWSBillingCreateCUR2ExistingBucketFlagsReachRunnerAndJSON(t *testing.T) {
+	request := workflow.Request{
+		Goal:           assessment.RapidAssessment,
+		CollectionPath: assessment.CollectionBilling,
+		Provider:       assessment.ProviderAWS,
+		Action:         assessment.ActionApplyPrereqs,
+	}
+	var gotOptions workflow.ExecutionOptions
+	registry, err := workflow.NewRegistry(workflow.Capability{
+		Request: request,
+		Runner: workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+			gotOptions = options
+			return cliCapabilityReport(got, workflow.RunStatusManualSteps, workflow.SupportGuided, "aws_cur2_existing_bucket_plan_ready")
+		}),
+	})
+	if err != nil {
+		t.Fatalf("NewRegistry returned error: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := RunWithRegistry([]string{
+		"rapid-assessment", "billing", "aws", "apply-prereqs",
+		"--profile", "default",
+		"--region", "us-west-2",
+		"--create-cur2-export",
+		"--cur2-destination", "existing-same-account",
+		"--cur2-s3-bucket-ref", "s3b-abcdefghijklmnop",
+	}, strings.NewReader(""), &stdout, &stderr, registry)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr: %s", code, stderr.String())
+	}
+	if stderr.String() != "" {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	if gotOptions.Selectors == nil || gotOptions.Selectors.AWS == nil {
+		t.Fatalf("runner AWS selectors missing: %#v", gotOptions)
+	}
+	aws := gotOptions.Selectors.AWS
+	if aws.CUR2DestinationMode != workflow.AWSCUR2DestinationExistingSameAccount || aws.CUR2S3BucketRef != "s3b-abcdefghijklmnop" {
+		t.Fatalf("runner AWS destination selectors = %#v, want existing bucket ref", aws)
+	}
+
+	doc := decodeJSON(t, stdout.String())
+	executionOptions, ok := doc["execution_options"].(map[string]any)
+	if !ok {
+		t.Fatalf("execution_options missing or wrong type in %s", stdout.String())
+	}
+	selectors, ok := executionOptions["selectors"].(map[string]any)
+	if !ok {
+		t.Fatalf("execution_options.selectors missing: %#v", executionOptions)
+	}
+	awsJSON, ok := selectors["aws"].(map[string]any)
+	if !ok {
+		t.Fatalf("execution_options.selectors.aws missing: %#v", selectors)
+	}
+	if awsJSON["cur2_destination_mode"] != string(workflow.AWSCUR2DestinationExistingSameAccount) ||
+		awsJSON["cur2_s3_bucket_ref"] != "s3b-abcdefghijklmnop" {
+		t.Fatalf("execution_options.selectors.aws = %#v, want existing bucket selectors", awsJSON)
+	}
+}
+
 func TestAWSBillingCreateCUR2ExportApprovalFlagsReachRunnerAndJSON(t *testing.T) {
 	request := workflow.Request{
 		Goal:           assessment.RapidAssessment,
@@ -798,6 +894,21 @@ func TestAWSBillingCreateCUR2ExportFlagsAreScopedAndConflictChecked(t *testing.T
 			name: "create cur2 does not accept selected export ref",
 			args: []string{"rapid-assessment", "billing", "aws", "apply-prereqs", "--create-cur2-export", "--export-ref", "cur2-abcdefghijklmnop"},
 			want: "export-ref selects an existing AWS CUR 2.0 export for preflight, package handoff, or apply-prereqs --request-backfill; it cannot be used with --create-cur2-export",
+		},
+		{
+			name: "destination selector rejected outside create operation",
+			args: []string{"rapid-assessment", "billing", "aws", "preflight", "--cur2-destination", "generated"},
+			want: "AWS CUR 2.0 destination selector flags are supported only for matilda-prep rapid-assessment billing aws apply-prereqs --create-cur2-export",
+		},
+		{
+			name: "bucket ref selector requires create operation",
+			args: []string{"rapid-assessment", "billing", "aws", "apply-prereqs", "--cur2-s3-bucket-ref", "s3b-abcdefghijklmnop"},
+			want: "AWS CUR 2.0 destination selector flags require --create-cur2-export",
+		},
+		{
+			name: "generated destination rejects bucket ref",
+			args: []string{"rapid-assessment", "billing", "aws", "apply-prereqs", "--create-cur2-export", "--cur2-destination", "generated", "--cur2-s3-bucket-ref", "s3b-abcdefghijklmnop"},
+			want: "cur2_s3_bucket_ref requires existing_same_account destination mode",
 		},
 	}
 
@@ -1269,6 +1380,8 @@ func TestHelpAndVersionAreDeterministicAndPublicSafe(t *testing.T) {
 		"--export-ref <cur2-ref-from-previous-output>",
 		"--request-backfill       plan an AWS Support request for previous-month CUR 2.0 backfill",
 		"--request-backfill --confirm-create-support-case --approve-plan <plan-id> --approve-step aws.billing.cur2.previous_month_backfill_support_case",
+		"--cur2-destination <generated|existing-same-account>",
+		"--cur2-s3-bucket-ref <s3b-ref-from-previous-output>",
 		"--create-cur2-export --approve-plan <plan-id> --approve-step <plan-step-id>",
 		"repeat --approve-step for each mutating step ID returned by the current plan",
 	} {
@@ -1391,6 +1504,8 @@ func TestAWSBillingApplyPrereqsActionHelpIncludesOperationAndApprovalFlags(t *te
 		"matilda-prep rapid-assessment billing aws apply-prereqs",
 		"--request-backfill",
 		"--create-cur2-export",
+		"--cur2-destination <generated|existing-same-account>",
+		"--cur2-s3-bucket-ref <s3b-ref-from-previous-output>",
 		"--approve-plan <plan-id>",
 		"--approve-step <plan-step-id>",
 		"aws.billing.cur2.previous_month_backfill_support_case",
