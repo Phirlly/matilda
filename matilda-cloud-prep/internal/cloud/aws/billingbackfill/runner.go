@@ -44,6 +44,9 @@ func (runner Runner) Run(ctx context.Context, request workflow.Request, options 
 	if options.AWSBillingOperation != workflow.AWSBillingOperationRequestBackfill {
 		return runner.report(request, workflow.RunStatusBlocked, workflow.SupportBlocked, "aws_backfill_operation_required", "AWS billing backfill runner requires the request-backfill operation intent.", false, blockedStep(), failCheck("aws_backfill_operation_required", "AWS billing backfill operation", "AWS billing backfill runner was called without the request-backfill operation intent."))
 	}
+	if awsCUR2ExportRefOption(options) == "" {
+		return runner.report(request, workflow.RunStatusBlocked, workflow.SupportBlocked, "aws_cur2_export_selection_required", "Select one AWS CUR 2.0 export with --export-ref before requesting previous-month backfill.", false, blockedStep(), failCheck("aws_cur2_export_selection_required", "AWS CUR 2.0 export selection", "Rerun AWS billing preflight and pass the selected CUR 2.0 export ref with --export-ref before requesting previous-month backfill."))
+	}
 
 	client := runner.clientFor(options)
 	if isNilClient(client) {
@@ -175,6 +178,8 @@ func (runner Runner) preflightNotBackfillReport(request workflow.Request, prefli
 		return runner.preflightReport(request, preflight, workflow.RunStatusManualSteps, workflow.SupportGuided, "aws_cur2_creation_required", "No AWS CUR 2.0 export exists yet; CUR 2.0 export creation is required before previous-month backfill can be requested.", false, guideStep(), warnCheck("aws_cur2_creation_required", "AWS CUR 2.0 export discovery", "No AWS CUR 2.0 export exists yet."))
 	case preflight.Code == "aws_data_exports_incomplete_export_summary":
 		return runner.preflightReport(request, preflight, workflow.RunStatusBlocked, workflow.SupportBlocked, "aws_data_exports_incomplete_export_summary", "AWS Data Exports returned incomplete export metadata; no backfill action was taken.", false, blockedStep(), failCheck("aws_data_exports_incomplete_export_summary", "AWS Data Exports export metadata", "AWS Data Exports returned an export summary without an export ARN."))
+	case preflight.Code == "aws_cur2_export_ambiguous" || preflight.Code == "aws_cur2_export_selection_required":
+		return runner.preflightReport(request, preflight, workflow.RunStatusBlocked, workflow.SupportBlocked, preflight.Code, "Select one AWS CUR 2.0 export with --export-ref before requesting previous-month backfill.", false, blockedStep(), failCheck(preflight.Code, "AWS CUR 2.0 export selection", "Multiple AWS CUR 2.0 exports were found. Rerun apply-prereqs --request-backfill with the selected --export-ref from preflight output.", preflightSelectionEvidence(preflight)...))
 	case preflight.Status == workflow.RunStatusReady:
 		return runner.preflightReport(request, preflight, workflow.RunStatusReady, workflow.SupportSupported, "aws_backfill_not_required", "AWS CUR 2.0 previous-month billing data does not require backfill.", false, reuseStep(), passCheck("aws_backfill_not_required", "AWS previous-month billing data", "AWS CUR 2.0 previous-month billing data does not require backfill."))
 	default:
@@ -184,6 +189,21 @@ func (runner Runner) preflightNotBackfillReport(request workflow.Request, prefli
 		}
 		return runner.preflightReport(request, preflight, workflow.RunStatusBlocked, workflow.SupportBlocked, "aws_backfill_preflight_not_ready", "AWS Support backfill was not requested because CUR 2.0 preflight is not in a backfill-ready state.", false, blockedStep(), failCheck(code, "AWS CUR 2.0 preflight", "AWS CUR 2.0 preflight must reach previous-month backfill state before a support case can be requested."))
 	}
+}
+
+func preflightSelectionEvidence(preflight workflow.CapabilityReport) []workflow.PlanEvidence {
+	if preflight.PlanInput == nil {
+		return nil
+	}
+	evidence := []workflow.PlanEvidence{}
+	for _, check := range preflight.PlanInput.Checks {
+		for _, item := range check.Evidence {
+			if strings.HasPrefix(item.Key, "candidate_") || item.Key == "selected_export_ref" {
+				evidence = append(evidence, item)
+			}
+		}
+	}
+	return evidence
 }
 
 func providerErrorCode(err error, fallback string) string {

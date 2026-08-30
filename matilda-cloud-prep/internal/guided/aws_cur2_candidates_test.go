@@ -1188,21 +1188,186 @@ func TestRunAWSBillingSingleNonSelectableCandidateCanRunSelectedPreflight(t *tes
 	assertGuidedOutputSafe(t, output)
 }
 
-func TestRunAWSBillingCreateCUR2PlanApprovedInGuidedModeUsesPlanBoundApprovals(t *testing.T) {
+func TestRunAWSBillingSelectedCUR2ManualBackfillRunsPreviewWithoutApproval(t *testing.T) {
 	calls := []guidedAWSBillingCall{}
 	preflightRunner := workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
 		calls = append(calls, guidedAWSBillingCall{Request: got, Options: options})
-		if options.Selectors != nil && options.Selectors.AWS != nil && options.Selectors.AWS.CUR2ExportRef != "" {
-			t.Fatalf("selected preflight should not run when user chooses create-new setup: %#v", options.Selectors.AWS)
+		exportRef := ""
+		if options.Selectors != nil && options.Selectors.AWS != nil {
+			exportRef = options.Selectors.AWS.CUR2ExportRef
 		}
-		return guidedAmbiguousCUR2SelectionReport(got)
+		switch exportRef {
+		case "":
+			return guidedAmbiguousCUR2SelectionReport(got)
+		case "cur2-acacacacacacacac":
+			return guidedBackfillManualPreflightReport(got, exportRef)
+		default:
+			t.Fatalf("unexpected preflight export ref %q", exportRef)
+			return workflow.CapabilityReport{}
+		}
 	})
 	applyRunner := workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
 		calls = append(calls, guidedAWSBillingCall{Request: got, Options: options})
-		if len(options.Approvals) == 0 {
-			return guidedCreateCUR2PlanReport(got)
+		if options.AWSBillingOperation != workflow.AWSBillingOperationRequestBackfill {
+			t.Fatalf("apply operation = %q, want request_backfill", options.AWSBillingOperation)
 		}
-		return guidedCreateCUR2AppliedReport(got)
+		return guidedBackfillApprovalRequiredReport(got)
+	})
+	registry := testAWSBillingRegistry(t, preflightRunner, applyRunner)
+	guide := &fakeAWSBillingGuide{
+		sources: []billingguide.CredentialSource{{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}},
+		verified: map[string]billingguide.VerifiedIdentity{
+			"profile:default": {Source: billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}, AccountLabel: "account-ending-9012", CallerRef: "sha256:abcdef123456", Region: "us-east-1"},
+		},
+	}
+
+	output, err := runGuidedWithConfig("1\n1\ny\n1\n", Config{Registry: registry, AWSBilling: guide})
+
+	if err != nil {
+		t.Fatalf("RunWithConfig returned error: %v", err)
+	}
+	if len(calls) != 3 {
+		t.Fatalf("registry calls = %d, want discovery preflight, selected preflight, backfill preview", len(calls))
+	}
+	if calls[1].Request != awsBillingRequest() || calls[1].Options.Selectors.AWS.CUR2ExportRef != "cur2-acacacacacacacac" {
+		t.Fatalf("selected preflight call = %#v, want selected ref", calls[1])
+	}
+	backfill := calls[2]
+	if backfill.Request != testAWSBillingApplyPrereqsRequest() {
+		t.Fatalf("backfill request = %#v, want AWS billing apply-prereqs", backfill.Request)
+	}
+	if backfill.Options.AWSBillingOperation != workflow.AWSBillingOperationRequestBackfill {
+		t.Fatalf("backfill operation = %q, want request_backfill", backfill.Options.AWSBillingOperation)
+	}
+	if backfill.Options.Selectors == nil || backfill.Options.Selectors.AWS == nil {
+		t.Fatalf("backfill selectors missing: %#v", backfill.Options.Selectors)
+	}
+	if backfill.Options.Selectors.AWS.Profile != "default" ||
+		backfill.Options.Selectors.AWS.Region != "us-east-1" ||
+		backfill.Options.Selectors.AWS.CUR2ExportRef != "cur2-acacacacacacacac" {
+		t.Fatalf("backfill selectors = %#v, want selected profile, region, and export ref", backfill.Options.Selectors.AWS)
+	}
+	if len(backfill.Options.Approvals) != 0 {
+		t.Fatalf("backfill approvals = %#v, want none for guided preview", backfill.Options.Approvals)
+	}
+	for _, want := range []string{
+		"Running readiness preflight for selected CUR 2.0 export cur2-acacacacacacacac",
+		"Preparing AWS Support backfill request plan.",
+		"Support code: aws_backfill_support_case_approval_required",
+		"Approve with:",
+		"--export-ref cur2-acacacacacacacac --request-backfill --confirm-create-support-case --approve-plan",
+		"--approve-step aws.billing.cur2.previous_month_backfill_support_case",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output = %q, want to contain %q", output, want)
+		}
+	}
+	assertGuidedOutputSafe(t, output)
+}
+
+func TestRunAWSBillingSelectedCUR2ManualBackfillShowsManualFallbackWithoutApprovalFlags(t *testing.T) {
+	calls := []guidedAWSBillingCall{}
+	preflightRunner := workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+		calls = append(calls, guidedAWSBillingCall{Request: got, Options: options})
+		exportRef := ""
+		if options.Selectors != nil && options.Selectors.AWS != nil {
+			exportRef = options.Selectors.AWS.CUR2ExportRef
+		}
+		switch exportRef {
+		case "":
+			return guidedAmbiguousCUR2SelectionReport(got)
+		case "cur2-acacacacacacacac":
+			return guidedBackfillManualPreflightReport(got, exportRef)
+		default:
+			t.Fatalf("unexpected preflight export ref %q", exportRef)
+			return workflow.CapabilityReport{}
+		}
+	})
+	applyRunner := workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+		calls = append(calls, guidedAWSBillingCall{Request: got, Options: options})
+		if options.AWSBillingOperation != workflow.AWSBillingOperationRequestBackfill {
+			t.Fatalf("apply operation = %q, want request_backfill", options.AWSBillingOperation)
+		}
+		return guidedBackfillManualFallbackReport(got)
+	})
+	registry := testAWSBillingRegistry(t, preflightRunner, applyRunner)
+	guide := &fakeAWSBillingGuide{
+		sources: []billingguide.CredentialSource{{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}},
+		verified: map[string]billingguide.VerifiedIdentity{
+			"profile:default": {Source: billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}, AccountLabel: "account-ending-9012", CallerRef: "sha256:abcdef123456", Region: "us-east-1"},
+		},
+	}
+
+	output, err := runGuidedWithConfig("1\n1\ny\n1\n", Config{Registry: registry, AWSBilling: guide})
+
+	if err != nil {
+		t.Fatalf("RunWithConfig returned error: %v", err)
+	}
+	if len(calls) != 3 {
+		t.Fatalf("registry calls = %d, want discovery preflight, selected preflight, backfill preview", len(calls))
+	}
+	if len(calls[2].Options.Approvals) != 0 {
+		t.Fatalf("backfill approvals = %#v, want none for guided manual fallback preview", calls[2].Options.Approvals)
+	}
+	for _, want := range []string{
+		"Preparing AWS Support backfill request plan.",
+		"Support code: aws_support_case_manual_fallback_required",
+		"matilda-prep rapid-assessment billing aws apply-prereqs --profile default --region us-east-1 --export-ref cur2-acacacacacacacac --request-backfill",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output = %q, want to contain %q", output, want)
+		}
+	}
+	for _, forbidden := range []string{
+		"--confirm-create-support-case",
+		"--approve-plan",
+		"--approve-step",
+		"Report name:",
+		"S3 bucket:",
+		"Please backfill AWS CUR 2.0 cost data",
+		"arn:aws",
+		"/Users/",
+	} {
+		if strings.Contains(output, forbidden) {
+			t.Fatalf("manual fallback output leaked or printed approval flag %q in %s", forbidden, output)
+		}
+	}
+	assertGuidedOutputSafe(t, output)
+}
+
+func TestRunAWSBillingCreateCUR2PlanApprovedInGuidedModeUsesPlanBoundApprovals(t *testing.T) {
+	const createdRef = "cur2-aeaeaeaeaeaeaeae"
+	calls := []guidedAWSBillingCall{}
+	preflightRunner := workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+		calls = append(calls, guidedAWSBillingCall{Request: got, Options: options})
+		exportRef := ""
+		if options.Selectors != nil && options.Selectors.AWS != nil {
+			exportRef = options.Selectors.AWS.CUR2ExportRef
+		}
+		switch exportRef {
+		case "":
+			return guidedAmbiguousCUR2SelectionReport(got)
+		case createdRef:
+			return guidedBackfillManualPreflightReport(got, exportRef)
+		default:
+			t.Fatalf("unexpected preflight export ref %q", exportRef)
+			return workflow.CapabilityReport{}
+		}
+	})
+	applyRunner := workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+		calls = append(calls, guidedAWSBillingCall{Request: got, Options: options})
+		switch options.AWSBillingOperation {
+		case workflow.AWSBillingOperationCreateCUR2Export:
+			if len(options.Approvals) == 0 {
+				return guidedCreateCUR2PlanReport(got)
+			}
+			return guidedCreateCUR2AppliedReportWithRef(got, createdRef)
+		case workflow.AWSBillingOperationRequestBackfill:
+			return guidedBackfillApprovalRequiredReport(got)
+		default:
+			t.Fatalf("unexpected apply operation %q", options.AWSBillingOperation)
+			return workflow.CapabilityReport{}
+		}
 	})
 	registry := testAWSBillingRegistry(t, preflightRunner, applyRunner)
 	guide := &fakeAWSBillingGuide{
@@ -1217,8 +1382,8 @@ func TestRunAWSBillingCreateCUR2PlanApprovedInGuidedModeUsesPlanBoundApprovals(t
 	if err != nil {
 		t.Fatalf("RunWithConfig returned error: %v", err)
 	}
-	if len(calls) != 3 {
-		t.Fatalf("registry calls = %d, want preflight, plan preview, approved apply", len(calls))
+	if len(calls) != 5 {
+		t.Fatalf("registry calls = %d, want preflight, plan preview, approved apply, selected preflight, backfill preview", len(calls))
 	}
 	assertGuidedCreateCUR2PlanCallAt(t, calls[1])
 	previewReport := guidedCreateCUR2PlanReport(calls[1].Request)
@@ -1250,37 +1415,71 @@ func TestRunAWSBillingCreateCUR2PlanApprovedInGuidedModeUsesPlanBoundApprovals(t
 			t.Fatalf("apply approvals = %#v, want approved step %s bound to %s", apply.Options.Approvals, stepID, previewPlanID)
 		}
 	}
+	selected := calls[3]
+	if selected.Request != awsBillingRequest() || selected.Options.Selectors.AWS.CUR2ExportRef != createdRef {
+		t.Fatalf("selected preflight call = %#v, want created export ref", selected)
+	}
+	backfill := calls[4]
+	if backfill.Request != testAWSBillingApplyPrereqsRequest() ||
+		backfill.Options.AWSBillingOperation != workflow.AWSBillingOperationRequestBackfill ||
+		backfill.Options.Selectors.AWS.CUR2ExportRef != createdRef {
+		t.Fatalf("backfill preview call = %#v, want request-backfill for created export ref", backfill)
+	}
+	if len(backfill.Options.Approvals) != 0 {
+		t.Fatalf("backfill approvals = %#v, want none for guided preview", backfill.Options.Approvals)
+	}
 	for _, want := range []string{
 		"Apply this AWS CUR 2.0 setup plan now? [y/N]",
 		"Applying approved Matilda AWS CUR 2.0 setup plan.",
 		"Support code: aws_cur2_create_export_created",
 		"Cloud changes were made for the approved setup plan.",
+		"Validating selected Matilda AWS CUR 2.0 export cur2-aeaeaeaeaeaeaeae.",
+		"Preparing AWS Support backfill request plan.",
+		"Support code: aws_backfill_support_case_approval_required",
+		"Approve with:",
+		"--export-ref cur2-aeaeaeaeaeaeaeae --request-backfill --confirm-create-support-case --approve-plan",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("output = %q, want to contain %q", output, want)
 		}
 	}
-	for _, forbidden := range []string{
-		"Running readiness preflight for selected CUR 2.0 export",
-		"--export-ref",
-	} {
-		if strings.Contains(output, forbidden) {
-			t.Fatalf("output = %q, want no %q", output, forbidden)
-		}
+	if strings.Contains(output, "Creating AWS Support case") {
+		t.Fatalf("guided flow should not create support case inline: %s", output)
 	}
 	assertGuidedOutputSafe(t, output)
 }
 
-func TestRunAWSBillingCreateCUR2PlanReuseDoesNotPromptForApply(t *testing.T) {
+func TestRunAWSBillingCreateCUR2PlanReuseContinuesToBackfillPreview(t *testing.T) {
+	const reusedRef = "cur2-afafafafafafafaf"
 	calls := []guidedAWSBillingCall{}
 	registry := testAWSBillingRegistry(t,
 		workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
 			calls = append(calls, guidedAWSBillingCall{Request: got, Options: options})
-			return guidedAmbiguousCUR2SelectionReport(got)
+			exportRef := ""
+			if options.Selectors != nil && options.Selectors.AWS != nil {
+				exportRef = options.Selectors.AWS.CUR2ExportRef
+			}
+			switch exportRef {
+			case "":
+				return guidedAmbiguousCUR2SelectionReport(got)
+			case reusedRef:
+				return guidedBackfillManualPreflightReport(got, exportRef)
+			default:
+				t.Fatalf("unexpected preflight export ref %q", exportRef)
+				return workflow.CapabilityReport{}
+			}
 		}),
 		workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
 			calls = append(calls, guidedAWSBillingCall{Request: got, Options: options})
-			return guidedCreateCUR2ReuseReport(got)
+			switch options.AWSBillingOperation {
+			case workflow.AWSBillingOperationCreateCUR2Export:
+				return guidedCreateCUR2ReuseReportWithRef(got, reusedRef)
+			case workflow.AWSBillingOperationRequestBackfill:
+				return guidedBackfillApprovalRequiredReport(got)
+			default:
+				t.Fatalf("unexpected apply operation %q", options.AWSBillingOperation)
+				return workflow.CapabilityReport{}
+			}
 		}),
 	)
 	guide := &fakeAWSBillingGuide{
@@ -1295,16 +1494,30 @@ func TestRunAWSBillingCreateCUR2PlanReuseDoesNotPromptForApply(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunWithConfig returned error: %v", err)
 	}
-	if len(calls) != 2 {
-		t.Fatalf("registry calls = %d, want preflight plus non-mutating reuse result", len(calls))
+	if len(calls) != 4 {
+		t.Fatalf("registry calls = %d, want preflight, reuse result, selected preflight, backfill preview", len(calls))
 	}
 	assertGuidedCreateCUR2PlanCallAt(t, calls[1])
+	if calls[2].Request != awsBillingRequest() || calls[2].Options.Selectors.AWS.CUR2ExportRef != reusedRef {
+		t.Fatalf("selected preflight call = %#v, want reused export ref", calls[2])
+	}
+	if calls[3].Request != testAWSBillingApplyPrereqsRequest() ||
+		calls[3].Options.AWSBillingOperation != workflow.AWSBillingOperationRequestBackfill ||
+		calls[3].Options.Selectors.AWS.CUR2ExportRef != reusedRef {
+		t.Fatalf("backfill preview call = %#v, want request-backfill for reused export ref", calls[3])
+	}
+	if len(calls[3].Options.Approvals) != 0 {
+		t.Fatalf("backfill approvals = %#v, want none for guided preview", calls[3].Options.Approvals)
+	}
 	for _, want := range []string{
 		"Result: ready",
 		"Support code: aws_cur2_create_export_reused",
 		"No approval required: Reuse existing Matilda AWS CUR 2.0 export",
 		"No cloud changes were made.",
 		"No mutation approval is required for this result.",
+		"Validating selected Matilda AWS CUR 2.0 export cur2-afafafafafafafaf.",
+		"Preparing AWS Support backfill request plan.",
+		"Support code: aws_backfill_support_case_approval_required",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("output = %q, want to contain %q", output, want)
@@ -1313,11 +1526,58 @@ func TestRunAWSBillingCreateCUR2PlanReuseDoesNotPromptForApply(t *testing.T) {
 	for _, forbidden := range []string{
 		"Apply this AWS CUR 2.0 setup plan now? [y/N]",
 		"Applying approved Matilda AWS CUR 2.0 setup plan.",
-		"--approve-step",
 	} {
 		if strings.Contains(output, forbidden) {
 			t.Fatalf("output = %q, want no %q", output, forbidden)
 		}
+	}
+	assertGuidedOutputSafe(t, output)
+}
+
+func TestRunAWSBillingCreateCUR2PlanStopsWhenAppliedResultHasNoSafeSelectedRef(t *testing.T) {
+	calls := []guidedAWSBillingCall{}
+	registry := testAWSBillingRegistry(t,
+		workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+			calls = append(calls, guidedAWSBillingCall{Request: got, Options: options})
+			if options.Selectors != nil && options.Selectors.AWS != nil && options.Selectors.AWS.CUR2ExportRef != "" {
+				t.Fatalf("selected preflight should not run without safe setup result ref: %#v", options.Selectors.AWS)
+			}
+			return guidedAmbiguousCUR2SelectionReport(got)
+		}),
+		workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+			calls = append(calls, guidedAWSBillingCall{Request: got, Options: options})
+			if len(options.Approvals) == 0 {
+				return guidedCreateCUR2PlanReport(got)
+			}
+			return guidedCreateCUR2AppliedReport(got)
+		}),
+	)
+	guide := &fakeAWSBillingGuide{
+		sources: []billingguide.CredentialSource{{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}},
+		verified: map[string]billingguide.VerifiedIdentity{
+			"profile:default": {Source: billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}, AccountLabel: "account-ending-9012", CallerRef: "sha256:abcdef123456", Region: "us-east-1"},
+		},
+	}
+
+	output, err := runGuidedWithConfig("1\n1\ny\n3\n1\ny\n", Config{Registry: registry, AWSBilling: guide})
+
+	if err != nil {
+		t.Fatalf("RunWithConfig returned error: %v", err)
+	}
+	if len(calls) != 3 {
+		t.Fatalf("registry calls = %d, want preflight, plan preview, approved apply only", len(calls))
+	}
+	for _, want := range []string{
+		"Support code: aws_cur2_create_export_created",
+		"Follow-up validation needs a safe CUR 2.0 export ref. Rerun AWS billing preflight to rediscover the created export.",
+		"matilda-prep rapid-assessment billing aws preflight --profile default --region us-east-1",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output = %q, want to contain %q", output, want)
+		}
+	}
+	if strings.Contains(output, "Preparing AWS Support backfill request plan.") {
+		t.Fatalf("output = %q, want no backfill preview without safe selected ref", output)
 	}
 	assertGuidedOutputSafe(t, output)
 }
@@ -1757,6 +2017,10 @@ func guidedCreateCUR2AppliedReport(request workflow.Request) workflow.Capability
 	return report
 }
 
+func guidedCreateCUR2AppliedReportWithRef(request workflow.Request, exportRef string) workflow.CapabilityReport {
+	return guidedReportWithSelectedExportRef(guidedCreateCUR2AppliedReport(request), exportRef)
+}
+
 func guidedCreateCUR2ReuseReport(request workflow.Request) workflow.CapabilityReport {
 	handles := []workflow.SourceHandle{{
 		Label: "AWS CUR 2.0 Create-New Export",
@@ -1803,6 +2067,147 @@ func guidedCreateCUR2ReuseReport(request workflow.Request) workflow.CapabilityRe
 				Evidence: []workflow.PlanEvidence{
 					{Key: "mutated", Value: "false"},
 					{Key: "coverage_status", Value: string(workflow.CoverageSingleAccount)},
+				},
+				SourceHandles: handles,
+			}},
+			SourceHandles: handles,
+		},
+	}
+}
+
+func guidedCreateCUR2ReuseReportWithRef(request workflow.Request, exportRef string) workflow.CapabilityReport {
+	return guidedReportWithSelectedExportRef(guidedCreateCUR2ReuseReport(request), exportRef)
+}
+
+func guidedReportWithSelectedExportRef(report workflow.CapabilityReport, exportRef string) workflow.CapabilityReport {
+	if report.PlanInput == nil || len(report.PlanInput.Checks) == 0 {
+		return report
+	}
+	report.PlanInput.Checks[0].Evidence = append(report.PlanInput.Checks[0].Evidence,
+		workflow.PlanEvidence{Key: "selected_export_ref", Value: exportRef, PlanIDExcluded: true},
+	)
+	return report
+}
+
+func guidedBackfillManualPreflightReport(request workflow.Request, exportRef string) workflow.CapabilityReport {
+	return guidedCapabilityReport(request, workflow.RunStatusManualSteps, "aws_backfill_manual_step_required", []workflow.PlanEvidence{
+		{Key: "selected_export_ref", Value: exportRef},
+		{Key: "output_format", Value: "TEXT_OR_CSV"},
+		{Key: "compression", Value: "GZIP"},
+		{Key: "time_granularity", Value: "MONTHLY"},
+		{Key: "overwrite", Value: "CREATE_NEW_REPORT"},
+		{Key: "previous_billing_period", Value: "2026-06"},
+		{Key: "missing_previous_month_component", Value: "data_partition"},
+		{Key: "missing_previous_month_component", Value: "manifest"},
+	})
+}
+
+func guidedBackfillApprovalRequiredReport(request workflow.Request) workflow.CapabilityReport {
+	handles := []workflow.SourceHandle{{
+		Label: "AWS Support Backfill Request",
+		URI:   "docs/references/aws/aws-support-backfill-request.md",
+	}}
+	return workflow.CapabilityReport{
+		Status:        workflow.RunStatusManualSteps,
+		SupportStatus: workflow.SupportGuided,
+		Code:          "aws_backfill_support_case_approval_required",
+		Message:       "AWS Support case creation requires explicit plan-bound backfill approval.",
+		Mutated:       false,
+		SourceHandles: handles,
+		PlanInput: &workflow.ExecutionPlanInput{
+			Request: request,
+			OperatorIdentitySummary: workflow.OperatorIdentitySummary{
+				IdentityStatus: "verified",
+				Summary:        "AWS caller identity and CUR 2.0 export state were checked before AWS billing apply-prereqs.",
+				SourceHandles:  handles,
+			},
+			CoverageRecommendation: workflow.CoverageRecommendation{
+				CoverageStatus: workflow.CoverageSingleAccount,
+				Summary:        "AWS billing coverage follows the selected CUR 2.0 export and previous-month billing period.",
+			},
+			PackageSchemaStatus: workflow.PackageSchemaProviderSchemaRequired,
+			Steps: []workflow.PlanStep{{
+				ID:                        workflow.AWSBackfillSupportCaseOperationID,
+				Intent:                    workflow.PlanStepCreate,
+				Title:                     "Request AWS CUR 2.0 previous-month backfill",
+				Description:               "Create an AWS Support case for previous-month CUR 2.0 billing data backfill only after explicit approval.",
+				Reason:                    "Matilda Rapid Assessment - Billing Based requires previous-month AWS billing data for this path.",
+				ApprovalKind:              "cloud_mutation",
+				CurrentState:              "Previous-month CUR 2.0 billing data is missing.",
+				TargetState:               "AWS Support has a backfill request for the selected billing period.",
+				RequiredPermission:        "support:DescribeServices, support:DescribeSeverityLevels, support:DescribeCreateCaseOptions, support:DescribeCases, support:CreateCase",
+				CredentialMaterialTouched: false,
+				Validation:                "The tool reruns read-only CUR 2.0 preflight checks and duplicate-case checks before creating a support case.",
+				Rollback:                  "AWS Support cases are not deleted by this tool; users can resolve or close cases in AWS Support Center.",
+				SourceHandles:             handles,
+			}},
+			Checks: []workflow.PlanCheck{{
+				ID:      "aws_backfill_support_case_approval_required",
+				Status:  workflow.CheckWarn,
+				Title:   "AWS Support case approval",
+				Message: "Review the current plan, then rerun apply-prereqs with a plan-bound backfill support-case approval.",
+				Evidence: []workflow.PlanEvidence{
+					{Key: "selected_export_ref", Value: "cur2-aeaeaeaeaeaeaeae"},
+					{Key: "previous_billing_period", Value: "2026-06"},
+					{Key: "missing_previous_month_component", Value: "data_partition"},
+					{Key: "missing_previous_month_component", Value: "manifest"},
+					{Key: "support_case_binding_ref", Value: "support_case_abcdefghijklmnop"},
+				},
+				SourceHandles: handles,
+			}},
+			SourceHandles: handles,
+		},
+	}
+}
+
+func guidedBackfillManualFallbackReport(request workflow.Request) workflow.CapabilityReport {
+	handles := []workflow.SourceHandle{{
+		Label: "AWS Support Backfill Request",
+		URI:   "docs/references/aws/aws-support-backfill-request.md",
+	}}
+	return workflow.CapabilityReport{
+		Status:        workflow.RunStatusManualSteps,
+		SupportStatus: workflow.SupportGuided,
+		Code:          "aws_support_case_manual_fallback_required",
+		Message:       "AWS Support API case creation is unavailable; use the manual AWS Support request path.",
+		Mutated:       false,
+		SourceHandles: handles,
+		PlanInput: &workflow.ExecutionPlanInput{
+			Request: request,
+			OperatorIdentitySummary: workflow.OperatorIdentitySummary{
+				IdentityStatus: "verified",
+				Summary:        "AWS caller identity and CUR 2.0 export state were checked before AWS billing apply-prereqs.",
+				SourceHandles:  handles,
+			},
+			CoverageRecommendation: workflow.CoverageRecommendation{
+				CoverageStatus: workflow.CoverageSingleAccount,
+				Summary:        "AWS billing coverage follows the selected CUR 2.0 export and previous-month billing period.",
+			},
+			PackageSchemaStatus: workflow.PackageSchemaProviderSchemaRequired,
+			Steps: []workflow.PlanStep{{
+				Intent:                    workflow.PlanStepGuide,
+				Title:                     "Request AWS CUR 2.0 backfill manually",
+				Description:               "Use AWS Support Center to request previous-month CUR 2.0 billing data backfill when automated case classification is unavailable.",
+				Reason:                    "Matilda Rapid Assessment - Billing Based requires previous-month AWS billing data, but the tool must not guess AWS Support case classification values.",
+				ApprovalKind:              "not_required",
+				CurrentState:              "AWS Support case creation could not be automated safely.",
+				TargetState:               "An AWS Support backfill request is submitted manually with the required billing details.",
+				RequiredPermission:        "AWS Support Center access with permission to create a support case.",
+				CredentialMaterialTouched: false,
+				Validation:                "Rerun preflight after AWS completes the manual Support request to confirm previous-month data partition and manifest availability.",
+				Rollback:                  "No cloud change was made by this tool; users manage manual Support cases in AWS Support Center.",
+				SourceHandles:             handles,
+			}},
+			Checks: []workflow.PlanCheck{{
+				ID:      "aws_support_case_manual_fallback_required",
+				Status:  workflow.CheckWarn,
+				Title:   "AWS Support API availability",
+				Message: "AWS Support API case creation is unavailable for this account or support plan.",
+				Evidence: []workflow.PlanEvidence{
+					{Key: "selected_export_ref", Value: "cur2-acacacacacacacac"},
+					{Key: "previous_billing_period", Value: "2026-06"},
+					{Key: "missing_previous_month_component", Value: "manifest"},
+					{Key: "manual_support_request_needs", Value: "report name, billing period, S3 bucket details"},
 				},
 				SourceHandles: handles,
 			}},
@@ -1918,6 +2323,39 @@ func TestRunCreateCUR2SetupPlanBlocksUnsafeCredentialSource(t *testing.T) {
 		t.Fatalf("result = %#v, want unsafe selector block", result)
 	}
 	assertGuidedOutputSafe(t, result.Message)
+}
+
+func TestRunBackfillPreviewWithConfigBlocksUnsafeInputsBeforeRegistry(t *testing.T) {
+	called := false
+	registry := testAWSBillingRegistry(t,
+		workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+			called = true
+			return guidedCapabilityReport(got, workflow.StatusReady, "aws_cur2_preflight_ready", nil)
+		}),
+		workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+			called = true
+			return guidedBackfillApprovalRequiredReport(got)
+		}),
+	)
+
+	unsafeSource := billingguide.CredentialSource{
+		Kind:    billingguide.CredentialSourceProfile,
+		Profile: "/private/tmp/profile",
+		Region:  "us-east-1",
+	}
+	result := runBackfillPreviewWithConfig(context.Background(), registry, unsafeSource, "cur2-abcdefghijklmnop")
+	if result.Status != workflow.RunStatusBlocked || result.Code != "aws_config_invalid_selector" {
+		t.Fatalf("unsafe source result = %#v, want config invalid block", result)
+	}
+
+	safeSource := billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}
+	result = runBackfillPreviewWithConfig(context.Background(), registry, safeSource, "arn:aws:bcm-data-exports:us-east-1:123456789012:export/live")
+	if result.Status != workflow.RunStatusBlocked || result.Code != "aws_cur2_export_ref_invalid" {
+		t.Fatalf("unsafe ref result = %#v, want export ref invalid block", result)
+	}
+	if called {
+		t.Fatal("registry should not run for unsafe backfill preview inputs")
+	}
 }
 
 func TestShouldOfferCreateCUR2GuidedApplyRequiresCurrentApprovablePlan(t *testing.T) {

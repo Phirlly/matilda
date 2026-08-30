@@ -2,6 +2,7 @@ package billingbackfill
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -73,6 +74,70 @@ func TestRunnerBackfillPreviewExposesPlanBoundSupportCaseStep(t *testing.T) {
 	}
 	if binding == "" {
 		t.Fatalf("approval evidence missing support_case_binding_ref: %#v", check.Evidence)
+	}
+}
+
+func TestRunnerBackfillWorkflowResultsDoNotSerializeSupportCaseBodyFacts(t *testing.T) {
+	tests := []struct {
+		name   string
+		result func(*testing.T, *fakeBackfillClient) workflow.Result
+	}{
+		{
+			name: "preview",
+			result: func(t *testing.T, client *fakeBackfillClient) workflow.Result {
+				t.Helper()
+				return runBackfillThroughRegistry(t, client, requestBackfillOptions(client.export))
+			},
+		},
+		{
+			name: "manual fallback",
+			result: func(t *testing.T, client *fakeBackfillClient) workflow.Result {
+				t.Helper()
+				client.describeServicesErr = NewProviderError("aws_support_subscription_required", "support plan does not allow Support API case creation")
+				return runBackfillThroughRegistry(t, client, requestBackfillOptions(client.export))
+			},
+		},
+		{
+			name: "approved create",
+			result: func(t *testing.T, client *fakeBackfillClient) workflow.Result {
+				t.Helper()
+				return runBackfillThroughRegistry(t, client, approvedBackfillOptions(t, client))
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := baselineBackfillClient()
+			result := tt.result(t, client)
+			encoded, err := json.Marshal(result)
+			if err != nil {
+				t.Fatalf("json.Marshal returned error: %v", err)
+			}
+			body := supportCaseBody(backfillContext{
+				Export:               client.export,
+				ExportRef:            cur2preflight.SafeCUR2ExportRef(client.export.ExportARN),
+				Period:               "2026-06",
+				MissingDataPartition: true,
+				MissingManifest:      true,
+			}, backfillRequestReference(client.export.ExportARN, "2026-06"))
+			text := string(encoded)
+			for _, forbidden := range []string{
+				client.export.Name,
+				client.export.ExportARN,
+				client.export.SourceAccount,
+				client.export.Destination.Bucket,
+				client.export.Destination.Prefix,
+				body,
+				"Please backfill AWS CUR 2.0 cost data",
+				"Report name:",
+				"S3 bucket:",
+			} {
+				if strings.Contains(text, forbidden) {
+					t.Fatalf("%s result serialized forbidden support-case detail %q in %s", tt.name, forbidden, text)
+				}
+			}
+		})
 	}
 }
 
@@ -622,6 +687,113 @@ func TestRunnerBlocksWhenCUR2PreflightIsNotReadyForBackfill(t *testing.T) {
 	assertBackfillIdentityStatus(t, result, "verified", "AWS caller identity was verified")
 }
 
+func TestRunnerBackfillWithoutExportRefBlocksBeforeExportDiscovery(t *testing.T) {
+	client := baselineBackfillClient()
+	second := client.export
+	second.Name = "matilda-cur2-second"
+	second.ExportARN = "arn:aws:bcm-data-exports:us-east-1:123456789012:export/matilda-cur2-second"
+	client.exports = append(client.exports, second)
+	options := requestBackfillOptions(client.export)
+	options.Selectors.AWS.CUR2ExportRef = ""
+	options, err := workflow.NormalizeExecutionOptionsForRequest(AWSBillingApplyPrereqsRequest(), options)
+	if err != nil {
+		t.Fatalf("NormalizeExecutionOptionsForRequest returned error: %v", err)
+	}
+
+	result := runBackfill(t, client, options)
+
+	if result.Status != workflow.RunStatusBlocked {
+		t.Fatalf("Status = %q, want %q", result.Status, workflow.RunStatusBlocked)
+	}
+	if result.Code != "aws_cur2_export_selection_required" {
+		t.Fatalf("Code = %q, want aws_cur2_export_selection_required", result.Code)
+	}
+	if !strings.Contains(result.Message, "--export-ref") {
+		t.Fatalf("Message = %q, want actionable --export-ref guidance", result.Message)
+	}
+	if result.Mutated {
+		t.Fatal("Mutated = true, want false when export ref is missing")
+	}
+	if client.createCaseCalls != 0 {
+		t.Fatalf("CreateCase calls = %d, want 0", client.createCaseCalls)
+	}
+	if client.listObjectsCalls != 0 {
+		t.Fatalf("ListObjects calls = %d, want 0 before explicit export selection", client.listObjectsCalls)
+	}
+	check, ok := reportCheck(result, "aws_cur2_export_selection_required")
+	if !ok {
+		t.Fatalf("selection-required check not found in %#v", result.PlanInput.Checks)
+	}
+	if !strings.Contains(check.Message, "--export-ref") {
+		t.Fatalf("selection-required check message = %q, want --export-ref guidance", check.Message)
+	}
+}
+
+func TestRunnerBackfillWithoutExportRefBlocksSingleExportAutoSelection(t *testing.T) {
+	client := baselineBackfillClient()
+	options := requestBackfillOptions(client.export)
+	options.Selectors.AWS.CUR2ExportRef = ""
+	options, err := workflow.NormalizeExecutionOptionsForRequest(AWSBillingApplyPrereqsRequest(), options)
+	if err != nil {
+		t.Fatalf("NormalizeExecutionOptionsForRequest returned error: %v", err)
+	}
+
+	result := runBackfill(t, client, options)
+
+	if result.Status != workflow.RunStatusBlocked {
+		t.Fatalf("Status = %q, want %q", result.Status, workflow.RunStatusBlocked)
+	}
+	if result.Code != "aws_cur2_export_selection_required" {
+		t.Fatalf("Code = %q, want aws_cur2_export_selection_required", result.Code)
+	}
+	if !strings.Contains(result.Message, "--export-ref") {
+		t.Fatalf("Message = %q, want actionable --export-ref guidance", result.Message)
+	}
+	if result.Mutated {
+		t.Fatal("Mutated = true, want false when export ref is missing")
+	}
+	if client.createCaseCalls != 0 {
+		t.Fatalf("CreateCase calls = %d, want 0", client.createCaseCalls)
+	}
+}
+
+func TestPreflightNotBackfillReportPreservesSelectionEvidence(t *testing.T) {
+	preflight := workflow.CapabilityReport{
+		Status:  workflow.RunStatusBlocked,
+		Code:    "aws_cur2_export_ambiguous",
+		Message: "Multiple AWS CUR 2.0 exports were found.",
+		PlanInput: &workflow.ExecutionPlanInput{Checks: []workflow.PlanCheck{{
+			ID:     "aws_cur2_export_ambiguous",
+			Status: workflow.CheckFail,
+			Evidence: []workflow.PlanEvidence{
+				{Key: "candidate_1_export_ref", Value: "cur2-abcdefghijklmnop"},
+				{Key: "candidate_1_matilda_support", Value: "preferred"},
+				{Key: "unrelated_detail", Value: "ignored"},
+			},
+		}}},
+	}
+
+	result := Runner{}.preflightNotBackfillReport(AWSBillingApplyPrereqsRequest(), preflight)
+
+	if result.Status != workflow.RunStatusBlocked {
+		t.Fatalf("Status = %q, want %q", result.Status, workflow.RunStatusBlocked)
+	}
+	if result.Code != "aws_cur2_export_ambiguous" {
+		t.Fatalf("Code = %q, want aws_cur2_export_ambiguous", result.Code)
+	}
+	check, ok := reportCheck(result, "aws_cur2_export_ambiguous")
+	if !ok {
+		t.Fatalf("ambiguous selection check not found in %#v", result.PlanInput.Checks)
+	}
+	assertCheckEvidence(t, check, "candidate_1_export_ref", "cur2-abcdefghijklmnop")
+	assertCheckEvidence(t, check, "candidate_1_matilda_support", "preferred")
+	for _, evidence := range check.Evidence {
+		if evidence.Key == "unrelated_detail" {
+			t.Fatalf("selection evidence included unrelated item: %#v", check.Evidence)
+		}
+	}
+}
+
 func TestRunnerBlocksWhenPreviousMonthInspectionFails(t *testing.T) {
 	client := baselineBackfillClient()
 	client.listObjectsErr = cur2preflight.NewProviderError("aws_s3_bucket_inaccessible", "list failed")
@@ -1110,6 +1282,21 @@ func runBackfill(t *testing.T, client *fakeBackfillClient, options workflow.Exec
 		Now:    time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC),
 	})
 	return runner.Run(context.Background(), AWSBillingApplyPrereqsRequest(), options)
+}
+
+func runBackfillThroughRegistry(t *testing.T, client *fakeBackfillClient, options workflow.ExecutionOptions) workflow.Result {
+	t.Helper()
+	registry, err := workflow.NewRegistry(workflow.Capability{
+		Request: AWSBillingApplyPrereqsRequest(),
+		Runner: NewRunner(RunnerConfig{
+			Client: client,
+			Now:    time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC),
+		}),
+	})
+	if err != nil {
+		t.Fatalf("NewRegistry returned error: %v", err)
+	}
+	return registry.ExecuteContext(context.Background(), AWSBillingApplyPrereqsRequest(), options)
 }
 
 func requestBackfillOptions(export cur2preflight.Export) workflow.ExecutionOptions {

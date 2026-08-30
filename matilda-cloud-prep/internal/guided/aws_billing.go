@@ -615,9 +615,34 @@ func writeAWSBillingSummaryWithFacts(stdout io.Writer, source billingguide.Crede
 
 func selectedExportRef(result workflow.Result) string {
 	if result.ExecutionOptions.Selectors != nil && result.ExecutionOptions.Selectors.AWS != nil {
-		return result.ExecutionOptions.Selectors.AWS.CUR2ExportRef
+		if value := strings.TrimSpace(result.ExecutionOptions.Selectors.AWS.CUR2ExportRef); value != "" && safeCUR2ExportRef(value) {
+			return value
+		}
 	}
-	return ""
+	return selectedExportRefFromEvidence(result)
+}
+
+func selectedExportRefFromEvidence(result workflow.Result) string {
+	if result.Plan == nil {
+		return ""
+	}
+	selected := ""
+	for _, check := range result.Plan.Checks {
+		for _, evidence := range check.Evidence {
+			if evidence.Key != "selected_export_ref" {
+				continue
+			}
+			value := strings.TrimSpace(evidence.Value)
+			if value == "" || !safeCUR2ExportRef(value) {
+				return ""
+			}
+			if selected != "" && selected != value {
+				return ""
+			}
+			selected = value
+		}
+	}
+	return selected
 }
 
 func directAWSBillingCommand(source billingguide.CredentialSource, exportRef string) string {
@@ -626,9 +651,31 @@ func directAWSBillingCommand(source billingguide.CredentialSource, exportRef str
 }
 
 func directAWSBillingBackfillCommand(source billingguide.CredentialSource, exportRef string) string {
+	if !safeCUR2ExportRef(strings.TrimSpace(exportRef)) {
+		return directAWSBillingCommand(source, "")
+	}
 	parts := []string{"matilda-prep", "rapid-assessment", "billing", "aws", "apply-prereqs"}
 	parts = directAWSBillingSelectorParts(parts, source, exportRef)
 	parts = append(parts, "--request-backfill")
+	return strings.Join(parts, " ")
+}
+
+func directAWSBillingBackfillApprovalCommand(source billingguide.CredentialSource, result workflow.Result) string {
+	if result.Plan == nil || !result.Plan.Approval.Required || result.Plan.Approval.Blocked || result.Plan.Approval.ApprovalPlanID == "" {
+		return ""
+	}
+	exportRef := selectedExportRef(result)
+	if exportRef == "" {
+		return ""
+	}
+	parts := []string{"matilda-prep", "rapid-assessment", "billing", "aws", "apply-prereqs"}
+	parts = directAWSBillingSelectorParts(parts, source, exportRef)
+	parts = append(parts, "--request-backfill", "--confirm-create-support-case", "--approve-plan", shellArg(result.Plan.Approval.ApprovalPlanID))
+	for _, step := range result.Plan.Steps {
+		if step.RequiresApproval {
+			parts = append(parts, "--approve-step", shellArg(step.ID))
+		}
+	}
 	return strings.Join(parts, " ")
 }
 
@@ -645,16 +692,39 @@ func directAWSBillingCreateCUR2CommandForResult(source billingguide.CredentialSo
 }
 
 func awsBillingFollowupCommand(source billingguide.CredentialSource, result workflow.Result) (string, string) {
+	if isCompletedCreateCUR2SetupResult(result) {
+		return "Next command:", directAWSBillingCommand(source, selectedExportRef(result))
+	}
 	if isCreateCUR2SetupResult(result) {
 		return "Next command:", directAWSBillingCreateCUR2CommandForResult(source, result)
 	}
 	switch result.Code {
 	case "aws_backfill_manual_step_required":
 		return "Next command:", directAWSBillingBackfillCommand(source, selectedExportRef(result))
+	case "aws_backfill_support_case_approval_required":
+		if command := directAWSBillingBackfillApprovalCommand(source, result); command != "" {
+			return "Approve with:", command
+		}
+		return "Next command:", directAWSBillingBackfillCommand(source, selectedExportRef(result))
+	case "aws_support_case_manual_fallback_required",
+		"aws_support_case_classification_ambiguous",
+		"aws_support_case_classification_unavailable",
+		"aws_support_low_severity_unavailable",
+		"aws_support_create_case_options_unverified":
+		return "Reproduce with:", directAWSBillingBackfillCommand(source, selectedExportRef(result))
 	case "aws_cur2_export_not_found", "aws_non_cur2_source_out_of_scope":
 		return "Next command:", directAWSBillingCreateCUR2Command(source)
 	default:
 		return "Reproduce with:", directAWSBillingCommand(source, selectedExportRef(result))
+	}
+}
+
+func isCompletedCreateCUR2SetupResult(result workflow.Result) bool {
+	switch result.Code {
+	case "aws_cur2_create_export_created", "aws_cur2_create_export_reused":
+		return true
+	default:
+		return false
 	}
 }
 
