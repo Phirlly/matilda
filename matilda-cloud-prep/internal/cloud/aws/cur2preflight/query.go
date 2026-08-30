@@ -75,21 +75,12 @@ func validateCUR2Query(statement string, tableColumns []string) checkFinding {
 			return failFinding("aws_cur2_query_unverified", "CUR 2.0 query fields", "CUR 2.0 selected fields must keep the same output name for this preflight path.")
 		}
 		outputs[output] = true
-		if source == cur2ProductMapColumn && output == cur2ProductMapColumn {
-			logicalFieldSources[matildaProductNameField] = matildaProductNameField + "<-" + cur2ProductMapColumn
-		}
 		if isProductNameMapAlias(source, output) {
 			logicalFieldSources[matildaProductNameField] = matildaProductNameField + "<-" + cur2ProductNameSelector
 		}
 	}
-	if !outputs[matildaProductNameField] && logicalFieldSources[matildaProductNameField] == "" {
-		if source := productNameLogicalFieldSource(schemaColumns); source != "" {
-			markProductNameLogicalSource(outputs, source)
-			logicalFieldSources[matildaProductNameField] = source
-		}
-	}
 
-	missing := missingRequiredColumns(outputs)
+	missing := missingRequiredQueryOutputs(outputs)
 	if len(missing) > 0 {
 		return withEvidence(failFinding("aws_cur2_required_fields_missing", "CUR 2.0 required fields", "CUR 2.0 query is missing required Matilda billing fields."), missingRequiredFieldEvidence(missing)...)
 	}
@@ -182,6 +173,16 @@ func missingRequiredColumns(available map[string]bool) []string {
 	return missing
 }
 
+func missingRequiredQueryOutputs(outputs map[string]bool) []string {
+	missing := []string{}
+	for _, required := range requiredCUR2Columns() {
+		if !outputs[required] {
+			missing = append(missing, required)
+		}
+	}
+	return missing
+}
+
 func tableColumnSet(columns []string) map[string]bool {
 	available := map[string]bool{}
 	for _, column := range columns {
@@ -208,15 +209,6 @@ func productNameLogicalFieldSource(available map[string]bool) string {
 		return matildaProductNameField + "<-" + cur2ProductMapColumn
 	default:
 		return ""
-	}
-}
-
-func markProductNameLogicalSource(available map[string]bool, source string) {
-	switch source {
-	case matildaProductNameField + "<-" + cur2ProductNameSelector:
-		available[cur2ProductNameSelector] = true
-	case matildaProductNameField + "<-" + cur2ProductMapColumn:
-		available[cur2ProductMapColumn] = true
 	}
 }
 

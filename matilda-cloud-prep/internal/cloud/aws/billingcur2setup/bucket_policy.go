@@ -104,6 +104,12 @@ func mergeDataExportsPolicy(existing string, plan setupPlan) (string, bool, erro
 				statements = append(statements, raw)
 				continue
 			}
+			if equivalentPolicyStatement(raw, previousPrefixScopedDataExportsStatement(plan)) {
+				readyStatementFound = true
+				statements = append(statements, statementJSON)
+				changed = true
+				continue
+			}
 			return "", false, fmt.Errorf("policy contains a non-equivalent %s statement and cannot be merged safely", dataExportsDeliveryStatementSid)
 		}
 		statements = append(statements, raw)
@@ -129,7 +135,7 @@ func dataExportsStatement(plan setupPlan) policyStatement {
 			"Service": []string{"bcm-data-exports.amazonaws.com"},
 		},
 		Action:   []string{"s3:PutObject"},
-		Resource: fmt.Sprintf("arn:%s:s3:::%s/%s/*", plan.Identity.Partition, plan.Facts.BucketName, strings.Trim(plan.Facts.Prefix, "/")),
+		Resource: dataExportsBucketObjectResourceARN(plan),
 		Condition: map[string]map[string]string{
 			"ArnLike": map[string]string{
 				"aws:SourceArn": fmt.Sprintf("arn:%s:bcm-data-exports:%s:%s:export/*", plan.Identity.Partition, dataExportsRegion, plan.Identity.AccountID),
@@ -139,6 +145,16 @@ func dataExportsStatement(plan setupPlan) policyStatement {
 			},
 		},
 	}
+}
+
+func previousPrefixScopedDataExportsStatement(plan setupPlan) policyStatement {
+	statement := dataExportsStatement(plan)
+	statement.Resource = fmt.Sprintf("arn:%s:s3:::%s/%s/*", plan.Identity.Partition, plan.Facts.BucketName, strings.Trim(plan.Facts.Prefix, "/"))
+	return statement
+}
+
+func dataExportsBucketObjectResourceARN(plan setupPlan) string {
+	return fmt.Sprintf("arn:%s:s3:::%s/*", plan.Identity.Partition, plan.Facts.BucketName)
 }
 
 func jsonEqual(left []byte, right []byte) bool {

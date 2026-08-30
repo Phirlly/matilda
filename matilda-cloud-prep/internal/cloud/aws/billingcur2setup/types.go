@@ -19,6 +19,7 @@ type Client interface {
 	CheckConfiguration(context.Context) (cur2preflight.Configuration, error)
 	GetCallerIdentity(context.Context) (cur2preflight.Identity, error)
 	DescribeOrganization(context.Context) (Organization, error)
+	GetTable(context.Context, string, map[string]string) (cur2preflight.Table, error)
 	ListExports(context.Context, string) (cur2preflight.ExportPage, error)
 	GetExport(context.Context, string) (cur2preflight.Export, error)
 	ListBuckets(context.Context, ListBucketsRequest) (BucketPage, error)
@@ -118,6 +119,7 @@ type setupPlan struct {
 	Facts            setupFacts
 	Identity         identityContext
 	Region           string
+	QueryStatement   string
 	Coverage         coverageResult
 	BucketExists     bool
 	PolicyNeedsMerge bool

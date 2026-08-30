@@ -131,6 +131,10 @@ func (client *Client) DescribeOrganization(ctx context.Context) (billingcur2setu
 	}, nil
 }
 
+func (client *Client) GetTable(ctx context.Context, name string, properties map[string]string) (cur2preflight.Table, error) {
+	return client.preflight.GetTable(ctx, name, properties)
+}
+
 func (client *Client) ListBuckets(ctx context.Context, request billingcur2setup.ListBucketsRequest) (billingcur2setup.BucketPage, error) {
 	if err := client.ensureS3(ctx, request.Region); err != nil {
 		return billingcur2setup.BucketPage{}, err

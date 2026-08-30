@@ -258,7 +258,7 @@ func TestRunAWSBillingCanSelectExistingBucketForNewCUR2Plan(t *testing.T) {
 	assertGuidedOutputSafe(t, output)
 }
 
-func TestRunAWSBillingStopsExistingBucketSetupWhenNoBucketsDiscovered(t *testing.T) {
+func TestRunAWSBillingFallsBackToGeneratedBucketWhenNoExistingBucketsDiscovered(t *testing.T) {
 	calls := []guidedAWSBillingCall{}
 	preflightRunner := workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
 		calls = append(calls, guidedAWSBillingCall{Request: got, Options: options})
@@ -269,11 +269,23 @@ func TestRunAWSBillingStopsExistingBucketSetupWhenNoBucketsDiscovered(t *testing
 		if options.Selectors == nil || options.Selectors.AWS == nil {
 			t.Fatalf("apply-prereqs selectors missing: %#v", options.Selectors)
 		}
-		if options.Selectors.AWS.CUR2DestinationMode != workflow.AWSCUR2DestinationExistingSameAccount ||
-			options.Selectors.AWS.CUR2S3BucketRef != "" {
-			t.Fatalf("bucket discovery selectors = %#v, want existing destination without selected ref", options.Selectors.AWS)
+		switch len(calls) {
+		case 2:
+			if options.Selectors.AWS.CUR2DestinationMode != workflow.AWSCUR2DestinationExistingSameAccount ||
+				options.Selectors.AWS.CUR2S3BucketRef != "" {
+				t.Fatalf("bucket discovery selectors = %#v, want existing destination without selected ref", options.Selectors.AWS)
+			}
+			return guidedExistingBucketSelectionNoCandidatesReport(got)
+		case 3:
+			if options.Selectors.AWS.CUR2DestinationMode != "" ||
+				options.Selectors.AWS.CUR2S3BucketRef != "" {
+				t.Fatalf("generated fallback selectors = %#v, want generated destination without bucket ref", options.Selectors.AWS)
+			}
+			return guidedCreateCUR2PlanReport(got)
+		default:
+			t.Fatalf("unexpected apply-prereqs call %d", len(calls))
 		}
-		return guidedExistingBucketSelectionNoCandidatesReport(got)
+		return workflow.CapabilityReport{}
 	})
 	registry := testAWSBillingRegistry(t, preflightRunner, applyRunner)
 	guide := &fakeAWSBillingGuide{
@@ -283,13 +295,13 @@ func TestRunAWSBillingStopsExistingBucketSetupWhenNoBucketsDiscovered(t *testing
 		},
 	}
 
-	output, err := runGuidedWithConfig("1\n1\ny\n3\n2\n", Config{Registry: registry, AWSBilling: guide})
+	output, err := runGuidedWithConfig("1\n1\ny\n3\n2\ny\n\n", Config{Registry: registry, AWSBilling: guide})
 
 	if err != nil {
 		t.Fatalf("RunWithConfig returned error: %v", err)
 	}
-	if len(calls) != 2 {
-		t.Fatalf("registry calls = %d, want preflight and bucket discovery only", len(calls))
+	if len(calls) != 3 {
+		t.Fatalf("registry calls = %d, want preflight, bucket discovery, generated setup plan", len(calls))
 	}
 	for _, want := range []string{
 		"Select AWS CUR 2.0 destination",
@@ -297,6 +309,11 @@ func TestRunAWSBillingStopsExistingBucketSetupWhenNoBucketsDiscovered(t *testing
 		"Discovering existing S3 buckets in the selected AWS account.",
 		"Support code: aws_cur2_existing_bucket_selection_required",
 		"No existing same-account S3 buckets were discovered.",
+		"Use a generated same-account Matilda S3 bucket instead? [Y/n]",
+		"Preparing a new Matilda AWS CUR 2.0 setup plan.",
+		"Support code: aws_cur2_create_export_approval_required",
+		"Step ID: aws.billing.cur2.bucket.create",
+		"Apply this AWS CUR 2.0 setup plan now? [y/N]",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("output = %q, want to contain %q", output, want)
@@ -304,8 +321,6 @@ func TestRunAWSBillingStopsExistingBucketSetupWhenNoBucketsDiscovered(t *testing
 	}
 	for _, forbidden := range []string{
 		"Select S3 bucket for new Matilda CUR 2.0 export",
-		"Preparing a new Matilda AWS CUR 2.0 setup plan.",
-		"Apply this AWS CUR 2.0 setup plan now? [y/N]",
 		"--cur2-s3-bucket-ref",
 	} {
 		if strings.Contains(output, forbidden) {
@@ -313,6 +328,135 @@ func TestRunAWSBillingStopsExistingBucketSetupWhenNoBucketsDiscovered(t *testing
 		}
 	}
 	assertGuidedOutputSafe(t, output)
+}
+
+func TestRunAWSBillingFallsBackToGeneratedBucketWhenExistingBucketListingFails(t *testing.T) {
+	calls := []guidedAWSBillingCall{}
+	preflightRunner := workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+		calls = append(calls, guidedAWSBillingCall{Request: got, Options: options})
+		return guidedAmbiguousCUR2SelectionReport(got)
+	})
+	applyRunner := workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+		calls = append(calls, guidedAWSBillingCall{Request: got, Options: options})
+		if options.Selectors == nil || options.Selectors.AWS == nil {
+			t.Fatalf("apply-prereqs selectors missing: %#v", options.Selectors)
+		}
+		switch len(calls) {
+		case 2:
+			if options.Selectors.AWS.CUR2DestinationMode != workflow.AWSCUR2DestinationExistingSameAccount ||
+				options.Selectors.AWS.CUR2S3BucketRef != "" {
+				t.Fatalf("bucket discovery selectors = %#v, want existing destination without selected ref", options.Selectors.AWS)
+			}
+			return guidedCapabilityReport(got, workflow.RunStatusBlocked, "aws_s3_list_buckets_failed", []workflow.PlanEvidence{
+				{Key: "code", Value: "aws_s3_list_buckets_failed"},
+			})
+		case 3:
+			if options.Selectors.AWS.CUR2DestinationMode != "" ||
+				options.Selectors.AWS.CUR2S3BucketRef != "" {
+				t.Fatalf("generated fallback selectors = %#v, want generated destination without bucket ref", options.Selectors.AWS)
+			}
+			return guidedCreateCUR2PlanReport(got)
+		default:
+			t.Fatalf("unexpected apply-prereqs call %d", len(calls))
+		}
+		return workflow.CapabilityReport{}
+	})
+	registry := testAWSBillingRegistry(t, preflightRunner, applyRunner)
+	guide := &fakeAWSBillingGuide{
+		sources: []billingguide.CredentialSource{{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}},
+		verified: map[string]billingguide.VerifiedIdentity{
+			"profile:default": {Source: billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}, AccountLabel: "account-ending-9012", CallerRef: "sha256:abcdef123456", Region: "us-east-1"},
+		},
+	}
+
+	output, err := runGuidedWithConfig("1\n1\ny\n3\n2\ny\n\n", Config{Registry: registry, AWSBilling: guide})
+
+	if err != nil {
+		t.Fatalf("RunWithConfig returned error: %v", err)
+	}
+	if len(calls) != 3 {
+		t.Fatalf("registry calls = %d, want preflight, failed bucket discovery, generated setup plan", len(calls))
+	}
+	for _, want := range []string{
+		"Support code: aws_s3_list_buckets_failed",
+		"Use a generated same-account Matilda S3 bucket instead? [Y/n]",
+		"Preparing a new Matilda AWS CUR 2.0 setup plan.",
+		"Support code: aws_cur2_create_export_approval_required",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output = %q, want to contain %q", output, want)
+		}
+	}
+	for _, forbidden := range []string{
+		"Select S3 bucket for new Matilda CUR 2.0 export",
+		"--cur2-s3-bucket-ref",
+	} {
+		if strings.Contains(output, forbidden) {
+			t.Fatalf("output = %q, want no %q", output, forbidden)
+		}
+	}
+	assertGuidedOutputSafe(t, output)
+}
+
+func TestRunAWSBillingCanPrepareNewCUR2PlanWhenNoReusableCUR2ExportExists(t *testing.T) {
+	tests := []struct {
+		name string
+		code string
+	}{
+		{name: "no exports", code: "aws_cur2_export_not_found"},
+		{name: "only non cur2 sources", code: "aws_non_cur2_source_out_of_scope"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := []guidedAWSBillingCall{}
+			preflightRunner := workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+				calls = append(calls, guidedAWSBillingCall{Request: got, Options: options})
+				return guidedCapabilityReport(got, workflow.RunStatusBlocked, tt.code, nil)
+			})
+			applyRunner := workflow.RunnerFunc(func(ctx context.Context, got workflow.Request, options workflow.ExecutionOptions) workflow.CapabilityReport {
+				calls = append(calls, guidedAWSBillingCall{Request: got, Options: options})
+				return guidedCreateCUR2PlanReport(got)
+			})
+			registry := testAWSBillingRegistry(t, preflightRunner, applyRunner)
+			guide := &fakeAWSBillingGuide{
+				sources: []billingguide.CredentialSource{{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}},
+				verified: map[string]billingguide.VerifiedIdentity{
+					"profile:default": {Source: billingguide.CredentialSource{Kind: billingguide.CredentialSourceProfile, Profile: "default", Region: "us-east-1"}, AccountLabel: "account-ending-9012", CallerRef: "sha256:abcdef123456", Region: "us-east-1"},
+				},
+			}
+
+			output, err := runGuidedWithConfig("1\n1\ny\ny\n1\n\n", Config{Registry: registry, AWSBilling: guide})
+
+			if err != nil {
+				t.Fatalf("RunWithConfig returned error: %v", err)
+			}
+			assertGuidedCreateCUR2PlanCalls(t, calls)
+			for _, want := range []string{
+				"Support code: " + tt.code,
+				"Prepare a new Matilda CUR 2.0 setup plan now? [Y/n]",
+				"Select AWS CUR 2.0 destination",
+				"Use a generated same-account Matilda S3 bucket",
+				"Preparing a new Matilda AWS CUR 2.0 setup plan.",
+				"Support code: aws_cur2_create_export_approval_required",
+				"Apply this AWS CUR 2.0 setup plan now? [y/N]",
+			} {
+				if !strings.Contains(output, want) {
+					t.Fatalf("output = %q, want to contain %q", output, want)
+				}
+			}
+			for _, forbidden := range []string{
+				"Select AWS CUR 2.0 export",
+				"Running readiness preflight for selected CUR 2.0 export",
+				"--export-ref",
+			} {
+				if strings.Contains(output, forbidden) {
+					t.Fatalf("output = %q, want no %q", output, forbidden)
+				}
+			}
+			assertGuidedOutputSafe(t, output)
+		})
+	}
 }
 
 func TestSelectCreateCUR2DestinationRejectsInvalidChoice(t *testing.T) {
@@ -1524,11 +1668,11 @@ func guidedCreateCUR2ExistingBucketPlanReport(request workflow.Request) workflow
 					ID:                        workflow.AWSCUR2MergeBucketPolicyOperationID,
 					Intent:                    workflow.PlanStepRepair,
 					Title:                     "Allow AWS Data Exports delivery to the selected bucket",
-					Description:               "Merge the scoped AWS Data Exports delivery statement into the selected same-account bucket policy.",
-					Reason:                    "AWS requires the bucket policy to allow Data Exports to write report objects with source conditions.",
+					Description:               "Merge the AWS Data Exports bucket object delivery statement into the selected same-account bucket policy.",
+					Reason:                    "AWS requires the bucket policy to allow Data Exports to write bucket objects with source conditions; the export destination keeps the selected S3 prefix.",
 					ApprovalKind:              "cloud_mutation",
-					CurrentState:              "The selected same-account S3 bucket exists but does not yet contain the scoped Data Exports delivery statement.",
-					TargetState:               "The selected bucket policy allows Data Exports delivery for the selected account and export scope.",
+					CurrentState:              "The selected same-account S3 bucket exists but does not yet contain the AWS Data Exports bucket object delivery statement.",
+					TargetState:               "The selected bucket policy allows Data Exports to write objects in the bucket with source account and export ARN conditions.",
 					RequiredPermission:        "s3:GetBucketPolicy, s3:PutBucketPolicy",
 					CredentialMaterialTouched: false,
 					Validation:                "The policy is read, parsed, merged, and written with the expected bucket owner.",

@@ -17,6 +17,9 @@ import (
 func handleAWSBillingResult(ctx context.Context, reader *bufio.Scanner, stdout io.Writer, config Config, selected awsVerifiedSource, result workflow.Result) error {
 	if !isCUR2CandidateSelectionResult(result) {
 		writeAWSBillingSummary(stdout, selected.Identity.Source, result)
+		if shouldOfferCreateCUR2SetupFromBillingResult(result) {
+			return offerCreateCUR2SetupPlanAfterBillingResult(reader, stdout, config, selected.Identity.Source)
+		}
 		return nil
 	}
 
@@ -100,6 +103,27 @@ func isCUR2CandidateSelectionResult(result workflow.Result) bool {
 	default:
 		return false
 	}
+}
+
+func shouldOfferCreateCUR2SetupFromBillingResult(result workflow.Result) bool {
+	switch result.Code {
+	case "aws_cur2_export_not_found", "aws_non_cur2_source_out_of_scope":
+		return true
+	default:
+		return false
+	}
+}
+
+func offerCreateCUR2SetupPlanAfterBillingResult(reader *bufio.Scanner, stdout io.Writer, config Config, source billingguide.CredentialSource) error {
+	prepare, err := readConfirmationDefaultYes(reader, stdout, "Prepare a new Matilda CUR 2.0 setup plan now? [Y/n] ")
+	if err != nil {
+		return err
+	}
+	if !prepare {
+		fmt.Fprintln(stdout, "Guided setup stopped. No cloud changes were made.")
+		return nil
+	}
+	return runCreateCUR2SetupPlanWithConfig(reader, stdout, config, source)
 }
 
 type cur2Candidate struct {
@@ -368,12 +392,15 @@ func runCreateCUR2SetupPlanWithConfig(reader *bufio.Scanner, stdout io.Writer, c
 		cancel()
 		if !isExistingBucketSelectionResult(selection) {
 			writeAWSBillingSummary(stdout, source, selection)
+			if shouldOfferGeneratedBucketFallbackAfterExistingBucketSelection(selection) {
+				return offerGeneratedBucketFallbackAfterExistingBucketSelection(reader, stdout, config, source)
+			}
 			return nil
 		}
 		candidates := existingS3BucketCandidates(selection)
 		if len(candidates) == 0 {
 			writeAWSBillingSummary(stdout, source, selection)
-			return nil
+			return offerGeneratedBucketFallbackAfterExistingBucketSelection(reader, stdout, config, source)
 		}
 		selectedRef, err := selectExistingS3Bucket(reader, stdout, candidates)
 		if err != nil {
@@ -382,6 +409,10 @@ func runCreateCUR2SetupPlanWithConfig(reader *bufio.Scanner, stdout io.Writer, c
 		bucketRef = selectedRef
 	}
 
+	return runCreateCUR2SetupPlanForDestination(reader, stdout, config, source, destinationMode, bucketRef)
+}
+
+func runCreateCUR2SetupPlanForDestination(reader *bufio.Scanner, stdout io.Writer, config Config, source billingguide.CredentialSource, destinationMode workflow.AWSCUR2DestinationMode, bucketRef string) error {
 	fmt.Fprintln(stdout, "Preparing a new Matilda AWS CUR 2.0 setup plan.")
 	ctx, cancel := guidedContext(config)
 	result := runCreateCUR2SetupPlanWithDestination(ctx, config.Registry, source, destinationMode, bucketRef)
@@ -405,6 +436,27 @@ func runCreateCUR2SetupPlanWithConfig(reader *bufio.Scanner, stdout io.Writer, c
 	applied := runApprovedCreateCUR2SetupPlan(applyCtx, config.Registry, source, result)
 	writeAWSBillingSummary(stdout, source, applied)
 	return nil
+}
+
+func shouldOfferGeneratedBucketFallbackAfterExistingBucketSelection(result workflow.Result) bool {
+	switch result.Code {
+	case "aws_s3_list_buckets_failed", "aws_s3_list_buckets_pagination_unbounded":
+		return true
+	default:
+		return false
+	}
+}
+
+func offerGeneratedBucketFallbackAfterExistingBucketSelection(reader *bufio.Scanner, stdout io.Writer, config Config, source billingguide.CredentialSource) error {
+	useGenerated, err := readConfirmationDefaultYes(reader, stdout, "Use a generated same-account Matilda S3 bucket instead? [Y/n] ")
+	if err != nil {
+		return err
+	}
+	if !useGenerated {
+		fmt.Fprintln(stdout, "Guided setup stopped. No cloud changes were made.")
+		return nil
+	}
+	return runCreateCUR2SetupPlanForDestination(reader, stdout, config, source, workflow.AWSCUR2DestinationGenerated, "")
 }
 
 func selectCreateCUR2Destination(reader *bufio.Scanner, stdout io.Writer) (workflow.AWSCUR2DestinationMode, error) {

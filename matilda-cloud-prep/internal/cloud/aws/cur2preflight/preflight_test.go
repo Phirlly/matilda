@@ -835,31 +835,27 @@ func TestPreflightRejectsUnverifiedQueries(t *testing.T) {
 	}
 }
 
-func TestPreflightAcceptsAWSStandardProductMapForMatildaProductName(t *testing.T) {
+func TestPreflightBlocksRawProductMapWithoutMatildaProductNameOutput(t *testing.T) {
 	client := baselineClient()
 	client.table.Columns = append(requiredCUR2ColumnsWithout("product_product_name"), "product")
 	client.export.QueryStatement = "SELECT " + strings.Join(append(requiredCUR2ColumnsWithout("product_product_name"), "product"), ", ") + " FROM COST_AND_USAGE_REPORT"
 
 	result := runPreflight(t, client)
 
-	if result.Status != workflow.StatusReady {
-		t.Fatalf("Status = %q, want %q; code=%q", result.Status, workflow.StatusReady, result.Code)
-	}
-	assertCheckEvidence(t, result, "logical_field_source", "product_product_name<-product")
+	assertBlockedCode(t, result, "aws_cur2_required_fields_missing")
+	assertCheckEvidence(t, result, "missing_required_field", "product_product_name")
 	assertNoUnsafeAWSOutput(t, result)
 }
 
-func TestPreflightAcceptsAWSStandardProductMapMetadataWithoutQueryMutation(t *testing.T) {
+func TestPreflightBlocksProductNameTableMetadataWithoutQueryOutput(t *testing.T) {
 	client := baselineClient()
 	client.table.Columns = append(requiredCUR2ColumnsWithout("product_product_name"), "product")
 	client.export.QueryStatement = "SELECT " + strings.Join(requiredCUR2ColumnsWithout("product_product_name"), ", ") + " FROM COST_AND_USAGE_REPORT"
 
 	result := runPreflight(t, client)
 
-	if result.Status != workflow.StatusReady {
-		t.Fatalf("Status = %q, want %q; code=%q", result.Status, workflow.StatusReady, result.Code)
-	}
-	assertCheckEvidence(t, result, "logical_field_source", "product_product_name<-product")
+	assertBlockedCode(t, result, "aws_cur2_required_fields_missing")
+	assertCheckEvidence(t, result, "missing_required_field", "product_product_name")
 	assertNoUnsafeAWSOutput(t, result)
 }
 

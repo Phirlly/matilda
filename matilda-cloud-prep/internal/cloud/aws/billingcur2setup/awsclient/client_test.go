@@ -45,6 +45,9 @@ func TestCreateExportMapsSetupRequestToSDK(t *testing.T) {
 	if input.Export.DataQuery.TableConfigurations["COST_AND_USAGE_REPORT"]["TIME_GRANULARITY"] != "MONTHLY" {
 		t.Fatalf("TableConfigurations = %#v, want monthly", input.Export.DataQuery.TableConfigurations)
 	}
+	if input.Export.DataQuery.TableConfigurations["COST_AND_USAGE_REPORT"]["BILLING_VIEW_ARN"] != "arn:aws:billing::123456789012:billingview/primary" {
+		t.Fatalf("TableConfigurations = %#v, want primary billing view ARN", input.Export.DataQuery.TableConfigurations)
+	}
 	destination := input.Export.DestinationConfigurations.S3Destination
 	if aws.ToString(destination.S3Bucket) != "matilda-ra-billing-aws-us-west-2-abcdefghijkl-00" ||
 		aws.ToString(destination.S3Prefix) != "matilda/rapid-assessment/billing" ||
@@ -827,6 +830,7 @@ func sampleCreateExportRequest() billingcur2setup.CreateExportRequest {
 		TableConfigurations: map[string]map[string]string{
 			"COST_AND_USAGE_REPORT": {
 				"TIME_GRANULARITY": "MONTHLY",
+				"BILLING_VIEW_ARN": "arn:aws:billing::123456789012:billingview/primary",
 			},
 		},
 		Destination: cur2preflight.S3Destination{
